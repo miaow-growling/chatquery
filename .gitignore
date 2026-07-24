@@ -1,0 +1,23 @@
+# Rust / Cargo build artifacts
+/target
+/src-tauri/target
+**/*.rs.bk
+
+# Tauri generated code
+/src-tauri/gen
+
+# Node / frontend
+/frontend/node_modules
+/frontend/dist
+/frontend/.vite
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+
+# Local env (never commit secrets)
+*.local
+.env
+.env.*

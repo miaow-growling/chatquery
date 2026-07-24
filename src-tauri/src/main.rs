@@ -1,0 +1,79 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod commands;
+mod state;
+
+use chatquery::config::{load_mcp_servers, LlmConfig};
+use chatquery::db::connection::ConnectionStore;
+use chatquery::mcp::host::McpHostManager;
+use chatquery::store::Storage;
+use commands::*;
+use state::AppState;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+fn main() {
+    let storage = match Storage::open() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("无法打开本地存储: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let store = match ConnectionStore::load(storage) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("无法加载连接: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let llm = LlmConfig::from_env();
+    let mcp_cfgs = load_mcp_servers();
+    let mcp = if mcp_cfgs.is_empty() {
+        None
+    } else {
+        Some(Arc::new(McpHostManager::new(mcp_cfgs)))
+    };
+
+    tauri::Builder::default()
+        .manage(AppState {
+            store: Mutex::new(store),
+            schema_cache: Mutex::new(HashMap::new()),
+            llm,
+            mcp,
+        })
+        .invoke_handler(tauri::generate_handler![
+            list_tree,
+            add_connection,
+            update_connection,
+            delete_connection,
+            create_environment,
+            create_group,
+            rename_container,
+            delete_container,
+            test_connection,
+            execute_query,
+            explain_query,
+            log_query,
+            list_queries,
+            save_query,
+            delete_query,
+            get_schema,
+            chat_turn,
+            get_status,
+            list_databases,
+            list_redis_dbs,
+            list_tables,
+            list_redis_keys,
+            list_columns,
+            browse_table,
+            browse_redis_key,
+            apply_edit,
+            insert_row,
+            delete_row,
+            describe_table,
+            list_relationships,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running ChatQuery");
+}

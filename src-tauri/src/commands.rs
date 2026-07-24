@@ -1,0 +1,788 @@
+use chatquery::db::connection::{ConnectionConfig, DbType};
+use chatquery::db::container::ContainerKind;
+use chatquery::db::mysql::{
+    ColumnInfo, ForeignKeyInfo, QueryResult, Schema, TableMeta, TableStructure,
+};
+use chatquery::model::BackendMsg;
+use chatquery::model::ChatMessage;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, State};
+
+use crate::state::AppState;
+
+// ---------------------------------------------------------------------------
+// Frontend-facing DTOs (the Rust backend types are not all Serialize, so we
+// translate at the boundary — keeps the wire contract stable and explicit).
+// ---------------------------------------------------------------------------
+
+/// Connection summary sent to the UI. Deliberately excludes `password` — the
+/// secret stays in Rust and is never round-tripped to the frontend. Grouping
+/// is now expressed as `group_id` (a first-class container, ADR-016); the UI
+/// resolves the environment by walking containers.
+#[derive(Serialize)]
+pub struct ConnSummary {
+    pub id: String,
+    pub name: String,
+    pub db_type: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub database: String,
+    #[serde(default)]
+    pub group_id: Option<String>,
+}
+
+/// Mutable connection input from the UI form.
+#[derive(Deserialize)]
+pub struct ConnInput {
+    pub id: String,
+    pub name: String,
+    pub db_type: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    #[serde(default)]
+    pub password: String,
+    pub database: String,
+    /// Group this connection belongs to (first-class container id). `None`
+    /// means ungrouped.
+    #[serde(default)]
+    pub group_id: Option<String>,
+}
+
+/// A logged or saved query returned to the UI. `name` is None for auto-logged
+/// history entries and Some for user-named snippets.
+#[derive(Serialize)]
+pub struct QueryItem {
+    pub id: String,
+    pub name: Option<String>,
+    pub sql: String,
+    pub conn_id: Option<String>,
+    pub db: Option<String>,
+    pub created: i64,
+}
+
+fn to_cfg(i: ConnInput) -> ConnectionConfig {
+    ConnectionConfig {
+        id: i.id,
+        name: i.name,
+        db_type: if i.db_type == "redis" {
+            DbType::Redis
+        } else {
+            DbType::Mysql
+        },
+        host: i.host,
+        port: i.port,
+        user: i.user,
+        password: i.password,
+        database: i.database,
+        group_id: i.group_id,
+    }
+}
+
+/// Map a stored connection to its wire summary.
+fn to_summary(c: &ConnectionConfig) -> ConnSummary {
+    ConnSummary {
+        id: c.id.clone(),
+        name: c.name.clone(),
+        db_type: match c.db_type {
+            DbType::Mysql => "mysql",
+            DbType::Redis => "redis",
+        }
+        .to_string(),
+        host: c.host.clone(),
+        port: c.port,
+        user: c.user.clone(),
+        database: c.database.clone(),
+        group_id: c.group_id.clone(),
+    }
+}
+
+/// Tagged union so the frontend can pattern-match the result shape.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum QueryOutput {
+    Table {
+        columns: Vec<String>,
+        rows: Vec<Vec<String>>,
+        truncated: bool,
+        /// Total rows when known (browse path). None for arbitrary SQL so the
+        /// UI knows not to render a pager.
+        #[serde(default)]
+        total: Option<usize>,
+        /// Current 0-based page and page size (browse path).
+        #[serde(default)]
+        page: usize,
+        #[serde(default)]
+        page_size: usize,
+        /// Primary-key column names (browse path only). Empty when there's no
+        /// stable row identity, in which case the UI must disable editing.
+        #[serde(default)]
+        primary_keys: Vec<String>,
+    },
+    Redis {
+        command: String,
+        lines: Vec<String>,
+        note: String,
+        truncated: bool,
+    },
+}
+
+#[derive(Serialize)]
+pub struct StatusInfo {
+    pub llm_enabled: bool,
+    pub mask_enabled: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+// --- Tree model (environments → groups → connections) ----------------------
+
+#[derive(Serialize)]
+pub struct GroupNode {
+    pub id: String,
+    pub name: String,
+    pub order: i64,
+    pub connections: Vec<ConnSummary>,
+}
+
+#[derive(Serialize)]
+pub struct EnvNode {
+    pub id: String,
+    pub name: String,
+    pub order: i64,
+    pub groups: Vec<GroupNode>,
+}
+
+#[derive(Serialize)]
+pub struct TreeModel {
+    pub environments: Vec<EnvNode>,
+}
+
+/// Full left-tree model: environments (ordered) → groups (ordered) →
+/// connections under each group. Empty containers are included naturally.
+/// Connections with no `group_id` are collected under a synthetic "未分组"
+/// environment appended last. `list_connections` is superseded by this.
+#[tauri::command]
+pub fn list_tree(state: State<AppState>) -> TreeModel {
+    let store = state.store.lock().unwrap();
+    let containers = store.list_containers();
+    let conns = store.list();
+    let mut environments: Vec<EnvNode> = Vec::new();
+
+    for env in containers.iter().filter(|c| c.kind == ContainerKind::Env) {
+        let mut groups: Vec<GroupNode> = Vec::new();
+        for g in containers.iter().filter(|c| {
+            c.kind == ContainerKind::Group && c.parent.as_deref() == Some(&env.id)
+        }) {
+            let group_conns: Vec<ConnSummary> = conns
+                .iter()
+                .filter(|c| c.group_id.as_deref() == Some(&g.id))
+                .map(to_summary)
+                .collect();
+            groups.push(GroupNode {
+                id: g.id.clone(),
+                name: g.name.clone(),
+                order: g.ord,
+                connections: group_conns,
+            });
+        }
+        environments.push(EnvNode {
+            id: env.id.clone(),
+            name: env.name.clone(),
+            order: env.ord,
+            groups,
+        });
+    }
+
+    // Ungrouped connections → synthetic "未分组" environment.
+    let ungrouped: Vec<ConnSummary> = conns
+        .iter()
+        .filter(|c| c.group_id.is_none())
+        .map(to_summary)
+        .collect();
+    if !ungrouped.is_empty() {
+        environments.push(EnvNode {
+            id: "__ungrouped".to_string(),
+            name: "未分组".to_string(),
+            order: i64::MAX,
+            groups: vec![GroupNode {
+                id: "__ungrouped".to_string(),
+                name: String::new(),
+                order: 0,
+                connections: ungrouped,
+            }],
+        });
+    }
+
+    TreeModel { environments }
+}
+
+#[tauri::command]
+pub fn add_connection(state: State<AppState>, cfg: ConnInput) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .add(to_cfg(cfg))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_connection(state: State<AppState>, cfg: ConnInput) -> Result<(), String> {
+    let mut merged = to_cfg(cfg);
+    // Empty password on edit means "keep the existing one" (we never send the
+    // real password back to the UI, so the form can't repopulate it).
+    if merged.password.is_empty() {
+        if let Some(existing) = state.store.lock().unwrap().list().iter().find(|c| c.id == merged.id) {
+            merged.password = existing.password.clone();
+        }
+    }
+    state
+        .store
+        .lock()
+        .unwrap()
+        .update(merged)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_connection(state: State<AppState>, id: String) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .remove(&id)
+        .map_err(|e| e.to_string())
+}
+
+// --- Container (environment / group) CRUD (ADR-016) -------------------------
+
+#[tauri::command]
+pub fn create_environment(state: State<AppState>, name: String) -> Result<String, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .create_env(&name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_group(
+    state: State<AppState>,
+    env_id: String,
+    name: String,
+) -> Result<String, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .create_group(&env_id, &name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_container(
+    state: State<AppState>,
+    id: String,
+    name: String,
+) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .rename_container(&id, &name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_container(state: State<AppState>, id: String) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .delete_container(&id)
+        .map_err(|e| e.to_string())
+}
+
+// --- Query history / saved snippets ----------------------------------------
+
+#[tauri::command]
+pub fn log_query(
+    state: State<AppState>,
+    conn_id: Option<String>,
+    db: Option<String>,
+    sql: String,
+) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .log_query(conn_id.as_deref(), db.as_deref(), &sql)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_queries(state: State<AppState>) -> Result<Vec<QueryItem>, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .list_queries()
+        .map(|rows| {
+            rows.into_iter()
+                .map(|r| QueryItem {
+                    id: r.id,
+                    name: r.name,
+                    sql: r.sql,
+                    conn_id: r.conn_id,
+                    db: r.db,
+                    created: r.created,
+                })
+                .collect()
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_query(
+    state: State<AppState>,
+    id: Option<String>,
+    name: String,
+    sql: String,
+    conn_id: Option<String>,
+    db: Option<String>,
+) -> Result<String, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .save_query(id.as_deref(), &name, &sql, conn_id.as_deref(), db.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_query(state: State<AppState>, id: String) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .delete_query(&id)
+        .map_err(|e| e.to_string())
+}
+
+// --- EXPLAIN (execution plan) ------------------------------------------------
+
+#[tauri::command]
+pub async fn explain_query(
+    state: State<'_, AppState>,
+    conn_id: String,
+    query: String,
+) -> Result<QueryOutput, String> {
+    let cfg = {
+        let store = state.store.lock().unwrap();
+        store
+            .list()
+            .iter()
+            .find(|c| c.id == conn_id)
+            .cloned()
+    }
+    .ok_or_else(|| "连接未找到".to_string())?;
+
+    match cfg.db_type {
+        DbType::Mysql => {
+            let sql = format!("EXPLAIN {}", query);
+            let r: QueryResult =
+                chatquery::db::mysql::query(&cfg, &sql).await.map_err(|e| e.to_string())?;
+            Ok(QueryOutput::Table {
+                columns: r.columns,
+                rows: r.rows,
+                truncated: r.truncated,
+                total: None,
+                page: 0,
+                page_size: 0,
+                primary_keys: vec![],
+            })
+        }
+        DbType::Redis => Ok(QueryOutput::Redis {
+            command: "EXPLAIN".to_string(),
+            lines: vec![],
+            note: "EXPLAIN 仅支持 SQL 连接（MySQL）".to_string(),
+            truncated: false,
+        }),
+    }
+}
+
+#[tauri::command]
+pub async fn test_connection(cfg: ConnInput) -> Result<bool, String> {
+    let c = to_cfg(cfg);
+    let res = match c.db_type {
+        DbType::Mysql => chatquery::db::mysql::test(&c).await,
+        DbType::Redis => chatquery::db::redis::test(&c).await,
+    };
+    match res {
+        Ok(()) => Ok(true),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn execute_query(
+    state: State<'_, AppState>,
+    conn_id: String,
+    query: String,
+) -> Result<QueryOutput, String> {
+    let cfg = {
+        let store = state.store.lock().unwrap();
+        store
+            .list()
+            .iter()
+            .find(|c| c.id == conn_id)
+            .cloned()
+    }
+    .ok_or_else(|| "连接未找到".to_string())?;
+
+    match cfg.db_type {
+        DbType::Mysql => {
+            let r: QueryResult =
+                chatquery::db::mysql::query(&cfg, &query).await.map_err(|e| e.to_string())?;
+            Ok(QueryOutput::Table {
+                columns: r.columns,
+                rows: r.rows,
+                truncated: r.truncated,
+                total: None,
+                page: 0,
+                page_size: 0,
+                primary_keys: vec![],
+            })
+        }
+        DbType::Redis => {
+            let r = chatquery::db::redis::query(&cfg, &query)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(QueryOutput::Redis {
+                command: r.command,
+                lines: r.lines,
+                note: r.note,
+                truncated: r.truncated,
+            })
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn get_schema(
+    state: State<'_, AppState>,
+    conn_id: String,
+) -> Result<Schema, String> {
+    // Serve from the bounded per-connection cache when available.
+    if let Some(s) = state.schema_cache.lock().unwrap().get(&conn_id) {
+        return Ok(s.clone());
+    }
+    let cfg = {
+        let store = state.store.lock().unwrap();
+        store
+            .list()
+            .iter()
+            .find(|c| c.id == conn_id)
+            .cloned()
+    }
+    .ok_or_else(|| "连接未找到".to_string())?;
+
+    let schema = match cfg.db_type {
+        DbType::Mysql => chatquery::db::mysql::schema(&cfg)
+            .await
+            .map_err(|e| e.to_string())?,
+        DbType::Redis => Schema { tables: vec![] },
+    };
+    state
+        .schema_cache
+        .lock()
+        .unwrap()
+        .insert(conn_id, schema.clone());
+    Ok(schema)
+}
+
+/// Resolve a stored connection config by id (cloned out of the lock so we
+/// don't hold the MutexGuard across an await — std Mutex + async is a footgun).
+fn resolve_cfg(state: &State<AppState>, conn_id: &str) -> Option<ConnectionConfig> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .list()
+        .iter()
+        .find(|c| c.id == conn_id)
+        .cloned()
+}
+
+// --- Schema tree navigation (lazy, bounded per ADR-006) ---------------------
+
+#[tauri::command]
+pub async fn list_databases(
+    state: State<'_, AppState>,
+    conn_id: String,
+) -> Result<Vec<String>, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    chatquery::db::mysql::list_databases(&cfg)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_redis_dbs(
+    state: State<'_, AppState>,
+    conn_id: String,
+) -> Result<Vec<u8>, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    chatquery::db::redis::list_dbs(&cfg)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_tables(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: String,
+) -> Result<Vec<TableMeta>, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    chatquery::db::mysql::list_tables(&cfg, &database)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_redis_keys(
+    state: State<'_, AppState>,
+    conn_id: String,
+    db: u8,
+    pattern: String,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    chatquery::db::redis::list_keys(&cfg, db, &pattern, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_columns(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: String,
+    table: String,
+) -> Result<Vec<ColumnInfo>, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    chatquery::db::mysql::list_columns(&cfg, &database, &table)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browse_table(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: String,
+    table: String,
+    page: usize,
+    page_size: usize,
+) -> Result<QueryOutput, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    let r = chatquery::db::mysql::browse(&cfg, &database, &table, page, page_size)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(QueryOutput::Table {
+        columns: r.columns,
+        rows: r.rows,
+        truncated: r.truncated,
+        total: r.total,
+        page,
+        page_size,
+        primary_keys: r.primary_keys,
+    })
+}
+
+/// Write back edited cells of a single table row (ADR-018). `pk` is the row's
+/// original primary-key values (the snapshot used to locate it); `set` is the
+/// new column values. The backend folds these into one parameterized `UPDATE`
+/// inside a transaction via `mysql::apply_edit`. No primary keys => the caller
+/// must not send this (the UI disables editing in that case).
+#[derive(Deserialize)]
+pub struct PkPair {
+    pub col: String,
+    pub val: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetPair {
+    pub col: String,
+    pub val: String,
+}
+
+#[tauri::command]
+pub async fn apply_edit(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: String,
+    table: String,
+    pk: Vec<PkPair>,
+    set: Vec<SetPair>,
+) -> Result<(), String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    let pk: Vec<(String, String)> = pk.into_iter().map(|p| (p.col, p.val)).collect();
+    let set: Vec<(String, String)> = set.into_iter().map(|s| (s.col, s.val)).collect();
+    if set.is_empty() {
+        return Ok(());
+    }
+    chatquery::db::mysql::apply_edit(&cfg, &database, &table, pk, set)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Insert a new row (ADR-019). `values` is the list of column/value pairs the
+/// user explicitly typed; columns not included fall back to DB defaults. Reuses
+/// the `SetPair` DTO from apply_edit since the shape is identical.
+#[tauri::command]
+pub async fn insert_row(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: String,
+    table: String,
+    values: Vec<SetPair>,
+) -> Result<(), String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    let values: Vec<(String, String)> = values.into_iter().map(|s| (s.col, s.val)).collect();
+    if values.is_empty() {
+        return Ok(());
+    }
+    chatquery::db::mysql::insert_row(&cfg, &database, &table, values)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Delete a single row by its primary-key snapshot (ADR-019). Reuses `PkPair`.
+#[tauri::command]
+pub async fn delete_row(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: String,
+    table: String,
+    pk: Vec<PkPair>,
+) -> Result<(), String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    let pk: Vec<(String, String)> = pk.into_iter().map(|p| (p.col, p.val)).collect();
+    chatquery::db::mysql::delete_row(&cfg, &database, &table, pk)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Fetch the full structure of a table: column details (with full type and
+/// extra), index list, and the CREATE TABLE DDL. Powers the "表结构" view
+/// (ADR-020). MySQL only — Redis has no schema to describe.
+#[tauri::command]
+pub async fn describe_table(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: String,
+    table: String,
+) -> Result<TableStructure, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    chatquery::db::mysql::describe_table(&cfg, &database, &table)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// List all foreign-key relationships in a database (ADR-021). Powers the ER /
+/// table-relationship view. MySQL only — Redis has no schema to describe.
+#[tauri::command]
+pub async fn list_relationships(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: String,
+) -> Result<Vec<ForeignKeyInfo>, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    chatquery::db::mysql::list_relationships(&cfg, &database)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn browse_redis_key(
+    state: State<'_, AppState>,
+    conn_id: String,
+    db: u8,
+    key: String,
+) -> Result<QueryOutput, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    let r = chatquery::db::redis::browse_key(&cfg, db, &key)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(QueryOutput::Redis {
+        command: r.command,
+        lines: r.lines,
+        note: r.note,
+        truncated: r.truncated,
+    })
+}
+
+#[tauri::command]
+pub fn get_status(state: State<AppState>) -> StatusInfo {
+    StatusInfo {
+        llm_enabled: state.llm.enabled(),
+        mask_enabled: chatquery::mask::masking_enabled(),
+    }
+}
+
+/// Run one LLM turn. The model streams tokens (and emits tool notices) which
+/// we forward to the frontend as Tauri events — mirroring the old TUI's
+/// `BackendMsg` channel, but over the webview's event bus. Results sent to the
+/// model are still masked on the cloud path (see `llm::tools::exec_builtin`).
+#[tauri::command]
+pub async fn chat_turn(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    conn_id: String,
+    messages: Vec<ChatMessage>,
+) -> Result<(), String> {
+    let conns: Vec<ConnectionConfig> = state.store.lock().unwrap().list().to_vec();
+    let llm = state.llm.clone();
+    let mcp = state.mcp.clone();
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackendMsg>();
+    let run_app = app.clone();
+
+    // Drive the LLM turn and report terminal errors as an event.
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = chatquery::llm::session::run_turn(&llm, conns, mcp, &messages, &tx).await {
+            let _ = run_app.emit("chat-error", e.to_string());
+        }
+    });
+
+    // Bridge backend messages -> frontend events.
+    tauri::async_runtime::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                BackendMsg::ChatToken(s) => {
+                    let _ = app.emit("chat-token", s);
+                }
+                BackendMsg::ChatTool(s) => {
+                    let _ = app.emit("chat-tool", s);
+                }
+                BackendMsg::ChatDone => {
+                    let _ = app.emit("chat-done", ());
+                }
+                BackendMsg::Error(s) => {
+                    let _ = app.emit("chat-error", s);
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let _ = conn_id;
+    Ok(())
+}

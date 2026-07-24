@@ -1,0 +1,39 @@
+[package]
+name = "chatquery"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "chatquery"
+path = "src/lib.rs"
+
+[dependencies]
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
+tui-textarea = { version = "0.7", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "mysql", "chrono"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+redis = { version = "0.27", features = ["tokio-comp"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+futures = "0.3"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+aes-gcm = "0.10"
+getrandom = "0.2"
+base64 = "0.22"
+regex = "1"
+
+[features]
+default = ["tui"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:tui-textarea"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

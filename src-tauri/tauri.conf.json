@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ChatQuery",
+  "version": "0.1.0",
+  "identifier": "com.chatquery.app",
+  "build": {
+    "beforeDevCommand": "npm --prefix /Users/hel04/Desktop/mycode/chatquery/frontend run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm --prefix /Users/hel04/Desktop/mycode/chatquery/frontend run build",
+    "frontendDist": "../frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "ChatQuery",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 860,
+        "minHeight": 600,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "icon": ["icons/icon.png"],
+    "active": true
+  }
+}

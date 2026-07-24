@@ -1,0 +1,17 @@
+[package]
+name = "chatquery-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "ChatQuery desktop (Tauri)"
+authors = ["chatquery"]
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+chatquery = { path = "..", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
