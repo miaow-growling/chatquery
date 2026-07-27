@@ -6,6 +6,8 @@ import type {
   ConnInput,
   EditPayload,
   ForeignKeyInfo,
+  LlmConfigDto,
+  LlmConfigInput,
   QueryItem,
   QueryOutput,
   Schema,
@@ -13,6 +15,7 @@ import type {
   TableMeta,
   TableStructure,
   TreeModel,
+  VendorPreset,
 } from "./types";
 
 export const api = {
@@ -23,10 +26,20 @@ export const api = {
   updateConnection: (cfg: ConnInput) => invoke("update_connection", { cfg }),
   deleteConnection: (id: string) => invoke("delete_connection", { id }),
   testConnection: (cfg: ConnInput) => invoke<boolean>("test_connection", { cfg }),
-  executeQuery: (connId: string, query: string) =>
-    invoke<QueryOutput>("execute_query", { connId, query }),
-  getSchema: (connId: string) => invoke<Schema>("get_schema", { connId }),
+  executeQuery: (connId: string, query: string, db?: string | null) =>
+    invoke<QueryOutput>("execute_query", { connId, query, db: db ?? "" }),
+  getSchema: (connId: string, db?: string | null) =>
+    invoke<Schema>("get_schema", { connId, db: db ?? null }),
+  // Inline AI completion (Copilot-style): ask the LLM for the SQL suffix that
+  // completes `prefix`. Returns "" when disabled / no suggestion.
+  completeSql: (connId: string, db: string | null, prefix: string) =>
+    invoke<string>("complete_sql", { connId, db: db ?? null, prefix }),
   getStatus: () => invoke<StatusInfo>("get_status"),
+  // LLM vendor/key/model configuration (settings page).
+  getLlmConfig: () => invoke<LlmConfigDto>("get_llm_config"),
+  getVendorPresets: () => invoke<VendorPreset[]>("get_vendor_presets"),
+  saveLlmConfig: (cfg: LlmConfigInput) =>
+    invoke("save_llm_config", { input: cfg }),
   // Schema tree navigation (lazy).
   listDatabases: (connId: string) =>
     invoke<string[]>("list_databases", { connId }),
@@ -57,8 +70,8 @@ export const api = {
     invoke("rename_container", { id, name }),
   deleteContainer: (id: string) => invoke("delete_container", { id }),
   // EXPLAIN execution plan (MySQL only).
-  explainQuery: (connId: string, query: string) =>
-    invoke<QueryOutput>("explain_query", { connId, query }),
+  explainQuery: (connId: string, query: string, db?: string | null) =>
+    invoke<QueryOutput>("explain_query", { connId, query, db: db ?? "" }),
   // Query history / saved snippets.
   logQuery: (connId: string | null, db: string | null, sql: string) =>
     invoke("log_query", { connId, db, sql }),

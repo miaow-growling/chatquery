@@ -13,6 +13,9 @@ use std::sync::{Arc, Mutex};
 pub struct AppState {
     pub store: Mutex<ConnectionStore>,
     pub schema_cache: Mutex<HashMap<String, Schema>>,
-    pub llm: LlmConfig,
+    /// LLM config is now mutable at runtime (settings page can change vendor /
+    /// key / model without a restart) — hence behind a Mutex. Loaded from the
+    /// encrypted config file at startup, falling back to env vars.
+    pub llm: Mutex<LlmConfig>,
     pub mcp: Option<Arc<McpHostManager>>,
 }

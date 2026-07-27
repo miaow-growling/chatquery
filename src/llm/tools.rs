@@ -85,7 +85,7 @@ async fn exec_builtin(tc: &ToolCall, conns: &[ConnectionConfig]) -> (String, Str
     };
 
     match cfg.db_type {
-        DbType::Mysql => match mysql::query(cfg, &query).await {
+        DbType::Mysql => match mysql::query(cfg, &query, None).await {
             Ok(r) => {
                 let summary = format!("{}: {} 行", conn_name, r.rows.len());
                 // The detail is what reaches the cloud model — mask it (the

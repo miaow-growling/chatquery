@@ -388,6 +388,35 @@
   - ⚠️ 放弃项：未做 Chat2DB 式顶部菜单栏（与 Tauri 桌面形态不符，侧栏+下拉已覆盖）；未做图形化 ER 图（仍为列表）；亮色主题下 `.msg.assistant/.msg.tool` 等少量硬编码暗底气泡未重算（可接受的次要不一致）；
   - 🔁 可逆：纯增量，无 Rust/类型契约改动；`runInfo`/`resultTab`/`chatOpen`/`theme` 均为前端 UI 状态，不侵入数据模型或命令层。
 
+### ADR-023：LLM 模型厂商配置页面（运行时可变 + 多协议 + 加密落盘）
+- **Context**：此前 LLM 配置只能从环境变量 `CHATQUERY_LLM_*` 读，且 `LlmConfig` 在进程启动时一次性固定。问题：(1) 打包后的桌面 app 双击打开无法设环境变量 → LLM 永远"未配置"；(2) 改厂商/模型必须改 env + 重启；(3) 只有"OpenAI 兼容"一个形状，无法选阿里云/腾讯云/Anthropic 等；(4) ADR-004 又要求凭据**不能明文落盘**。用户明确要求做一个可选供应商的设置页（阿里云/腾讯云/其他），并支持 Anthropic 这类非兼容协议。
+- **Decision**：
+  - **厂商预设 + 协议抽象**：`config.rs` 新增 `LlmProvider` 枚举（`OpenAi` / `Anthropic`）与 `VENDOR_PRESETS`（OpenAI、阿里云通义千问、腾讯云混元、DeepSeek、智谱 GLM、OpenRouter、Ollama、Anthropic、自定义）。`LlmConfig` 加 `provider`/`vendor` 字段。`llm/client.rs` 的 `stream_chat` 按 `provider` 分发：OpenAI 兼容走原逻辑（覆盖所有 OpenAI-shape 厂商）；新增 `stream_chat_anthropic` 处理 Anthropic 的 `x-api-key`+`anthropic-version` 鉴权、顶层 `system` 字段、`tool_use`/`tool_result` content block 格式与 SSE 解析。
+  - **运行时可变配置**：`AppState.llm` 改为 `Mutex<LlmConfig>`；新增 `get_llm_config` / `get_vendor_presets` / `save_llm_config` 命令；启动时 `LlmConfig::load()`（无文件则回退 `from_env`，dev 工作流不变）。
+  - **凭据加密落盘（复用 ADR-010 机制）**：`api_key` 经 `crypto::encrypt`（AES-256-GCM，密钥同 `~/.config/chatquery/key`，0600）写入 `~/.config/chatquery/llm.json`；`base_url`/`model`/`vendor`/`provider` 作非敏感明文同文件存储。**api_key 永不回传前端**——设置表单显示空字段，留空即保留已存密钥。
+- **Consequences**：
+  - ✅ 桌面端首次有可选供应商的设置页：下拉选厂商自动填 base_url/默认模型，填 key 即生效，**无需重启、无需环境变量**；
+  - ✅ 覆盖阿里云/腾讯云/DeepSeek/智谱/OpenRouter/Ollama + Anthropic，新增厂商只需在 `VENDOR_PRESETS` 加一行；
+  - ✅ 凭据合规加密落盘，与 ADR-004/010 一致；非敏感字段明文便于排查；
+  - ⚠️ 代价：`LlmConfig` 结构变更（加 `provider`/`vendor`）；Tauri 端加 3 个命令 + `Mutex`；前端加设置弹窗 + 类型；Anthropic 分支为新增且**未经真实 API 联调验证**（无密钥/沙箱无 TTY）；
+  - ⚠️ 放弃项：未做 OS keychain（macOS Keychain / libsecret）——沿用现有 AES 文件加密（ADR-010 已记录的"未来可选"项），对"已获账户的攻击者"防护弱于 keychain；Anthropic 仅实现文本+工具用流，未覆盖批处理/缓存控制等高级参数；
+  - 🔁 可逆：`from_env` 仍保留，删除 UI 即退回 env-only；`LlmProvider` 为纯增枚举，`session.rs` 工具循环未改。
+
+---
+
+### ADR-024：查询编辑器补全增强（表/字段提示跟随选中库 + AI Tab 内联补全，默认关）
+- **Context**：编辑器已用 `@codemirror/lang-sql` 的 schema 完成能力做表/字段提示，但 `get_schema` 只返回**连接默认库**的 schema；用户选中某个具体 database（`selDb`）后编辑器的补全提示仍显示默认库的表，导致"感觉没接上"。同时用户要求接入 AI Tab 内联补全（Copilot 式灰色建议、按 Tab 接受）。AI 补全每次按键停顿会请求 LLM，有延迟与 token 成本，且依赖已配置模型。
+- **Decision**：
+  - **表/字段提示跟随选中库**：`mysql::schema` 增 `database: Option<&str>` 参数（空→默认库）；`get_schema` 增 `db: Option<String>` 并用 `conn_id::db` 作缓存键（默认库记 `conn_id::DEFAULT`）；前端 `loadSchema(id, db?)` + 一个 `useEffect([selId, selDb])` 在连接或选中库变化时重载编辑器 schema。AI 补全命令 `complete_sql(conn_id, db, prefix)`：复用 `stream_chat`，构造 system 提示（角色=MySQL 补全引擎 + schema 上下文）+ user(prefix)，取 `ChatChoice.content`，剥 Markdown 围栏，返回**后缀**字符串；后端 `enabled()` 守卫（未配置模型直接报错，前端吞掉显示空）。
+  - **AI 内联补全可开关、默认关**：`editor.ts` 新增内联补全扩展（debounce 500ms 请求 provider→widget 装饰显示灰色 ghost→Tab 接受、Esc 清除、任何编辑/光标移动清除）；`setAiComplete(enabled, provider)` 方法；偏好存 `localStorage("cq_ai_complete")`，设置弹窗加开关；`aiProvider` 经 `selIdRef`/`selDbRef` 读最新上下文，稳定注册一次。
+- **Consequences**：
+  - ✅ 表/字段提示现在随**选中库**切换，补全的表名/列名与实际执行库一致；
+  - ✅ AI Tab 补全可用：输入停顿后 LLM 续写 SQL 灰色显示，Tab 接受；默认关，避免意外延迟/费用；
+  - ✅ 复用现有 `stream_chat` 与 ADR-010 加密落盘的 LLM 配置，无新依赖；schema 缓存按库隔离；
+  - ⚠️ 代价：新增 `complete_sql` 命令 + `mysql::schema` 签名变更 + 前端内联补全扩展（~80 行）；每次补全走一次 LLM 请求（debounce 限流）；AI 补全与常规 popup 补全共用 Tab，靠 `Prec.highest` 区分（有 ghost 时优先接受 ghost）；
+  - ⚠️ 已知边界：AI 补全质量依赖模型；schema 提示仅当前库（不跨库），与 ADR-006 一致；AI 补全仅 MySQL（后端 `complete_sql` 显式拒绝非 MySQL）；Anthropic 路径与 ADR-023 同——未真实联调；
+  - 🔁 可逆：`aiCompleteOn` 默认 false，关闭即退回无 AI 补全；`mysql::schema` 的 `database` 为 `Option`，旧调用传 `None` 行为不变。
+
 ---
 
 ## 6. 资源预算（目标）
@@ -435,7 +464,7 @@ Phase 1–5 已落地，编译零警告，Redis 适配器经真实 redis 实例�
   - `crypto/`：AES-256-GCM 加解密 + 密钥文件隔离（ADR-010）
 - MySQL 适配器：`sqlx` 异步流式查询，结果集上限 `PAGE_LIMIT=200`（ADR-006 有界内存）；`to_csv` 导出（字段含逗号/引号/换行时自动加引号转义）
 - Redis 适配器：`redis` 0.27（tokio-comp）；通用命令 + `SCAN` 游标遍历（上限 500），**拦截 `KEYS`**；结果经 `DisplayResult::Redis` 用 `List` 呈现（ADR-007）；**`tokenize` 支持单/双引号与反斜杠转义**（`SET k "a b"` 正确解析）
-- LLM 适配器（Phase 3）：`llm/client` 流式调用 OpenAI 兼容 `/chat/completions`，增量 token 经 `BackendMsg::ChatToken` 实时上屏；`llm/tools::execute_query` 让模型按连接名执行 MySQL/Redis 查询，结果回灌后模型可继续（最多 5 轮工具迭代）；配置走 env `CHATQUERY_LLM_*`，**不落盘**（ADR-004）。回灌模型的查询结果在 `exec_builtin` 处经 `mask.rs` **脱敏**（ADR-012，默认开，仅云路径；本地 TUI 显示真实数据）。
+- LLM 适配器（Phase 3 / Phase 19）：`llm/client` 流式调用，按 `LlmProvider` 分发——OpenAI 兼容 `/chat/completions`（覆盖 OpenAI/阿里云/腾讯云/DeepSeek/智谱/OpenRouter/Ollama）或 Anthropic Messages API（`x-api-key`+`anthropic-version`、顶层 `system`、`tool_use` block）。增量 token 经 `BackendMsg::ChatToken` 实时上屏；`llm/tools::execute_query` 让模型按连接名执行 MySQL/Redis 查询，结果回灌后模型可继续（最多 5 轮工具迭代）。配置**运行时可变**：设置页选厂商/填 base_url/模型/key，`save_llm_config` 落地（`api_key` 经 AES-256-GCM 加密写入 `~/.config/chatquery/llm.json`，与 ADR-010 一致；非敏感字段明文）；无配置文件时回退 env `CHATQUERY_LLM_*`（ADR-004 的"不落盘"已被 ADR-023 取代）。回灌模型的查询结果在 `exec_builtin` 处经 `mask.rs` **脱敏**（ADR-012，默认开，仅云路径；本地 TUI 显示真实数据）。
 - MCP 适配器（Phase 4）：`mcp/{transport,host}` 以独立子进程跑 MCP server（裸 JSON-RPC stdio）；`McpHostManager` 懒连接、**崩溃跳过**，工具以 `mcp__<server>__<tool>` 命名空间合并进 LLM；`llm/tools::exec_tool` 按前缀路由到对应 server；配置走 env `CHATQUERY_MCP_SERVERS`（JSON 数组），**不落盘**（ADR-004/009）。`cargo test` 含真实握手集成测试（python3 fixture 验证 initialize/list/call 全链路）。
 - SQLite 持久化：**连接配置落盘前 AES-256-GCM 加密**（ADR-010），密钥独立存于 `~/.config/chatquery/key`（0600）；加载时旧明文记录自动重写加密。LLM/MCP 配置仍走 env，不落盘。
 - TUI：ratatui 面板（连接列表 / 查询编辑器·结果 或 Chat 输入·转录）；**Tab 栏**区分 Query/Chat 模式；**Ctrl+1/2/3** 直切 Connections/Editor/Chat（Tab 仍循环）；`Ctrl+Enter`/`F5` 执行查询或发送对话；`PgUp`/`PgDn` 滚动、`End` 回底、`Ctrl+E` 导出；连接面板 `a`/`e`/`d` 管理；焦点面板边框亮色高亮；底部**快捷键提示栏** + 运行状态栏；连接项加健康圆点（●/○）；密码字段遮蔽（ADR-013）
@@ -467,4 +496,5 @@ cargo build --release           # 实测 ~3.2MB（profile: opt-level=z, lto, str
 - 连接密码已加密落盘（ADR-010），但加密仅防被动泄露；若要彻底隔离（防已获账户的攻击者）需改用 OS keychain，列为后续可选项。
 - 桌面端（ADR-014）已成型：连接 CRUD、SQL 编辑器 + schema 自动补全、结果表格、Chat 流式面板、连接表单。TUI 主题切换已被桌面端取代（TUI 仍作为 `--features tui` 回退保留）。
 - 桌面端（ADR-015/016）已支持左侧导航树：连接按「环境→分组」聚合，**环境/组为可独立存在的一等容器（支持空容器，见 ADR-016）**，表可展开看列、点表只读浏览、双击列名插入编辑器；MySQL 走 库→表→列，Redis 走 db→key。
-- 桌面端待打磨：Redis 写回、视图写回、乐观锁/并发冲突检测、置 NULL 编辑、函数/事件/索引/外键树节点、连接管理快捷键、MCP 服务器可视化配置、Release 体积优化（musl/UPX）、图形化 ER 图（当前为列表形式）、CSV 数据导入、多数据库支持（Postgres/SQLite）、数据可视化图表（结果集转柱状/折线）、SQL 格式化器对存储过程等非标准语法的兼容。
+- 桌面端待打磨：Redis 写回、视图写回、乐观锁/并发冲突检测、置 NULL 编辑、函数/事件/索引/外键树节点、连接管理快捷键、MCP 服务器可视化配置、Release 体积优化（musl/UPX）、图形化 ER 图（当前为列表形式）、CSV 数据导入、多数据库支持（Postgres/SQLite）、数据可视化图表（结果集转柱状/折线）、SQL 格式化器对存储过程等非标准语法的兼容、**Anthropic 分支真实联调验证**（Phase 19 仅静态实现，沙箱无密钥/TTY 未跑通）、OS keychain 替代 AES 文件加密（ADR-010/023 记录的"未来可选"项）。
+- 已完成（Phase 19）：LLM 模型厂商配置页（可选供应商 + 运行时可变 + api_key 加密落盘）已落地，详见 ADR-023。

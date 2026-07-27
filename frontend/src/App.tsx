@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import {
   api,
   chatTurn,
@@ -12,12 +18,15 @@ import type {
   ConnInput,
   ConnSummary,
   ForeignKeyInfo,
+  LlmConfigDto,
+  LlmConfigInput,
   QueryItem,
   QueryOutput,
   Schema,
   StatusInfo,
   TableStructure,
   TreeModel,
+  VendorPreset,
 } from "./types";
 import { createEditor, type EditorHandle } from "./editor";
 import { Tree } from "./Tree";
@@ -77,6 +86,16 @@ const errOut = (msg: string): QueryOutput => ({
 export function App() {
   const [tree, setTree] = useState<TreeModel>({ environments: [] });
   const [selId, setSelId] = useState<string>("");
+  // Currently selected database (schema) in the tree. Ad-hoc SQL runs against
+  // this when set; cleared on connection switch so it falls back to the
+  // connection's default database.
+  const [selDb, setSelDb] = useState<string | null>(null);
+  // Latest connection/db snapshots so the AI-completion provider (registered
+  // once on the editor) always requests the right context without re-binding.
+  const selIdRef = useRef(selId);
+  selIdRef.current = selId;
+  const selDbRef = useRef(selDb);
+  selDbRef.current = selDb;
   const [status, setStatus] = useState<StatusInfo>({
     llm_enabled: false,
     mask_enabled: true,
@@ -119,6 +138,45 @@ export function App() {
   const [editing, setEditing] = useState<{ ri: number; ci: number } | null>(null);
   const [draft, setDraft] = useState("");
 
+  // --- Row multi-select + copy menu (Phase 20) -----------------------------
+  // `selRows` holds result-row indices selected for copy (JSON / INSERT / UPDATE).
+  const [selRows, setSelRows] = useState<Set<number>>(new Set());
+  const [selCol, setSelCol] = useState<number | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; rows: number[] } | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const lastAnchorRef = useRef(0);
+
+  // Drag-to-select (marquee) for the result grid: hold left mouse and move
+  // across rows to select a continuous range. Sits alongside the click / Ctrl /
+  // Shift selection handled in onRowClick below.
+  const dragRef = useRef<{ anchor: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  useEffect(() => {
+    const up = () => {
+      if (dragRef.current) {
+        dragRef.current = null;
+        setDragging(false);
+      }
+    };
+    window.addEventListener("mouseup", up);
+    return () => window.removeEventListener("mouseup", up);
+  }, []);
+
+  // Defensive: Tauri webview sometimes shows its own context menu (Reload /
+  // Inspect) even when React's onContextMenu tries to preventDefault. Stop it
+  // at the document level for anything inside the result table so our custom
+  // menu is the only one that can appear.
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest(".result-table")) {
+        e.preventDefault();
+      }
+    };
+    document.addEventListener("contextmenu", handler);
+    return () => document.removeEventListener("contextmenu", handler);
+  }, []);
+
   // --- Table structure view (ADR-020) --------------------------------------
   // When set, the result panel renders a structure view (columns, indexes,
   // DDL) instead of the data grid. Cleared on tab switch, new query, browse.
@@ -152,6 +210,73 @@ export function App() {
     const v = localStorage.getItem("cq_theme");
     return v === "light" ? "light" : "dark";
   });
+
+  // --- Inline AI completion (Tab-accept ghost text) ----------------------
+  // User preference, default OFF (Phase 21): avoids surprise LLM latency/cost.
+  // The backend enforces that a configured model is required.
+  const [aiCompleteOn, setAiCompleteOn] = useState<boolean>(
+    () => localStorage.getItem("cq_ai_complete") === "1"
+  );
+
+  // --- LLM vendor/key/model settings (Phase 19) --------------------------
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [presets, setPresets] = useState<VendorPreset[]>([]);
+  const [llmCfg, setLlmCfg] = useState<LlmConfigDto | null>(null);
+  const [cfgForm, setCfgForm] = useState<LlmConfigInput>({
+    vendor: "openai",
+    base_url: "",
+    model: "",
+    api_key: "",
+  });
+  const [cfgMsg, setCfgMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // Load vendor presets + current config when the settings dialog opens.
+  const openSettings = useCallback(async () => {
+    setCfgMsg(null);
+    try {
+      const [ps, cfg] = await Promise.all([
+        api.getVendorPresets(),
+        api.getLlmConfig(),
+      ]);
+      setPresets(ps);
+      setLlmCfg(cfg);
+      setCfgForm({
+        vendor: cfg.vendor || "openai",
+        base_url: cfg.base_url,
+        model: cfg.model,
+        api_key: "",
+      });
+    } catch (e) {
+      setCfgMsg({ ok: false, text: String(e) });
+    }
+    setSettingsOpen(true);
+  }, []);
+
+  // Picking a vendor prefills base_url/model from its preset defaults.
+  const onVendorChange = useCallback(
+    (vendor: string) => {
+      const p = presets.find((x) => x.id === vendor);
+      setCfgForm((f) => ({
+        ...f,
+        vendor,
+        base_url: p ? p.base_url : f.base_url,
+        model: p ? p.model : f.model,
+      }));
+    },
+    [presets]
+  );
+
+  const saveSettings = useCallback(async () => {
+    setCfgMsg(null);
+    try {
+      await api.saveLlmConfig(cfgForm);
+      setStatus(await api.getStatus());
+      setCfgMsg({ ok: true, text: "已保存" });
+      setTimeout(() => setSettingsOpen(false), 600);
+    } catch (e) {
+      setCfgMsg({ ok: false, text: String(e) });
+    }
+  }, [cfgForm]);
 
   /// Clear all edit overlays (edits + deletes + inserts + active cell). Called
   /// on tab switch, re-query, page change, save, and undo.
@@ -189,6 +314,176 @@ export function App() {
   const hasEdits =
     Object.keys(edits).length > 0 || deletes.size > 0 || inserts.length > 0;
 
+  // --- Row multi-select + copy menu (Phase 20) -----------------------------
+  // Drop the selection whenever the result or the active tab changes.
+  useEffect(() => {
+    setSelRows(new Set());
+    setSelCol(null);
+    setCtxMenu(null);
+  }, [active?.id, result]);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast((t) => (t === msg ? null : t)), 1800);
+  };
+
+  const onRowClick = (ri: number, e: ReactMouseEvent) => {
+    if (e.shiftKey && selRows.size > 0) {
+      const [a, b] = [lastAnchorRef.current, ri].sort((x, y) => x - y);
+      const next = new Set<number>();
+      for (let k = a; k <= b; k++) next.add(k);
+      setSelRows(next);
+    } else if (e.metaKey || e.ctrlKey) {
+      setSelRows((prev) => {
+        const n = new Set(prev);
+        if (n.has(ri)) n.delete(ri);
+        else n.add(ri);
+        return n;
+      });
+      lastAnchorRef.current = ri;
+    } else {
+      setSelRows(new Set([ri]));
+      lastAnchorRef.current = ri;
+    }
+  };
+
+  // Begin a marquee drag from this row (left button only). Selection is NOT
+  // changed here yet — a plain click still falls through to onRowClick, while
+  // moving across rows (onRowMouseEnter) extends the range. Clicks inside an
+  // editor input or the row delete button are ignored so editing isn't hijacked.
+  const onRowMouseDown = (ri: number, e: ReactMouseEvent) => {
+    if (e.button !== 0) return;
+    const t = e.target as HTMLElement;
+    if (t.closest(".cell-edit") || t.closest(".row-del-btn")) return;
+    dragRef.current = { anchor: ri };
+    setDragging(true);
+  };
+
+  // While dragging, every row the pointer enters extends the selection to the
+  // range between the anchor and the hovered row.
+  const onRowMouseEnter = (ri: number) => {
+    if (!dragRef.current) return;
+    const a = dragRef.current.anchor;
+    const [lo, hi] = a <= ri ? [a, ri] : [ri, a];
+    const next = new Set<number>();
+    for (let k = lo; k <= hi; k++) next.add(k);
+    setSelRows(next);
+    lastAnchorRef.current = ri;
+  };
+
+  const onRowCtx = (ri: number, e: ReactMouseEvent) => {
+    e.preventDefault();
+    const eff = selRows.has(ri)
+      ? Array.from(selRows).sort((a, b) => a - b)
+      : [ri];
+    setSelRows(new Set(eff));
+    lastAnchorRef.current = ri;
+    // Clamp to viewport so the menu never overflows off-screen.
+    const x = Math.min(e.clientX, window.innerWidth - 220);
+    const y = Math.min(e.clientY, window.innerHeight - 130);
+    setCtxMenu({ x, y, rows: eff });
+  };
+
+  const copyRowsAs = async (kind: "json" | "insert" | "update") => {
+    if (!result || result.kind !== "table") return;
+    const eff = ctxMenu?.rows ?? Array.from(selRows);
+    const rows = eff
+      .map((ri) => result.rows[ri])
+      .filter(Boolean) as string[][];
+    if (rows.length === 0) return;
+    let text = "";
+    if (kind === "json") text = rowsToJson(result.columns, rows);
+    else if (kind === "insert" && browseCtx)
+      text = rowsToInsert(browseCtx.table, result.columns, rows);
+    else if (kind === "update" && browseCtx)
+      text = rowsToUpdate(browseCtx.table, result.columns, result.primaryKeys ?? [], rows);
+    await copyText(text);
+    showToast(
+      `已复制 ${rows.length} 行 · ${
+        kind === "json" ? "JSON" : kind === "insert" ? "INSERT" : "UPDATE"
+      }`
+    );
+    setCtxMenu(null);
+  };
+
+  // --- Column selection (click a field) + copy column as JSON -----------
+  // Clicking a data cell (or a column header) selects the whole column. A
+  // plain click clears the row selection so the two selection modes don't
+  // fight. Modifier+click still delegates to row selection, so Ctrl/Shift
+  // multi-select and the marquee drag remain untouched.
+  const onCellClick = (ri: number, ci: number, e: ReactMouseEvent) => {
+    e.stopPropagation();
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {
+      onRowClick(ri, e);
+      return;
+    }
+    // Plain left click on a field: select the whole column only. The copy
+    // menu is reserved for right-click (see onCellCtx) so a normal click never
+    // pops a menu — matching the user's expectation.
+    setSelCol(ci);
+    setSelRows(new Set());
+    lastAnchorRef.current = ri;
+  };
+
+  // Right-click a field: pin the column (for "copy as JSON") and keep the row
+  // selection behaviour identical to before — if the row isn't already in the
+  // selection it becomes the sole selected row, so the row menu stays useful.
+  const onCellCtx = (ri: number, ci: number, e: ReactMouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelCol(ci);
+    const eff = selRows.has(ri)
+      ? Array.from(selRows).sort((a, b) => a - b)
+      : [ri];
+    setSelRows(new Set(eff));
+    lastAnchorRef.current = ri;
+    const x = Math.min(e.clientX, window.innerWidth - 220);
+    const y = Math.min(e.clientY, window.innerHeight - 130);
+    setCtxMenu({ x, y, rows: eff });
+  };
+
+  // Serialize a single column to a JSON array, applying the same NULL / bool /
+  // number coercion used by rowsToJson so the output is clean, typed JSON.
+  const copyColAsJson = async (ci: number) => {
+    if (!result || result.kind !== "table" || ci < 0) return;
+    const colName = result.columns[ci];
+    const arr = result.rows.map((r) => {
+      const v = r[ci] ?? "";
+      const low = v.toLowerCase();
+      if (v === "NULL") return null;
+      if (low === "true") return true;
+      if (low === "false") return false;
+      if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+      return v;
+    });
+    await copyText(JSON.stringify(arr, null, 2));
+    showToast(`已复制列 ${colName} · ${arr.length} 个值 (JSON)`);
+    setCtxMenu(null);
+  };
+
+  // Ctrl/Cmd+A in the result grid selects every row (unless focus is in the
+  // editor, where it should select editor text instead).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.key.toLowerCase() === "a" &&
+        result?.kind === "table" &&
+        !editing
+      ) {
+        const ae = document.activeElement as HTMLElement | null;
+        const inEditor =
+          !!ae && (!!ae.closest(".editor-host") || ae.tagName === "INPUT" || ae.tagName === "TEXTAREA");
+        if (!inEditor) {
+          e.preventDefault();
+          setSelRows(new Set(result.rows.map((_, i) => i)));
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [result, editing]);
+
   // Flat lookup of connections across the tree model.
   const findConn = useCallback(
     (id: string): ConnSummary | undefined => {
@@ -219,14 +514,14 @@ export function App() {
   }, [selId]);
 
   const loadSchema = useCallback(
-    async (id: string) => {
+    async (id: string, db?: string | null) => {
       const conn = findConn(id);
       if (!conn || conn.db_type !== "mysql") {
         editorRef.current?.setSchema({ tables: [] });
         return;
       }
       try {
-        const schema: Schema = await api.getSchema(id);
+        const schema: Schema = await api.getSchema(id, db);
         editorRef.current?.setSchema(schema);
       } catch (e) {
         console.error("load schema failed", e);
@@ -234,6 +529,28 @@ export function App() {
     },
     [findConn]
   );
+
+  // Keep the editor's autocomplete schema in sync with the selected connection
+  // and database. Re-runs whenever either changes (ADR-006: bounded to one db).
+  const loadSchemaRef = useRef(loadSchema);
+  loadSchemaRef.current = loadSchema;
+  useEffect(() => {
+    if (selId) loadSchemaRef.current(selId, selDb);
+  }, [selId, selDb]);
+
+  // Provider for inline AI completion: asks the LLM for the SQL suffix that
+  // completes `prefix`. Returns null on any failure so the editor shows nothing.
+  // Stable (reads live context via refs) — registered once on the editor.
+  const aiProvider = useCallback(async (prefix: string): Promise<string | null> => {
+    const id = selIdRef.current;
+    const db = selDbRef.current;
+    if (!id) return null;
+    try {
+      return await api.completeSql(id, db, prefix);
+    } catch {
+      return null;
+    }
+  }, []);
 
   // Build a status-bar entry from a finished query result + elapsed ms.
   // Errors arrive as a `redis` result with `note` set (errOut), so we detect
@@ -269,17 +586,17 @@ export function App() {
     setResultTab("data");
     const t0 = performance.now();
     try {
-      const r = await api.executeQuery(selId, q);
+      const r = await api.executeQuery(selId, q, selDb);
       const ms = Math.round(performance.now() - t0);
       setActiveTab((t) => ({ ...t, result: r, browseCtx: null }));
-      void api.logQuery(selId, null, q);
+      void api.logQuery(selId, selDb, q);
       setRunInfo(runStatFor(r, ms));
     } catch (e) {
       const ms = Math.round(performance.now() - t0);
       setActiveTab((t) => ({ ...t, result: errOut(String(e)), browseCtx: null }));
       setRunInfo({ kind: "err", text: `✗ ${ms}ms · ${String(e)}` });
     }
-  }, [selId]);
+  }, [selId, selDb]);
 
   // Keep a live ref so the editor's run-key (registered once) always calls the
   // latest `runQuery` closure with the current selected connection.
@@ -297,7 +614,7 @@ export function App() {
     setResultTab("data");
     const t0 = performance.now();
     try {
-      const r = await api.explainQuery(selId, q);
+      const r = await api.explainQuery(selId, q, selDb);
       const ms = Math.round(performance.now() - t0);
       setActiveTab((t) => ({ ...t, result: r, browseCtx: null }));
       setRunInfo(runStatFor(r, ms));
@@ -306,12 +623,20 @@ export function App() {
       setActiveTab((t) => ({ ...t, result: errOut(String(e)), browseCtx: null }));
       setRunInfo({ kind: "err", text: `✗ ${ms}ms · ${String(e)}` });
     }
-  }, [selId]);
+  }, [selId, selDb]);
 
   const selectConn = (id: string) => {
     setSelId(id);
-    void loadSchema(id);
+    setSelDb(null);
   };
+
+  // Selecting a database node in the tree makes it the context for ad-hoc SQL.
+  // The schema is (re)loaded by the effect below whenever the connection or
+  // selected database changes, so we only flip state here.
+  const onSelectDb = useCallback((connId: string, db: string) => {
+    setSelDb(db);
+    setSelId((prev) => (prev === connId ? prev : connId));
+  }, []);
 
   const browseTable = useCallback(
     async (
@@ -323,6 +648,7 @@ export function App() {
     ) => {
       clearEditState();
       setResultTab("data");
+      setSelDb(db);
       const t0 = performance.now();
       try {
         const r = await api.browseTable(connId, db, table, page, pageSize);
@@ -574,12 +900,22 @@ export function App() {
     if (result.columns.length === 0) return <div className="empty">无结果集</div>;
     const pkSet = new Set(result.primaryKeys ?? []);
     return (
-      <table className="result-table">
+      <table className={"result-table" + (dragging ? " selecting" : "")}>
         <thead>
           <tr>
             {editable && <th className="row-action-col" />}
             {result.columns.map((c, i) => (
-              <th key={i} className={pkSet.has(c) ? "pk" : ""}>
+              <th
+                key={i}
+                className={
+                  (pkSet.has(c) ? "pk " : "") + (selCol === i ? "col-selected " : "")
+                }
+                onClick={() => {
+                  setSelCol(i);
+                  setSelRows(new Set());
+                }}
+                title="点击选中整列"
+              >
                 {c}
                 {pkSet.has(c) ? " 🔑" : ""}
               </th>
@@ -590,13 +926,26 @@ export function App() {
           {result.rows.map((row, ri) => {
             const isDeleted = deletes.has(ri);
             return (
-              <tr key={ri} className={isDeleted ? "row-deleted" : ""}>
+              <tr
+                key={ri}
+                className={
+                  (isDeleted ? "row-deleted " : "") +
+                  (selRows.has(ri) ? "row-selected" : "")
+                }
+                onMouseDown={(e) => onRowMouseDown(ri, e)}
+                onMouseEnter={() => onRowMouseEnter(ri)}
+                onClick={(e) => onRowClick(ri, e)}
+                onContextMenu={(e) => onRowCtx(ri, e)}
+              >
                 {editable && (
                   <td className="row-action-col">
                     <button
                       className="row-del-btn"
                       title={isDeleted ? "取消删除" : "标记删除"}
-                      onClick={() => toggleDelete(ri)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleDelete(ri);
+                      }}
                     >
                       {isDeleted ? "↩" : "×"}
                     </button>
@@ -611,11 +960,19 @@ export function App() {
                       key={ci}
                       className={
                         (ov !== undefined ? "dirty " : "") +
-                        (editable && !isDeleted ? "editable" : "")
+                        (editable && !isDeleted ? "editable " : "") +
+                        (selCol === ci ? "col-selected " : "")
                       }
-                      title={editable && !isDeleted ? "双击编辑单元格" : undefined}
+                      title={
+                        editable && !isDeleted
+                          ? "双击编辑单元格 · 单击选中整列"
+                          : "单击选中整列 · 右键复制"
+                      }
+                      onClick={(e) => onCellClick(ri, ci, e)}
+                      onContextMenu={(e) => onCellCtx(ri, ci, e)}
                       onDoubleClick={() => {
                         if (!editable || isDeleted) return;
+                        setCtxMenu(null);
                         setEditing({ ri, ci });
                         setDraft(v);
                       }}
@@ -625,6 +982,7 @@ export function App() {
                           className="cell-edit"
                           autoFocus
                           value={draft}
+                          onClick={(e) => e.stopPropagation()}
                           onChange={(e) => setDraft(e.target.value)}
                           onBlur={commitCell}
                           onKeyDown={(e) => {
@@ -1071,13 +1429,19 @@ export function App() {
         const id = activeTabIdRef.current;
         setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, sql: doc } : t)));
       },
-      () => runQueryRef.current()
+      () => runQueryRef.current(),
+      aiProvider
     );
     editorRef.current = editor;
     const init = tabs.find((t) => t.id === activeTabId);
     if (init) editor.replaceValue(init.sql);
     return () => editor.view.destroy();
   }, []);
+
+  // Push the AI-completion toggle to the editor whenever it flips.
+  useEffect(() => {
+    editorRef.current?.setAiComplete(aiCompleteOn, aiProvider);
+  }, [aiCompleteOn, aiProvider]);
 
   // Streaming chat event listeners.
   useEffect(() => {
@@ -1117,6 +1481,13 @@ export function App() {
           <div className="head-actions">
             <button
               className="icon-btn"
+              title="LLM 模型设置"
+              onClick={() => void openSettings()}
+            >
+              ⚙
+            </button>
+            <button
+              className="icon-btn"
               title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}
               onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
             >
@@ -1149,6 +1520,7 @@ export function App() {
         <Tree
           tree={tree}
           selectedConnId={selId}
+          selectedDb={selDb}
           onSelectConn={selectConn}
           onBrowseTable={browseTable}
           onBrowseRedisKey={browseRedisKey}
@@ -1162,13 +1534,14 @@ export function App() {
           onDeleteContainer={(id) => void removeContainer(id)}
           onShowStructure={showStructure}
           onShowRelationships={showRelationships}
+          onSelectDb={onSelectDb}
         />
         <div className="sidebar-actions">
           <button onClick={() => openEditFor(selId)} disabled={!selId}>
-            编辑
+            编辑连接
           </button>
           <button onClick={() => delConnFor(selId)} disabled={!selId}>
-            删除
+            删除连接
           </button>
         </div>
       </aside>
@@ -1203,7 +1576,15 @@ export function App() {
             </button>
           </div>
           <div className="pane-head">
-            <span>查询编辑器 (Ctrl/Cmd+Enter 执行)</span>
+            <span>
+              查询编辑器
+              {selDb ? (
+                <span className="ctx-db"> · 库: {selDb}</span>
+              ) : (
+                <span className="ctx-db ctx-db-default"> · 库: 默认</span>
+              )}
+              <span className="hint"> (Ctrl/Cmd+Enter 执行)</span>
+            </span>
             <div className="pane-actions">
               <button onClick={() => editorRef.current?.formatSql()} disabled={!selId}>
                 格式化
@@ -1296,6 +1677,7 @@ export function App() {
           {selId && findConn(selId) && (
             <span className="status-conn">● {findConn(selId)!.name}</span>
           )}
+          {selId && selDb && <span className="status-db">▦ {selDb}</span>}
         </div>
       </main>
 
@@ -1500,6 +1882,143 @@ export function App() {
           </div>
         </div>
       )}
+
+      {settingsOpen && (
+        <div className="modal-mask" onClick={() => setSettingsOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>LLM 模型设置</h3>
+            <label>
+              模型厂商
+              <select
+                value={cfgForm.vendor}
+                onChange={(e) => onVendorChange(e.target.value)}
+              >
+                {presets.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                    {p.provider === "anthropic" ? "（Anthropic）" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              API Base URL
+              <input
+                value={cfgForm.base_url}
+                placeholder="https://api.openai.com/v1"
+                onChange={(e) =>
+                  setCfgForm({ ...cfgForm, base_url: e.target.value })
+                }
+              />
+            </label>
+            <label>
+              模型名称
+              <input
+                value={cfgForm.model}
+                placeholder="gpt-4o-mini"
+                onChange={(e) => setCfgForm({ ...cfgForm, model: e.target.value })}
+              />
+            </label>
+            <label>
+              API Key
+              <input
+                type="password"
+                value={cfgForm.api_key}
+                placeholder={llmCfg?.enabled ? "已保存（留空保持不变）" : "输入密钥"}
+                onChange={(e) =>
+                  setCfgForm({ ...cfgForm, api_key: e.target.value })
+                }
+              />
+            </label>
+            <label className="cfg-check">
+              <input
+                type="checkbox"
+                checked={aiCompleteOn}
+                onChange={(e) => {
+                  const v = e.target.checked;
+                  setAiCompleteOn(v);
+                  localStorage.setItem("cq_ai_complete", v ? "1" : "0");
+                }}
+              />
+              <span>
+                AI 内联补全（Tab 接受灰色建议）
+                <small>
+                  输入停顿后由 LLM 续写 SQL；需先配置模型。默认关闭，以免产生延迟与费用。
+                </small>
+              </span>
+            </label>
+            {cfgMsg && (
+              <div className={"cfg-msg " + (cfgMsg.ok ? "ok" : "err")}>
+                {cfgMsg.text}
+              </div>
+            )}
+            <div className="modal-actions">
+              <button onClick={() => setSettingsOpen(false)}>取消</button>
+              <button className="primary" onClick={() => void saveSettings()}>
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {ctxMenu && (
+        <>
+          <div
+            className="ctx-backdrop"
+            onMouseDown={() => setCtxMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setCtxMenu(null);
+            }}
+          />
+          <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
+            {selCol !== null && (
+              <>
+                <div className="ctx-title">
+                  列：{result?.kind === "table" ? result.columns[selCol] : ""}
+                </div>
+                <button onClick={() => void copyColAsJson(selCol)}>
+                  复制选中列为 JSON
+                </button>
+                <div className="ctx-sep" />
+              </>
+            )}
+            <div className="ctx-title">复制选中 {ctxMenu.rows.length} 行</div>
+            <button onClick={() => void copyRowsAs("json")}>复制为 JSON</button>
+            <button
+              disabled={!browseCtx}
+              onClick={() => void copyRowsAs("insert")}
+              title={browseCtx ? undefined : "仅浏览表时可生成 INSERT 语句"}
+            >
+              复制为 INSERT 语句{browseCtx ? "" : "（仅浏览表）"}
+            </button>
+            <button
+              disabled={
+                !browseCtx ||
+                (result?.kind === "table" && (result.primaryKeys?.length ?? 0) === 0)
+              }
+              onClick={() => void copyRowsAs("update")}
+              title={
+                !browseCtx
+                  ? "仅浏览表时可生成 UPDATE 语句"
+                  : result?.kind === "table" && (result.primaryKeys?.length ?? 0) === 0
+                  ? "该结果无主键，无法生成 UPDATE"
+                  : undefined
+              }
+            >
+              复制为 UPDATE 语句
+              {!browseCtx
+                ? "（仅浏览表）"
+                : result?.kind === "table" && (result.primaryKeys?.length ?? 0) === 0
+                ? "（无主键）"
+                : ""}
+            </button>
+          </div>
+        </>
+      )}
+
+      {toast && <div className="toast">{toast}</div>}
     </div>
   );
 }
@@ -1525,6 +2044,93 @@ function exportCsv(r: Extract<QueryOutput, { kind: "table" }>, ctx: BrowseCtx | 
   a.download = `${base}-${Date.now()}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/// Serialize a value exactly as MySQL would inline it: NULL keyword, TRUE/FALSE,
+/// raw numbers, otherwise a single-quoted + escaped string. The backend emits
+/// SQL NULL as the literal string "NULL", so it round-trips correctly.
+function sqlLit(v: string): string {
+  if (v === "NULL") return "NULL";
+  const low = v.toLowerCase();
+  if (low === "true") return "TRUE";
+  if (low === "false") return "FALSE";
+  if (/^-?\d+(\.\d+)?$/.test(v)) return v;
+  return "'" + v.replace(/'/g, "''") + "'";
+}
+
+/// Selected rows -> pretty JSON array. Numbers/booleans/NULL are typed;
+/// everything else stays a string (the grid has no column-type info).
+function rowsToJson(columns: string[], rows: string[][]): string {
+  const objs = rows.map((r) => {
+    const o: Record<string, unknown> = {};
+    columns.forEach((c, i) => {
+      const v = r[i] ?? "";
+      const low = v.toLowerCase();
+      if (v === "NULL") o[c] = null;
+      else if (low === "true") o[c] = true;
+      else if (low === "false") o[c] = false;
+      else if (/^-?\d+(\.\d+)?$/.test(v)) o[c] = Number(v);
+      else o[c] = v;
+    });
+    return o;
+  });
+  return JSON.stringify(objs, null, 2);
+}
+
+function rowsToInsert(table: string, columns: string[], rows: string[][]): string {
+  const escId = (c: string) => "`" + c.replace(/`/g, "``") + "`";
+  const cols = columns.map(escId).join(", ");
+  const tuples = rows
+    .map((r) => "(" + r.map((v) => sqlLit(v ?? "")).join(", ") + ")")
+    .join(",\n  ");
+  return `INSERT INTO \`${table.replace(/`/g, "``")}\` (${cols}) VALUES\n  ${tuples};`;
+}
+
+function rowsToUpdate(
+  table: string,
+  columns: string[],
+  pks: string[],
+  rows: string[][]
+): string {
+  const escId = (c: string) => "`" + c.replace(/`/g, "``") + "`";
+  const pkIdx = pks.map((p) => columns.indexOf(p)).filter((i) => i >= 0);
+  const stmts = rows.map((r) => {
+    const set = columns
+      .map((c, i) =>
+        pkIdx.includes(i) ? null : `${escId(c)}=${sqlLit(r[i] ?? "")}`
+      )
+      .filter(Boolean)
+      .join(", ");
+    const where = pkIdx
+      .map((i) => `${escId(columns[i])}=${sqlLit(r[i] ?? "")}`)
+      .join(" AND ");
+    return `UPDATE \`${table.replace(/`/g, "``")}\` SET ${set} WHERE ${where};`;
+  });
+  return stmts.join("\n");
+}
+
+async function copyText(text: string): Promise<void> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    /* fall through to legacy path */
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.top = "-9999px";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    document.execCommand("copy");
+  } catch {
+    /* ignore */
+  }
+  document.body.removeChild(ta);
 }
 
 function fmtTime(ts: number): string {

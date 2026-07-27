@@ -78,7 +78,7 @@ fn key_path() -> PathBuf {
     dir.join("key")
 }
 
-fn config_dir() -> PathBuf {
+pub(crate) fn config_dir() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         return PathBuf::from(xdg).join("chatquery");
     }

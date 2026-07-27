@@ -3,8 +3,9 @@ use chatquery::db::container::ContainerKind;
 use chatquery::db::mysql::{
     ColumnInfo, ForeignKeyInfo, QueryResult, Schema, TableMeta, TableStructure,
 };
+use chatquery::llm::client::stream_chat;
 use chatquery::model::BackendMsg;
-use chatquery::model::ChatMessage;
+use chatquery::model::{ChatMessage, ChatRole};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
@@ -381,6 +382,7 @@ pub async fn explain_query(
     state: State<'_, AppState>,
     conn_id: String,
     query: String,
+    db: String,
 ) -> Result<QueryOutput, String> {
     let cfg = {
         let store = state.store.lock().unwrap();
@@ -395,8 +397,10 @@ pub async fn explain_query(
     match cfg.db_type {
         DbType::Mysql => {
             let sql = format!("EXPLAIN {}", query);
-            let r: QueryResult =
-                chatquery::db::mysql::query(&cfg, &sql).await.map_err(|e| e.to_string())?;
+            let target_db: Option<&str> = if db.is_empty() { None } else { Some(db.as_str()) };
+            let r: QueryResult = chatquery::db::mysql::query(&cfg, &sql, target_db)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(QueryOutput::Table {
                 columns: r.columns,
                 rows: r.rows,
@@ -434,6 +438,7 @@ pub async fn execute_query(
     state: State<'_, AppState>,
     conn_id: String,
     query: String,
+    db: String,
 ) -> Result<QueryOutput, String> {
     let cfg = {
         let store = state.store.lock().unwrap();
@@ -447,8 +452,10 @@ pub async fn execute_query(
 
     match cfg.db_type {
         DbType::Mysql => {
-            let r: QueryResult =
-                chatquery::db::mysql::query(&cfg, &query).await.map_err(|e| e.to_string())?;
+            let target_db: Option<&str> = if db.is_empty() { None } else { Some(db.as_str()) };
+            let r: QueryResult = chatquery::db::mysql::query(&cfg, &query, target_db)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(QueryOutput::Table {
                 columns: r.columns,
                 rows: r.rows,
@@ -477,23 +484,26 @@ pub async fn execute_query(
 pub async fn get_schema(
     state: State<'_, AppState>,
     conn_id: String,
+    db: Option<String>,
 ) -> Result<Schema, String> {
-    // Serve from the bounded per-connection cache when available.
-    if let Some(s) = state.schema_cache.lock().unwrap().get(&conn_id) {
+    load_schema_cached(&state, &conn_id, db.as_deref()).await
+}
+
+/// Load a connection's schema for a specific database, served from the bounded
+/// per-(connection, database) cache. `db = None` resolves to the connection's
+/// default database. Powers editor autocomplete and AI completion.
+async fn load_schema_cached(
+    state: &State<'_, AppState>,
+    conn_id: &str,
+    db: Option<&str>,
+) -> Result<Schema, String> {
+    let key = format!("{}::{}", conn_id, db.unwrap_or("DEFAULT"));
+    if let Some(s) = state.schema_cache.lock().unwrap().get(&key) {
         return Ok(s.clone());
     }
-    let cfg = {
-        let store = state.store.lock().unwrap();
-        store
-            .list()
-            .iter()
-            .find(|c| c.id == conn_id)
-            .cloned()
-    }
-    .ok_or_else(|| "连接未找到".to_string())?;
-
+    let cfg = resolve_cfg(state, conn_id).ok_or_else(|| "连接未找到".to_string())?;
     let schema = match cfg.db_type {
-        DbType::Mysql => chatquery::db::mysql::schema(&cfg)
+        DbType::Mysql => chatquery::db::mysql::schema(&cfg, db)
             .await
             .map_err(|e| e.to_string())?,
         DbType::Redis => Schema { tables: vec![] },
@@ -502,8 +512,87 @@ pub async fn get_schema(
         .schema_cache
         .lock()
         .unwrap()
-        .insert(conn_id, schema.clone());
+        .insert(key, schema.clone());
     Ok(schema)
+}
+
+/// Build a compact, LLM-friendly description of a schema: one line per table
+/// with its column names. Bounded to the selected database (ADR-006).
+fn summarize_schema(schema: &Schema, db: &str) -> String {
+    if schema.tables.is_empty() {
+        return format!("(no tables found in `{}`)", db);
+    }
+    let mut lines: Vec<String> = Vec::with_capacity(schema.tables.len());
+    for t in &schema.tables {
+        let cols: Vec<&str> = t.columns.iter().map(|c| c.name.as_str()).collect();
+        lines.push(format!("- `{}`({})", t.name, cols.join(", ")));
+    }
+    lines.join("\n")
+}
+
+/// Strip a leading/trailing markdown code fence (```sql … ```) if the model
+/// wrapped its answer. Returns None when no fence is present.
+fn strip_code_fence(text: &str) -> Option<String> {
+    let t = text.trim();
+    if !t.starts_with("```") {
+        return None;
+    }
+    let end = t.rfind("```")?;
+    if end == 0 {
+        return None;
+    }
+    let body = &t[3..end];
+    // drop an optional language tag on the opening fence (e.g. "```sql")
+    let body = body.lines().skip(1).collect::<Vec<_>>().join("\n");
+    Some(body.trim().to_string())
+}
+
+/// Inline AI completion (Copilot-style): given the SQL typed so far, ask the
+/// configured LLM for the remaining tokens and return them as a suffix. The
+/// editor renders this as ghost text and accepts it on Tab. Off unless the
+/// user enables it in settings (default off — avoids surprise latency/cost).
+#[tauri::command]
+pub async fn complete_sql(
+    state: State<'_, AppState>,
+    conn_id: String,
+    db: Option<String>,
+    prefix: String,
+) -> Result<String, String> {
+    let llm = state.llm.lock().unwrap().clone();
+    if !llm.enabled() {
+        return Err("LLM 未配置".to_string());
+    }
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    if cfg.db_type != DbType::Mysql {
+        return Err("AI 补全仅支持 MySQL".to_string());
+    }
+    if prefix.trim().is_empty() {
+        return Ok(String::new());
+    }
+    let schema = load_schema_cached(&state, &conn_id, db.as_deref()).await?;
+    let db_name = db.clone().unwrap_or_else(|| cfg.database.clone());
+    let schema_text = summarize_schema(&schema, &db_name);
+    let system = format!(
+        "You are a MySQL SQL completion engine. The user has typed the partial SQL shown after 'Partial SQL:'. The cursor is at the end of that text. Return ONLY the remaining SQL tokens that complete the current statement — do not repeat the prefix, do not add a trailing semicolon unless the statement is clearly complete, output raw SQL only with no markdown fences, no comments, and no explanation. If there is no sensible completion, return an empty string.\n\nSchema (database `{}`):\n{}",
+        db_name, schema_text
+    );
+    let messages = vec![
+        ChatMessage {
+            role: ChatRole::System,
+            content: system,
+            tool_calls: None,
+            tool_call_id: None,
+        },
+        ChatMessage::user(prefix),
+    ];
+    let choice = stream_chat(&llm, &messages, &[], &mut |_| {})
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut out = choice.content;
+    if let Some(stripped) = strip_code_fence(&out) {
+        out = stripped;
+    }
+    Ok(out.trim().to_string())
 }
 
 /// Resolve a stored connection config by id (cloned out of the lock so we
@@ -732,9 +821,92 @@ pub async fn browse_redis_key(
 #[tauri::command]
 pub fn get_status(state: State<AppState>) -> StatusInfo {
     StatusInfo {
-        llm_enabled: state.llm.enabled(),
+        llm_enabled: state.llm.lock().unwrap().enabled(),
         mask_enabled: chatquery::mask::masking_enabled(),
     }
+}
+
+/// Non-secret view of the current LLM config for the settings UI. The api_key
+/// is deliberately NOT returned — the form shows an empty field and only sends
+/// a new key when the user types one (empty input = keep the stored key).
+#[derive(Serialize)]
+pub struct LlmConfigDto {
+    pub vendor: String,
+    pub base_url: String,
+    pub model: String,
+    pub provider: String,
+    pub enabled: bool,
+}
+
+#[tauri::command]
+pub fn get_llm_config(state: State<AppState>) -> LlmConfigDto {
+    let llm = state.llm.lock().unwrap();
+    LlmConfigDto {
+        vendor: llm.vendor.clone(),
+        base_url: llm.base_url.clone(),
+        model: llm.model.clone(),
+        provider: llm.provider.as_str().to_string(),
+        enabled: llm.enabled(),
+    }
+}
+
+/// A selectable vendor preset surfaced in the settings dropdown.
+#[derive(Serialize)]
+pub struct VendorPresetDto {
+    pub id: String,
+    pub label: String,
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+}
+
+#[tauri::command]
+pub fn get_vendor_presets() -> Vec<VendorPresetDto> {
+    chatquery::config::VENDOR_PRESETS
+        .iter()
+        .map(|p| VendorPresetDto {
+            id: p.id.to_string(),
+            label: p.label.to_string(),
+            provider: p.provider.as_str().to_string(),
+            base_url: p.base_url.to_string(),
+            model: p.model.to_string(),
+        })
+        .collect()
+}
+
+/// Mutable LLM config input from the settings UI.
+#[derive(Deserialize)]
+pub struct LlmConfigInput {
+    pub vendor: String,
+    pub base_url: String,
+    pub model: String,
+    /// Empty = keep the currently stored key (don't overwrite with blank).
+    #[serde(default)]
+    pub api_key: String,
+}
+
+#[tauri::command]
+pub fn save_llm_config(
+    state: State<AppState>,
+    input: LlmConfigInput,
+) -> Result<(), String> {
+    let provider = chatquery::config::provider_for_vendor(&input.vendor);
+    let existing = state.llm.lock().unwrap().api_key.clone();
+    let api_key = if input.api_key.is_empty() {
+        existing
+    } else {
+        input.api_key
+    };
+    let cfg = chatquery::config::LlmConfig {
+        provider,
+        vendor: input.vendor,
+        base_url: input.base_url,
+        api_key,
+        model: input.model,
+    };
+    cfg.save()?;
+    *state.llm.lock().unwrap() = cfg;
+    Ok(())
 }
 
 /// Run one LLM turn. The model streams tokens (and emits tool notices) which
@@ -749,7 +921,7 @@ pub async fn chat_turn(
     messages: Vec<ChatMessage>,
 ) -> Result<(), String> {
     let conns: Vec<ConnectionConfig> = state.store.lock().unwrap().list().to_vec();
-    let llm = state.llm.clone();
+    let llm = state.llm.lock().unwrap().clone();
     let mcp = state.mcp.clone();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackendMsg>();

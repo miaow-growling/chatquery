@@ -92,6 +92,34 @@ export interface StatusInfo {
   mask_enabled: boolean;
 }
 
+/// Current LLM config shown in the settings UI. `api_key` is intentionally
+/// omitted — the form shows a blank field and only sends a new key.
+export interface LlmConfigDto {
+  vendor: string;
+  base_url: string;
+  model: string;
+  provider: string;
+  enabled: boolean;
+}
+
+/// A selectable vendor preset for the settings dropdown.
+export interface VendorPreset {
+  id: string;
+  label: string;
+  provider: string;
+  base_url: string;
+  model: string;
+}
+
+/// Settings form payload sent to `save_llm_config`. `api_key` empty = keep
+/// the stored key.
+export interface LlmConfigInput {
+  vendor: string;
+  base_url: string;
+  model: string;
+  api_key: string;
+}
+
 /// A logged or saved query from the `queries` table. `name` is null for
 /// auto-logged history entries and set for user-named snippets.
 export interface QueryItem {

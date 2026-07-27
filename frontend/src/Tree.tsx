@@ -14,10 +14,10 @@ const PAGE_SIZE = 200;
 // ---------------------------------------------------------------------------
 
 type Node =
-  | { kind: "env"; key: string; id: string; name: string; children: Node[] }
-  | { kind: "group"; key: string; id: string; name: string; children: Node[] }
-  | { kind: "conn"; key: string; conn: ConnSummary }
-  | { kind: "db"; key: string; connId: string; db: string }
+  | { kind: "env"; key: string; id: string; name: string; children: Node[]; count?: number }
+  | { kind: "group"; key: string; id: string; name: string; children: Node[]; count?: number }
+  | { kind: "conn"; key: string; conn: ConnSummary; count?: number }
+  | { kind: "db"; key: string; connId: string; db: string; count?: number }
   | {
       kind: "folder";
       key: string;
@@ -25,6 +25,7 @@ type Node =
       connId: string;
       db: string;
       folder: "tables" | "views";
+      count?: number;
     }
   | {
       kind: "table";
@@ -33,6 +34,7 @@ type Node =
       db: string;
       name: string;
       isView: boolean;
+      count?: number;
     }
   | {
       kind: "column";
@@ -42,7 +44,7 @@ type Node =
       table: string;
       col: ColumnInfo;
     }
-  | { kind: "redisdb"; key: string; connId: string; db: number }
+  | { kind: "redisdb"; key: string; connId: string; db: number; count?: number }
   | { kind: "rediskey"; key: string; connId: string; db: number; name: string };
 
 const LAZY = new Set(["conn", "db", "folder", "table", "redisdb"]);
@@ -75,114 +77,172 @@ function buildRoots(tree: TreeModel): Node[] {
   return roots;
 }
 
-async function loader(node: Node): Promise<Node[] | null> {
+type LoadResult = {
+  nodes: Node[];
+  count?: number;
+  cache?: Record<string, Node[]>;
+};
+
+async function loader(node: Node): Promise<LoadResult | null> {
   switch (node.kind) {
     case "conn": {
       if (node.conn.db_type === "redis") {
         const dbs = await api.listRedisDbs(node.conn.id);
-        return dbs.map((db) => ({
-          kind: "redisdb",
-          key: `rdb:${node.conn.id}:${db}`,
-          connId: node.conn.id,
-          db,
-        }));
+        return {
+          nodes: dbs.map((db) => ({
+            kind: "redisdb",
+            key: `rdb:${node.conn.id}:${db}`,
+            connId: node.conn.id,
+            db,
+          })),
+          count: dbs.length,
+        };
       }
       const dbs = await api.listDatabases(node.conn.id);
-      return dbs.map((db) => ({
-        kind: "db",
-        key: `db:${node.conn.id}:${db}`,
-        connId: node.conn.id,
-        db,
-      }));
+      return {
+        nodes: dbs.map((db) => ({
+          kind: "db",
+          key: `db:${node.conn.id}:${db}`,
+          connId: node.conn.id,
+          db,
+        })),
+        count: dbs.length,
+      };
     }
-    case "db":
-      return [
-        {
-          kind: "folder",
-          key: `tbls:${node.connId}:${node.db}`,
-          label: "表",
+    case "db": {
+      // Eagerly fetch tables/views so we can show counts on the database node
+      // and pre-cache the folder children (avoids a second round-trip when the
+      // user expands the "表" / "视图" folders).
+      const tables = await api.listTables(node.connId, node.db);
+      const tableNodes = tables
+        .filter((t) => !t.is_view)
+        .map((t) => ({
+          kind: "table" as const,
+          key: `tbl:${node.connId}:${node.db}:${t.name}`,
           connId: node.connId,
           db: node.db,
-          folder: "tables",
-        },
-        {
-          kind: "folder",
-          key: `views:${node.connId}:${node.db}`,
-          label: "视图",
+          name: t.name,
+          isView: false,
+        }));
+      const viewNodes = tables
+        .filter((t) => t.is_view)
+        .map((t) => ({
+          kind: "table" as const,
+          key: `tbl:${node.connId}:${node.db}:${t.name}`,
           connId: node.connId,
           db: node.db,
-          folder: "views",
+          name: t.name,
+          isView: true,
+        }));
+      return {
+        nodes: [
+          {
+            kind: "folder",
+            key: `tbls:${node.connId}:${node.db}`,
+            label: "表",
+            connId: node.connId,
+            db: node.db,
+            folder: "tables",
+            count: tableNodes.length,
+          },
+          {
+            kind: "folder",
+            key: `views:${node.connId}:${node.db}`,
+            label: "视图",
+            connId: node.connId,
+            db: node.db,
+            folder: "views",
+            count: viewNodes.length,
+          },
+        ],
+        count: tables.length,
+        cache: {
+          [`tbls:${node.connId}:${node.db}`]: tableNodes,
+          [`views:${node.connId}:${node.db}`]: viewNodes,
         },
-      ];
+      };
+    }
     case "folder": {
       const tables = await api.listTables(node.connId, node.db);
       const filtered = tables.filter((t) =>
         node.folder === "tables" ? !t.is_view : t.is_view
       );
-      return filtered.map((t) => ({
-        kind: "table",
-        key: `tbl:${node.connId}:${node.db}:${t.name}`,
-        connId: node.connId,
-        db: node.db,
-        name: t.name,
-        isView: t.is_view,
-      }));
+      return {
+        nodes: filtered.map((t) => ({
+          kind: "table",
+          key: `tbl:${node.connId}:${node.db}:${t.name}`,
+          connId: node.connId,
+          db: node.db,
+          name: t.name,
+          isView: t.is_view,
+        })),
+        count: filtered.length,
+      };
     }
     case "table": {
       const cols = await api.listColumns(node.connId, node.db, node.name);
-      return cols.map((col) => ({
-        kind: "column",
-        key: `col:${node.connId}:${node.db}:${node.name}:${col.name}`,
-        connId: node.connId,
-        db: node.db,
-        table: node.name,
-        col,
-      }));
+      return {
+        nodes: cols.map((col) => ({
+          kind: "column",
+          key: `col:${node.connId}:${node.db}:${node.name}:${col.name}`,
+          connId: node.connId,
+          db: node.db,
+          table: node.name,
+          col,
+        })),
+        count: cols.length,
+      };
     }
     case "redisdb": {
       const keys = await api.listRedisKeys(node.connId, node.db, "*", 300);
-      return keys.map((k) => ({
-        kind: "rediskey",
-        key: `rk:${node.connId}:${node.db}:${k}`,
-        connId: node.connId,
-        db: node.db,
-        name: k,
-      }));
+      return {
+        nodes: keys.map((k) => ({
+          kind: "rediskey",
+          key: `rk:${node.connId}:${node.db}:${k}`,
+          connId: node.connId,
+          db: node.db,
+          name: k,
+        })),
+        count: keys.length,
+      };
     }
     default:
       return null;
   }
 }
 
-function badge(n: Node): { text: string; cls: string } {
+function badge(n: Node): { icon: string; cls: string } {
   switch (n.kind) {
     case "env":
-      return { text: "ENV", cls: "b-env" };
+      return { icon: "🌐", cls: "b-env" };
     case "group":
-      return { text: "GRP", cls: "b-group" };
+      return { icon: "📁", cls: "b-group" };
     case "conn":
       return n.conn.db_type === "redis"
-        ? { text: "Rd", cls: "b-redis" }
-        : { text: "My", cls: "b-mysql" };
+        ? { icon: "🔴", cls: "b-redis" }
+        : { icon: "🐬", cls: "b-mysql" };
     case "db":
-      return { text: "DB", cls: "b-db" };
+      return { icon: "🗄", cls: "b-db" };
     case "folder":
-      return { text: n.folder === "views" ? "V" : "T", cls: "b-folder" };
+      return { icon: n.folder === "views" ? "👁" : "📂", cls: "b-folder" };
     case "table":
-      return { text: n.isView ? "V" : "T", cls: n.isView ? "b-view" : "b-table" };
+      return { icon: n.isView ? "👁" : "⊞", cls: n.isView ? "b-view" : "b-table" };
     case "column":
-      return { text: "·", cls: "b-col" };
+      return { icon: "▏", cls: "b-col" };
     case "redisdb":
-      return { text: "db", cls: "b-db" };
+      return { icon: "🗄", cls: "b-db" };
     case "rediskey":
-      return { text: "k", cls: "b-key" };
+      return { icon: "🔑", cls: "b-key" };
   }
 }
 
 interface TreeProps {
   tree: TreeModel;
   selectedConnId: string;
+  selectedDb?: string | null;
   onSelectConn: (id: string) => void;
+  // Selecting a database node makes it the context for ad-hoc SQL.
+  onSelectDb?: (connId: string, db: string) => void;
   onBrowseTable: (
     connId: string,
     db: string,
@@ -204,17 +264,25 @@ interface TreeProps {
 }
 
 export function Tree(props: TreeProps) {
-  const { tree, selectedConnId } = props;
+  const { tree, selectedConnId, selectedDb } = props;
   const roots = useMemo(() => buildRoots(tree), [tree]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [cache, setCache] = useState<Record<string, Node[]>>({});
+  const [counts, setCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async (node: Node) => {
     setLoading((l) => ({ ...l, [node.key]: true }));
     try {
-      const kids = await loader(node);
-      setCache((c) => ({ ...c, [node.key]: kids ?? [] }));
+      const res = await loader(node);
+      if (res) {
+        setCache((c) => ({ ...c, [node.key]: res.nodes, ...(res.cache ?? {}) }));
+        if (res.count !== undefined) {
+          setCounts((c) => ({ ...c, [node.key]: res.count! }));
+        }
+      } else {
+        setCache((c) => ({ ...c, [node.key]: [] }));
+      }
     } catch (e) {
       console.error("tree load failed", node.key, e);
       setCache((c) => ({ ...c, [node.key]: [] }));
@@ -227,6 +295,8 @@ export function Tree(props: TreeProps) {
     (node: Node) => {
       const willExpand = !expanded[node.key];
       setExpanded((e) => ({ ...e, [node.key]: willExpand }));
+      // Note: expanding/collapsing via the caret does NOT select the node.
+      // Selection is handled by the row label click, per user request.
       if (willExpand && isLazy(node) && !cache[node.key] && !loading[node.key]) {
         void load(node);
       }
@@ -282,7 +352,7 @@ export function Tree(props: TreeProps) {
             type: "item",
             label: `新建查询 (USE \`${db}\`)`,
             onClick: () => {
-              props.onSelectConn(connId);
+              props.onSelectDb?.(connId, db);
               props.onInsertText(`USE \`${db}\`;\n`);
             },
           },
@@ -306,7 +376,7 @@ export function Tree(props: TreeProps) {
             type: "item",
             label: "生成 SELECT",
             onClick: () => {
-              props.onSelectConn(connId);
+              props.onSelectDb?.(connId, db);
               props.onInsertText(`SELECT * FROM \`${db}\`.\`${name}\` LIMIT 100;\n`);
             },
           },
@@ -362,6 +432,39 @@ export function Tree(props: TreeProps) {
     setMenu({ x, y, items });
   };
 
+  const nodeLabel = (node: Node): string => {
+    switch (node.kind) {
+      case "env":
+      case "group":
+        return node.name;
+      case "conn":
+        return node.conn.name;
+      case "db":
+        return node.db;
+      case "redisdb":
+        return `db${node.db}`;
+      case "folder":
+        return node.label;
+      case "table":
+        return node.name;
+      case "rediskey":
+        return node.name;
+      case "column":
+        return node.col.name;
+    }
+  };
+
+  const isSelected = (node: Node): boolean => {
+    switch (node.kind) {
+      case "conn":
+        return node.conn.id === selectedConnId;
+      case "db":
+        return node.connId === selectedConnId && node.db === (selectedDb ?? "");
+      default:
+        return false;
+    }
+  };
+
   const renderNode = (node: Node, depth: number): JSX.Element => {
     const b = badge(node);
     const hasChildren =
@@ -372,33 +475,44 @@ export function Tree(props: TreeProps) {
         ? node.children
         : cache[node.key] ?? [];
     const pad = { paddingLeft: `${depth * 14 + 8}px` };
+    const cnt = counts[node.key];
 
+    // Clicking the row selects the node (connection/database/key). It does NOT
+    // expand/collapse — that is handled by the dedicated caret on the left.
     const onRowClick = () => {
       if (node.kind === "conn") props.onSelectConn(node.conn.id);
+      if (node.kind === "db") props.onSelectDb?.(node.connId, node.db);
       if (node.kind === "rediskey")
         props.onBrowseRedisKey(node.connId, node.db, node.name);
     };
 
-    // Single click on the label: expand/collapse. Tables deliberately do NOT
-    // auto-expand here — the per-table column list made the whole tree too
-    // long. Columns are still one click away via the ▸ caret that sits next to
-    // the table name. Environments/groups always toggle so empty ones can be
-    // opened (showing nothing inside).
     const onLabelClick = (e: React.MouseEvent) => {
       e.stopPropagation();
       onRowClick();
-      if (hasChildren && node.kind !== "table") onToggle(node);
     };
+
+    const onCaretClick = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (hasChildren) onToggle(node);
+    };
+
+    const title =
+      node.kind === "column"
+        ? "双击插入到编辑器"
+        : node.kind === "table"
+        ? "双击浏览数据（点 ▸ 可展开字段，右键更多操作）"
+        : node.kind === "env" || node.kind === "group"
+        ? "右键可新建组 / 重命名 / 删除"
+        : node.kind === "conn"
+        ? "单击选中，点左侧箭头展开数据库"
+        : node.kind === "db"
+        ? "单击设为 SQL 上下文，点左侧箭头展开"
+        : undefined;
 
     return (
       <div key={node.key} className="tree-node">
         <div
-          className={
-            "tree-row" +
-            (node.kind === "conn" && node.conn.id === selectedConnId
-              ? " active"
-              : "")
-          }
+          className={"tree-row" + (isSelected(node) ? " active" : "")}
           style={pad}
           onClick={onLabelClick}
           onContextMenu={(e) => openMenu(e, node)}
@@ -410,42 +524,17 @@ export function Tree(props: TreeProps) {
               props.onInsertColumn(node.col.name);
             }
           }}
-          title={
-            node.kind === "column"
-              ? "双击插入到编辑器"
-              : node.kind === "table"
-              ? "双击浏览数据（点 ▸ 可展开字段，右键更多操作）"
-              : node.kind === "env" || node.kind === "group"
-              ? "右键可新建组 / 重命名 / 删除"
-              : undefined
-          }
+          title={title}
         >
           <span
             className={"tw" + (hasChildren ? "" : " leaf")}
-            onClick={(e) => {
-              e.stopPropagation();
-              if (hasChildren) onToggle(node);
-            }}
+            onClick={onCaretClick}
           >
             {hasChildren ? (isOpen ? "▾" : "▸") : ""}
           </span>
-          <span className={"badge " + b.cls}>{b.text}</span>
+          <span className={"badge " + b.cls}>{b.icon}</span>
           <span className="tree-label">
-            {node.kind === "env" || node.kind === "group"
-              ? node.name
-              : node.kind === "conn"
-              ? node.conn.name
-              : node.kind === "db" || node.kind === "redisdb"
-              ? node.kind === "db"
-                ? node.db
-                : `db${node.db}`
-              : node.kind === "folder"
-              ? node.label
-              : node.kind === "table"
-              ? node.name
-              : node.kind === "rediskey"
-              ? node.name
-              : node.col.name}
+            {nodeLabel(node)}
             {node.kind === "column" && node.col.key === "PRI" && (
               <span className="pk">PK</span>
             )}
@@ -453,13 +542,12 @@ export function Tree(props: TreeProps) {
               <span className="col-type">{node.col.data_type}</span>
             )}
           </span>
+          {cnt !== undefined && <span className="tree-count">{cnt}</span>}
           {loading[node.key] && <span className="tree-loading">…</span>}
         </div>
         {isOpen &&
           kids.map((c) => (
-            <div key={c.key}>
-              {renderNode(c, node.kind === "env" || node.kind === "group" ? depth : depth + 1)}
-            </div>
+            <div key={c.key}>{renderNode(c, depth + 1)}</div>
           ))}
       </div>
     );

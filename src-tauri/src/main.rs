@@ -27,7 +27,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let llm = LlmConfig::from_env();
+    let llm = LlmConfig::load();
     let mcp_cfgs = load_mcp_servers();
     let mcp = if mcp_cfgs.is_empty() {
         None
@@ -39,7 +39,7 @@ fn main() {
         .manage(AppState {
             store: Mutex::new(store),
             schema_cache: Mutex::new(HashMap::new()),
-            llm,
+            llm: Mutex::new(llm),
             mcp,
         })
         .invoke_handler(tauri::generate_handler![
@@ -59,8 +59,12 @@ fn main() {
             save_query,
             delete_query,
             get_schema,
+            complete_sql,
             chat_turn,
             get_status,
+            get_llm_config,
+            get_vendor_presets,
+            save_llm_config,
             list_databases,
             list_redis_dbs,
             list_tables,

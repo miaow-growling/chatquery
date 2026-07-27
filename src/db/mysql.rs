@@ -25,8 +25,20 @@ pub struct QueryResult {
 
 /// Execute a SQL string against MySQL and return a bounded, streamed result.
 /// Only up to PAGE_LIMIT rows are retained in memory.
-pub async fn query(cfg: &ConnectionConfig, sql: &str) -> Result<QueryResult> {
-    let pool = connect_pool(cfg).await?;
+///
+/// `database` selects the schema context for the query. When `None` (or empty)
+/// the connection's default database is used — this is how ad-hoc SQL runs when
+/// no specific database is selected in the tree. When set, the query connects
+/// directly to that schema so unqualified table names resolve against it.
+pub async fn query(
+    cfg: &ConnectionConfig,
+    sql: &str,
+    database: Option<&str>,
+) -> Result<QueryResult> {
+    let pool = match database {
+        Some(db) if !db.is_empty() => connect_pool_db(cfg, db).await?,
+        _ => connect_pool(cfg).await?,
+    };
     let mut stream = sqlx::query(sql).fetch(&pool);
     let mut columns: Vec<String> = Vec::new();
     let mut rows: Vec<Vec<String>> = Vec::new();
@@ -137,20 +149,27 @@ async fn connect_pool_db(cfg: &ConnectionConfig, database: &str) -> Result<MySql
         .map_err(AppError::Sqlx)
 }
 
-/// Lazily fetch the schema (tables + columns) of the configured database, used
-/// to power SQL autocomplete in the editor. Bounded to one database — never
+/// Lazily fetch the schema (tables + columns) of a database, used to power SQL
+/// autocomplete in the editor. `database` selects a specific schema; when None
+/// the connection's default database is used. Bounded to one database — never
 /// enumerates the whole server (ADR-006).
-pub async fn schema(cfg: &ConnectionConfig) -> Result<Schema> {
-    if cfg.database.is_empty() {
-        return Ok(Schema { tables: vec![] });
-    }
-    let pool = connect_pool(cfg).await?;
+pub async fn schema(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Schema> {
+    let db = match database {
+        Some(d) if !d.is_empty() => d.to_string(),
+        _ => {
+            if cfg.database.is_empty() {
+                return Ok(Schema { tables: vec![] });
+            }
+            cfg.database.clone()
+        }
+    };
+    let pool = connect_pool_db(cfg, &db).await?;
     let rows = sqlx::query(
         "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_KEY, IS_NULLABLE, COLUMN_DEFAULT \
          FROM INFORMATION_SCHEMA.COLUMNS \
          WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION",
     )
-    .bind(&cfg.database)
+    .bind(&db)
     .fetch_all(&pool)
     .await
     .map_err(AppError::Sqlx)?;

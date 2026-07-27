@@ -424,7 +424,7 @@ impl App {
         let tx = result_tx.clone();
         tokio::spawn(async move {
             let msg = match cfg.db_type {
-                DbType::Mysql => match crate::db::mysql::query(&cfg, &text).await {
+                DbType::Mysql => match crate::db::mysql::query(&cfg, &text, None).await {
                     Ok(r) => {
                         let _ = tx.send(BackendMsg::ConnHealth(conn_id, true));
                         BackendMsg::Result(DisplayResult::Table(r))
