@@ -8,8 +8,13 @@ use chatquery::model::BackendMsg;
 use chatquery::model::{ChatMessage, ChatRole};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
+use tokio::time::timeout;
 
 use crate::state::AppState;
+
+/// 单条 ad-hoc 查询的服务端超时（秒）。兜底用：任何慢查询 / 卡死的网络
+/// 都不会把前端 IPC 永久挂起，超时会以 Err 形式返回，UI 可正常提示。
+const QUERY_TIMEOUT_SECS: u64 = 30;
 
 // ---------------------------------------------------------------------------
 // Frontend-facing DTOs (the Rust backend types are not all Serialize, so we
@@ -450,33 +455,42 @@ pub async fn execute_query(
     }
     .ok_or_else(|| "连接未找到".to_string())?;
 
-    match cfg.db_type {
-        DbType::Mysql => {
-            let target_db: Option<&str> = if db.is_empty() { None } else { Some(db.as_str()) };
-            let r: QueryResult = chatquery::db::mysql::query(&cfg, &query, target_db)
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(QueryOutput::Table {
-                columns: r.columns,
-                rows: r.rows,
-                truncated: r.truncated,
-                total: None,
-                page: 0,
-                page_size: 0,
-                primary_keys: vec![],
-            })
+    let res = timeout(std::time::Duration::from_secs(QUERY_TIMEOUT_SECS), async {
+        match cfg.db_type {
+            DbType::Mysql => {
+                let target_db: Option<&str> =
+                    if db.is_empty() { None } else { Some(db.as_str()) };
+                let r: QueryResult = chatquery::db::mysql::query(&cfg, &query, target_db)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok::<QueryOutput, String>(QueryOutput::Table {
+                    columns: r.columns,
+                    rows: r.rows,
+                    truncated: r.truncated,
+                    total: None,
+                    page: 0,
+                    page_size: 0,
+                    primary_keys: vec![],
+                })
+            }
+            DbType::Redis => {
+                let r = chatquery::db::redis::query(&cfg, &query)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok::<QueryOutput, String>(QueryOutput::Redis {
+                    command: r.command,
+                    lines: r.lines,
+                    note: r.note,
+                    truncated: r.truncated,
+                })
+            }
         }
-        DbType::Redis => {
-            let r = chatquery::db::redis::query(&cfg, &query)
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(QueryOutput::Redis {
-                command: r.command,
-                lines: r.lines,
-                note: r.note,
-                truncated: r.truncated,
-            })
-        }
+    })
+    .await;
+
+    match res {
+        Ok(inner) => inner,
+        Err(_) => Err(format!("查询超时（服务端限制 {} 秒）", QUERY_TIMEOUT_SECS)),
     }
 }
 

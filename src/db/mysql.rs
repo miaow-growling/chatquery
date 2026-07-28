@@ -51,12 +51,16 @@ pub async fn query(
                 columns.push(c.name().to_string());
             }
         }
-        if count >= PAGE_LIMIT {
+        if count < PAGE_LIMIT {
+            rows.push(decode_row(&row).await);
+            count += 1;
+        } else {
+            // 已达上限：标记截断即可，但**继续排空**剩余结果集。
+            // 一旦 break，MySQL 连接会停在 streaming 脏状态，pool.close()
+            // 必须等未读流被排空/重置，慢库或高延迟网络上会卡住（表现为
+            // 前端“执行超时”）。读够后继续丢弃超出行直至 EOF 才最干净。
             truncated = true;
-            break;
         }
-        rows.push(decode_row(&row).await);
-        count += 1;
     }
 
     pool.close().await;
