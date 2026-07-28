@@ -99,6 +99,13 @@ pub async fn query_paged(
     page: usize,
     page_size: usize,
 ) -> Result<QueryResult> {
+    // Only single SELECT statements can safely be wrapped with COUNT(*)
+    // and LIMIT/OFFSET. SHOW/EXPLAIN/INSERT/UPDATE/DELETE or multi-statement
+    // scripts must run through the plain query path (no pager, no rewrite).
+    if !is_select_query(sql) {
+        return query(cfg, sql, database).await;
+    }
+
     let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
     let offset = page.saturating_mul(page_size);
     let pool = match database {
@@ -183,6 +190,53 @@ fn strip_limit_offset(sql: &str) -> (String, Option<usize>) {
         stripped.trim_end_matches(';').trim_end().to_string()
     };
     (base, user_limit)
+}
+
+/// Return true when `sql` is a single SELECT statement that we can safely wrap
+/// with `COUNT(*)` and `LIMIT/OFFSET`. Anything else — SHOW, EXPLAIN, INSERT,
+/// UPDATE, DELETE, CALL, or multi-statement scripts — must run unmodified.
+fn is_select_query(sql: &str) -> bool {
+    let body = skip_leading_inline_comment(sql.trim());
+    if !body.eq_ignore_ascii_case("select") && !body.to_ascii_uppercase().starts_with("SELECT ") {
+        return false;
+    }
+    !has_unquoted_semicolon(sql)
+}
+
+/// Skip a leading `-- ` or `#` comment line so that `-- comment\nSELECT ...`
+/// is still recognised as a SELECT. Multi-line `/* ... */` comments are rare
+/// in ad-hoc queries; treating them as non-SELECT is the safe fallback.
+fn skip_leading_inline_comment(s: &str) -> &str {
+    if s.starts_with("--") {
+        s.find('\n').map_or("", |i| s[i + 1..].trim_start())
+    } else if s.starts_with('#') {
+        s.find('\n').map_or("", |i| s[i + 1..].trim_start())
+    } else {
+        s
+    }
+}
+
+/// True if the SQL contains a statement-terminating semicolon outside of
+/// string literals. We only handle single/double quotes; backtick identifiers
+/// are irrelevant because a semicolon inside a table name is not valid anyway.
+fn has_unquoted_semicolon(sql: &str) -> bool {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escape = false;
+    for ch in sql.chars() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        match ch {
+            '\\' => escape = true,
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            ';' if !in_single && !in_double => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 async fn decode_row(row: &sqlx::mysql::MySqlRow) -> Vec<String> {
@@ -865,5 +919,26 @@ mod tests {
     fn quote_ident_strips_backticks() {
         assert_eq!(quote_ident("a`b"), "`ab`");
         assert_eq!(quote_ident("weird name"), "`weird name`");
+    }
+
+    #[test]
+    fn is_select_query_recognises_select_only() {
+        assert!(is_select_query("SELECT * FROM t"));
+        assert!(is_select_query("  select id from t where x = 1  "));
+        assert!(is_select_query("-- comment\nSELECT * FROM t"));
+        assert!(is_select_query("SELECT * FROM t WHERE msg = 'a;b'"));
+        assert!(!is_select_query("SHOW CREATE TABLE t"));
+        assert!(!is_select_query("EXPLAIN SELECT * FROM t"));
+        assert!(!is_select_query("INSERT INTO t VALUES (1)"));
+        assert!(!is_select_query("SELECT * FROM t; SHOW CREATE TABLE t"));
+        assert!(!is_select_query("SELECT * FROM t;"));
+    }
+
+    #[test]
+    fn has_unquoted_semicolon_detects_statement_breaks() {
+        assert!(!has_unquoted_semicolon("SELECT * FROM t WHERE x = 'a;b'"));
+        assert!(!has_unquoted_semicolon("SELECT * FROM t WHERE x = \"a;b\""));
+        assert!(has_unquoted_semicolon("SELECT * FROM t; SHOW CREATE TABLE t"));
+        assert!(has_unquoted_semicolon("SELECT * FROM t;"));
     }
 }
