@@ -1501,9 +1501,16 @@ export function App() {
                             else if (e.key === "Escape") setEditing(null);
                           }}
                         />
-                      ) : (
-                        fmt(ov ?? v)
-                      )}
+                      ) : (() => {
+                        const text = fmt(ov ?? v);
+                        const cls =
+                          text === "NULL"
+                            ? "cell--null"
+                            : /^-?\d+(\.\d+)?$/.test(text)
+                            ? "cell--num"
+                            : undefined;
+                        return cls ? <span className={cls}>{text}</span> : text;
+                      })()}
                     </td>
                   );
                 })}
