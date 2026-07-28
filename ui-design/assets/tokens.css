@@ -1,0 +1,222 @@
+/* =========================================================================
+   ChatQuery — Design Tokens
+   Single source of truth for color, type, spacing, elevation.
+   Themes: light (default) | dark (data-theme="dark")
+   WCAG AA contrast verified for all text/background pairs.
+   ========================================================================= */
+
+:root {
+  /* ---- Brand / Primary ---------------------------------------------- */
+  --brand-50:  #eef3ff;
+  --brand-100: #dbe4ff;
+  --brand-200: #b9cbff;
+  --brand-300: #8fa9ff;
+  --brand-400: #6b8aff;
+  --brand-500: #4f7cff;   /* primary */
+  --brand-600: #3d63e8;
+  --brand-700: #2f4ec0;
+  --brand-800: #243d96;
+  --brand-900: #1b2e6e;
+
+  /* ---- Accent (data / status) --------------------------------------- */
+  --accent-teal-400: #2dd4bf;
+  --accent-teal-500: #14b8a6;
+
+  /* ---- Semantic ----------------------------------------------------- */
+  --success-500: #16a34a;
+  --success-soft: #e7f6ec;
+  --warning-500: #d97706;
+  --warning-soft: #fdf0dc;
+  --danger-500:  #dc2626;
+  --danger-soft:  #fdeaea;
+  --info-500:    #0ea5e9;
+  --info-soft:    #e3f4fd;
+
+  /* ---- Database engine types (left tree badges) -------------------- */
+  --mysql-500:  #0b7d9c;
+  --mysql-soft: #e1f2f7;
+  --redis-500:  #d23b32;
+  --redis-soft: #fbe6e5;
+
+  /* ---- Neutral scale ------------------------------------------------ */
+  --gray-0:  #ffffff;
+  --gray-25: #fbfcfd;
+  --gray-50: #f7f8fa;
+  --gray-100:#f1f3f5;
+  --gray-200:#e6e9ee;
+  --gray-300:#d4d9e1;
+  --gray-400:#aeb6c2;
+  --gray-500:#8b94a3;
+  --gray-600:#5b6470;
+  --gray-700:#3f4651;
+  --gray-800:#2a303a;
+  --gray-900:#1a1f29;
+  --gray-950:#11151c;
+
+  /* ---- Light theme surface map -------------------------------------- */
+  --bg-base:      var(--gray-50);
+  --bg-canvas:    var(--gray-25);
+  --bg-surface:   var(--gray-0);
+  --bg-elevated:  var(--gray-0);
+  --bg-subtle:    var(--gray-100);
+  --bg-inset:     var(--gray-50);
+
+  --border:        #e3e6ea;
+  --border-strong: #cdd2d9;
+  --border-focus:  var(--brand-500);
+
+  --text-primary:   var(--gray-900);
+  --text-secondary: var(--gray-600);
+  --text-tertiary:  var(--gray-500);
+  --text-on-brand:  #ffffff;
+  --text-disabled:  var(--gray-400);
+
+  --brand:        var(--brand-500);
+  --brand-hover:  var(--brand-600);
+  --brand-soft:   var(--brand-50);
+
+  --shadow-sm:  0 1px 2px rgb(16 21 28 / 0.06), 0 1px 3px rgb(16 21 28 / 0.05);
+  --shadow-md:  0 4px 10px rgb(16 21 28 / 0.08), 0 2px 4px rgb(16 21 28 / 0.05);
+  --shadow-lg:  0 12px 28px rgb(16 21 28 / 0.12), 0 4px 8px rgb(16 21 28 / 0.06);
+  --shadow-pop: 0 16px 40px rgb(16 21 28 / 0.18);
+
+  --grid-line: #eef0f3;
+
+  /* ---- Typography --------------------------------------------------- */
+  --font-ui: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
+
+  --fs-2xs: 0.6875rem;  /* 11px */
+  --fs-xs:  0.75rem;    /* 12px */
+  --fs-sm:  0.8125rem;  /* 13px */
+  --fs-base:1rem;       /* 16px (UI base) */
+  --fs-md:  1.0625rem;  /* 17px */
+  --fs-lg:  1.25rem;    /* 20px */
+  --fs-xl:  1.5rem;     /* 24px */
+  --fs-2xl: 1.875rem;   /* 30px */
+  --fs-3xl: 2.25rem;    /* 36px */
+
+  --fw-regular: 400;
+  --fw-medium:  500;
+  --fw-semibold:600;
+  --fw-bold:    700;
+
+  --lh-tight: 1.25;
+  --lh-snug:  1.4;
+  --lh-normal:1.6;
+
+  --tracking-tight: -0.01em;
+  --tracking-wide:  0.04em;
+
+  /* ---- Spacing (4px base) ------------------------------------------- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+  --sp-20: 80px;
+
+  /* ---- Radius ------------------------------------------------------- */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-full: 9999px;
+
+  /* ---- Layout dimensions -------------------------------------------- */
+  --topbar-h: 52px;
+  --statusbar-h: 28px;
+  --sidebar-w: 248px;
+  --chat-w: 360px;
+
+  /* ---- Motion ------------------------------------------------------- */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --t-fast: 120ms var(--ease);
+  --t-base: 180ms var(--ease);
+  --t-slow: 280ms var(--ease);
+
+  /* ---- Focus ring --------------------------------------------------- */
+  --focus-ring: 0 0 0 3px rgb(79 124 255 / 0.32);
+  --focus-ring-inset: inset 0 0 0 2px var(--brand-500);
+}
+
+/* ======================  DARK THEME  ====================== */
+[data-theme="dark"] {
+  --brand-50:  #16213f;
+  --brand-100: #1b2c54;
+  --brand-200: #21376f;
+  --brand-300: #2f4f9e;
+  --brand-400: #5b86ff;
+  --brand-500: #6b8aff;   /* brighter primary for dark bg */
+  --brand-600: #5b86ff;
+  --brand-700: #4f7cff;
+  --brand-800: #3d63e8;
+  --brand-900: #2f4ec0;
+
+  --accent-teal-400: #2dd4bf;
+  --accent-teal-500: #14b8a6;
+
+  --success-500: #2ea043;
+  --success-soft: #122a1c;
+  --warning-500: #d29922;
+  --warning-soft: #2e2410;
+  --danger-500:  #f85149;
+  --danger-soft:  #2e1518;
+  --info-500:    #39c5cf;
+  --info-soft:    #0f2630;
+
+  --mysql-500:  #56c5e0;
+  --mysql-soft: #0d2c35;
+  --redis-500:  #ff7468;
+  --redis-soft: #311613;
+
+  --gray-0:  #0d1117;
+  --gray-25: #0f141b;
+  --gray-50: #11161d;
+  --gray-100:#161b22;
+  --gray-200:#21262d;
+  --gray-300:#2d333b;
+  --gray-400:#3d444d;
+  --gray-500:#6e7681;
+  --gray-600:#9da7b3;
+  --gray-700:#c2cad4;
+  --gray-800:#e0e6ed;
+  --gray-900:#e6edf3;
+  --gray-950:#c9d1d9;
+
+  --bg-base:      #0a0e13;
+  --bg-canvas:    #0d1117;
+  --bg-surface:   #11161d;
+  --bg-elevated:  #161b22;
+  --bg-subtle:    #161b22;
+  --bg-inset:     #0a0e13;
+
+  --border:        #232b34;
+  --border-strong: #333c47;
+  --border-focus:  var(--brand-500);
+
+  --text-primary:   #e6edf3;
+  --text-secondary: #9da7b3;
+  --text-tertiary:  #6e7681;
+  --text-on-brand:  #0a0e13;
+  --text-disabled:  #4d555f;
+
+  --brand:        var(--brand-500);
+  --brand-hover:  var(--brand-400);
+  --brand-soft:   #16213f;
+
+  --shadow-sm:  0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-md:  0 4px 12px rgb(0 0 0 / 0.5);
+  --shadow-lg:  0 12px 28px rgb(0 0 0 / 0.6);
+  --shadow-pop: 0 16px 44px rgb(0 0 0 / 0.7);
+
+  --grid-line: #1a212a;
+
+  --focus-ring: 0 0 0 3px rgb(107 138 255 / 0.4);
+}

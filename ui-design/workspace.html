@@ -1,0 +1,1391 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ChatQuery · 主工作区</title>
+<link rel="stylesheet" href="assets/tokens.css" />
+<link rel="stylesheet" href="assets/components.css" />
+<style>
+  /* Workspace-specific tweaks on top of the shared component library. */
+  .tree-row .tw { cursor: pointer; }
+  .conn-item__icon, .tn-badge { font-size: 13px; }
+  .editor__area { tab-size: 2; }
+  .status-bar .status-dot { flex: none; }
+  .spacer { flex: 1; }
+  .ctx-title { font-weight: var(--fw-semibold); }
+  .pane__head .pane__title .ctx-db { color: var(--brand); font-weight: var(--fw-medium); }
+  .method-def { font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.7;
+    white-space: pre; background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: var(--r-md); padding: var(--sp-3) var(--sp-4); overflow: auto; }
+  .kv-row { display: flex; gap: var(--sp-4); padding: var(--sp-2) 0; border-bottom: 1px solid var(--grid-line); font-size: var(--fs-sm); }
+  .kv-row .k { width: 120px; color: var(--text-tertiary); flex: none; }
+  .kv-row .v { font-family: var(--font-mono); color: var(--text-primary); }
+  .chip-meth { font-size: var(--fs-2xs); font-family: var(--font-mono); color: var(--accent-teal-500);
+    background: rgb(20 184 166 / 0.12); border-radius: var(--r-xs); padding: 0 5px; }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <!-- ============ TOPBAR ============ -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand__mark">CQ</span>
+      <span>ChatQuery</span>
+    </div>
+    <div class="topbar__search" id="searchTrigger" role="button" tabindex="0" title="命令面板 (⌘K / Ctrl+K)">
+      <span class="icon" style="width:15px;height:15px">⌕</span>
+      <input placeholder="搜索连接、表、视图、方法…  (⌘K)" readonly />
+    </div>
+    <div class="topbar__spacer"></div>
+    <div class="topbar__actions">
+      <button class="icon-btn" title="LLM 模型设置" data-action="open-settings">⚙</button>
+      <button class="icon-btn" data-theme-toggle title="切换亮/暗主题">
+        <span data-theme-icon></span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ============ SIDEBAR (tree) ============ -->
+  <aside class="sidebar">
+    <div class="sidebar__head">
+      <span class="sidebar__title">连接</span>
+      <div class="head-actions">
+        <button class="icon-btn" title="LLM 模型设置" data-action="open-settings">⚙</button>
+        <button class="icon-btn" data-theme-toggle title="切换亮/暗主题"><span data-theme-icon></span></button>
+        <div class="add-wrap">
+          <button class="add-btn icon-btn" id="addBtn" title="新建">＋</button>
+          <div class="add-menu" id="addMenu" style="display:none">
+            <button class="add-item" data-action="new-conn">新建链接</button>
+            <button class="add-item" data-action="new-group">新建组</button>
+            <button class="add-item" data-action="new-env">新建环境</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="tree" id="tree"></div>
+    <div class="sidebar-actions">
+      <button class="btn btn--secondary btn--sm" id="editConnBtn" disabled>编辑链接</button>
+      <button class="btn btn--secondary btn--sm" id="delConnBtn" disabled>删除链接</button>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+    <section class="editor-pane">
+      <div class="tab-bar" id="tabBar"></div>
+      <div class="pane__head">
+        <span class="pane__title">
+          查询编辑器
+          <span class="ctx-db" id="ctxDb"> · 库: 默认</span>
+          <span class="hint"> (Ctrl/Cmd+Enter 执行)</span>
+        </span>
+        <div class="pane__spacer"></div>
+        <div class="row" style="gap:8px">
+          <button class="btn btn--ghost btn--sm" data-action="format">格式化</button>
+          <button class="btn btn--ghost btn--sm" data-action="save-snippet">存为片段</button>
+          <button class="btn btn--ghost btn--sm" data-action="history">历史</button>
+          <button class="btn btn--secondary btn--sm" data-action="explain">执行计划</button>
+          <button class="btn btn--primary btn--sm" data-action="run">执行</button>
+        </div>
+      </div>
+      <div class="editor">
+        <div class="editor__gutter" id="gutter"><span>1</span></div>
+        <textarea class="editor__area" id="editor" spellcheck="false" placeholder="-- 在此输入 SQL，或从左侧树双击表/右键「生成 SELECT」"></textarea>
+      </div>
+    </section>
+
+    <section class="result-pane">
+      <div class="pane__head">
+        <div class="result-tabs" id="resultTabs">
+          <button class="rtab active" data-rtab="data">数据</button>
+          <button class="rtab" data-rtab="structure">表结构</button>
+          <button class="rtab" data-rtab="relation">表关系</button>
+          <button class="rtab" data-rtab="method" style="display:none">方法</button>
+        </div>
+        <div class="pane__spacer"></div>
+        <div class="row" id="resultActions" style="gap:8px"></div>
+      </div>
+      <div class="result-body" id="resultBody"></div>
+      <div id="pagerSlot"></div>
+    </section>
+
+    <div class="status-bar" id="statusBar">
+      <span class="status-dot"></span>
+      <span class="status-text">就绪</span>
+    </div>
+  </main>
+
+  <!-- ============ CHAT ============ -->
+  <section class="chat" id="chatPanel">
+    <div class="chat__head pane__head">
+      <span class="pane__title">Chat (LLM)</span>
+      <span class="chat__status" id="chatStatus">LLM 未配置 · 脱敏: 开</span>
+      <div class="pane__spacer"></div>
+      <button class="icon-btn" title="收起 Chat" data-action="toggle-chat">⟩</button>
+    </div>
+    <div class="chat-log" id="chatLog"></div>
+    <div class="chat-input">
+      <textarea id="chatInput" placeholder="问点什么，例如：统计 users 表行数" rows="1"></textarea>
+      <button class="btn btn--primary btn--sm" data-action="send-chat">发送</button>
+    </div>
+  </section>
+  <div class="chat-rail" id="chatRail" style="display:none">
+    <button class="rail-btn" title="展开 Chat" data-action="toggle-chat">💬</button>
+  </div>
+</div>
+
+<!-- Mount points for modals / menus -->
+<div id="modalRoot"></div>
+<div id="ctxRoot"></div>
+<div class="palette" id="palette">
+  <div class="palette__box">
+    <input class="palette__input" id="paletteInput" placeholder="输入以搜索…" />
+    <div class="palette__list" id="paletteList"></div>
+  </div>
+</div>
+
+<script src="assets/theme.js"></script>
+<script>
+/* ============================================================================
+   ChatQuery interactive prototype
+   Mirrors frontend/src/App.tsx + Tree.tsx behavior with an in-memory mock
+   backend. Hierarchy: 环境 › 分组 › 链接 › 数据库 › (表/视图/方法) › … › 列
+   ========================================================================== */
+(function () {
+  "use strict";
+
+  /* ---------- refs ---------- */
+  const $ = (id) => document.getElementById(id);
+  const treeEl = $("tree");
+
+  /* ---------- state ---------- */
+  const S = {
+    selConnId: null,
+    selDb: null,
+    tabs: [{ id: "t1", name: "查询 1", sql: "" }],
+    activeTab: "t1",
+    result: null,            // {kind:'table'|'redis', columns, rows, total, primaryKeys,...}
+    resultTab: "data",
+    browseCtx: null,         // {connId, db, table, page, pageSize}
+    structureView: null,     // {connId, db, table, data}
+    relationView: null,
+    methodView: null,        // {connId, db, method, info}
+    expanded: new Set(["env_prod"]),
+    cache: {},               // key -> child node array
+    loading: new Set(),
+    edits: {}, deletes: new Set(), inserts: [], editing: null, draft: "",
+    selRows: new Set(), selCol: null,
+    chat: [
+      { role: "assistant", content: "你好，我是 ChatQuery 助手。选中一个连接和库后，可以直接问我“统计 users 表行数”之类的问题。" }
+    ],
+    streaming: false,
+    chatOpen: true,
+    status: { llm_enabled: false, mask_enabled: true, text: "就绪" },
+    llmCfg: { vendor: "openai", base_url: "https://api.openai.com/v1", model: "gpt-4o-mini", enabled: false },
+    aiCompleteOn: false,
+    history: [
+      { id: "h1", name: null, conn_id: "c_shop", db: "shop", sql: "SELECT * FROM users LIMIT 100;", created: Date.now() - 86400000 },
+      { id: "h2", name: "每日营收", conn_id: "c_shop", db: "shop", sql: "SELECT DATE(created_at) d, SUM(total) rev FROM orders GROUP BY 1;", created: Date.now() - 3600000 },
+    ],
+  };
+
+  /* ---------- mock backend data ---------- */
+  const TREE = {
+    environments: [
+      { id: "env_prod", name: "生产环境", order: 0, groups: [
+        { id: "grp_main", name: "主库集群", order: 0, connections: [
+          { id: "c_shop", name: "shop-mysql", db_type: "mysql", host: "10.0.1.10", port: 3306, user: "root", database: "shop", group_id: "grp_main" },
+          { id: "c_log", name: "log-mysql", db_type: "mysql", host: "10.0.1.11", port: 3306, user: "root", database: "logs", group_id: "grp_main" },
+        ]},
+        { id: "grp_cache", name: "缓存层", order: 1, connections: [
+          { id: "c_redis", name: "session-redis", db_type: "redis", host: "10.0.1.20", port: 6379, user: "", database: "", group_id: "grp_cache" },
+        ]},
+      ]},
+      { id: "env_test", name: "测试环境", order: 1, groups: [
+        { id: "grp_t1", name: "沙箱", order: 0, connections: [
+          { id: "c_test", name: "test-mysql", db_type: "mysql", host: "127.0.0.1", port: 3306, user: "dev", database: "test", group_id: "grp_t1" },
+        ]},
+      ]},
+    ],
+  };
+
+  // Known schemas so the demo feels real; everything else is generated.
+  const KNOWN = {
+    users: {
+      cols: [
+        { name: "id", data_type: "int unsigned", key: "PRI", nullable: "NO", def: null, extra: "auto_increment" },
+        { name: "name", data_type: "varchar(64)", key: "", nullable: "NO", def: null, extra: "" },
+        { name: "email", data_type: "varchar(128)", key: "UNI", nullable: "NO", def: null, extra: "" },
+        { name: "age", data_type: "tinyint", key: "", nullable: "YES", def: null, extra: "" },
+        { name: "created_at", data_type: "datetime", key: "", nullable: "NO", def: "CURRENT_TIMESTAMP", extra: "" },
+      ],
+    },
+    orders: {
+      cols: [
+        { name: "id", data_type: "int unsigned", key: "PRI", nullable: "NO", def: null, extra: "auto_increment" },
+        { name: "user_id", data_type: "int unsigned", key: "MUL", nullable: "NO", def: null, extra: "" },
+        { name: "total", data_type: "decimal(10,2)", key: "", nullable: "NO", def: null, extra: "" },
+        { name: "status", data_type: "varchar(16)", key: "", nullable: "NO", def: "pending", extra: "" },
+        { name: "created_at", data_type: "datetime", key: "", nullable: "NO", def: "CURRENT_TIMESTAMP", extra: "" },
+      ],
+    },
+    products: {
+      cols: [
+        { name: "id", data_type: "int unsigned", key: "PRI", nullable: "NO", def: null, extra: "auto_increment" },
+        { name: "title", data_type: "varchar(120)", key: "", nullable: "NO", def: null, extra: "" },
+        { name: "price", data_type: "decimal(10,2)", key: "", nullable: "NO", def: null, extra: "" },
+        { name: "stock", data_type: "int", key: "", nullable: "NO", def: "0", extra: "" },
+      ],
+    },
+  };
+
+  const STORE = {
+    // connection -> db -> { tables:[name], views:[name], methods:[name] }
+    c_shop: {
+      shop: {
+        tables: ["users", "orders", "products", "order_items"],
+        views: ["v_active_users", "v_daily_sales"],
+        methods: ["calc_revenue(IN start DATE, IN end DATE)", "refresh_daily_stats()", "notify_low_stock()"],
+      },
+      reports: {
+        tables: ["daily_revenue", "user_growth"],
+        views: ["v_monthly_kpi"],
+        methods: ["rebuild_kpi()"],
+      },
+    },
+    c_log: {
+      logs: {
+        tables: ["access_log", "error_log", "audit_trail"],
+        views: ["v_error_top"],
+        methods: ["purge_old_logs(IN days INT)"],
+      },
+    },
+    c_test: {
+      test: {
+        tables: ["t_demo", "t_sandbox"],
+        views: [],
+        methods: ["sample_proc()"],
+      },
+    },
+  };
+
+  function connById(id) {
+    for (const env of TREE.environments)
+      for (const g of env.groups) {
+        const c = g.connections.find((x) => x.id === id);
+        if (c) return c;
+      }
+    return null;
+  }
+
+  // deterministic pseudo-random so paging feels stable per (table,page)
+  function hash(str) {
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return (h >>> 0);
+  }
+
+  function colsFor(connId, db, table) {
+    if (KNOWN[table]) return KNOWN[table].cols;
+    // generic 4-col schema
+    const seed = hash(connId + db + table);
+    return [
+      { name: "id", data_type: "int unsigned", key: "PRI", nullable: "NO", def: null, extra: "auto_increment" },
+      { name: "name", data_type: "varchar(64)", key: "", nullable: "NO", def: null, extra: "" },
+      { name: "value", data_type: "varchar(128)", key: "", nullable: "YES", def: null, extra: "" },
+      { name: "created_at", data_type: "datetime", key: "", nullable: "NO", def: "CURRENT_TIMESTAMP", extra: "" },
+    ];
+  }
+
+  function genRows(connId, db, table, cols, page, pageSize) {
+    const n = Math.min(pageSize, 14);
+    const rows = [];
+    for (let i = 0; i < n; i++) {
+      const rid = page * pageSize + i + 1;
+      const r = [];
+      for (const c of cols) {
+        if (c.name === "id") r.push(String(rid));
+        else if (c.data_type.startsWith("int") || c.data_type.startsWith("decimal") || c.data_type.startsWith("tinyint"))
+          r.push(String(((hash(table + rid) % 900) + 10)));
+        else if (c.data_type.startsWith("datetime")) r.push("2024-0" + ((rid % 9) + 1) + "-1" + (rid % 9) + " 1" + (rid % 9) + ":0" + (rid % 9));
+        else if (c.name === "email") r.push("user" + rid + "@example.com");
+        else if (c.name === "status") r.push(["pending", "paid", "shipped", "done"][rid % 4]);
+        else if (c.name === "name" || c.name === "title") r.push((table.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())) + " #" + rid);
+        else r.push("val-" + rid);
+      }
+      rows.push(r);
+    }
+    return rows;
+  }
+
+  function pkOf(cols) { return cols.filter((c) => c.key === "PRI").map((c) => c.name); }
+
+  function groupMeta(envId, groupId) {
+    const env = TREE.environments.find((e) => e.id === envId);
+    return env ? env.groups.find((g) => g.id === groupId) : null;
+  }
+  function countConns(type) {
+    let n = 0;
+    for (const env of TREE.environments) for (const g of env.groups) for (const c of (g.connections || [])) if (c.db_type === type) n++;
+    return n;
+  }
+  const TYPE_LABEL = { mysql: "MySQL", redis: "Redis" };
+  function buildChildren(node) {
+    if (node.kind === "type")
+      return [...TREE.environments].sort((a, b) => a.order - b.order)
+        .filter((e) => (e.groups || []).some((g) => (g.connections || []).some((c) => c.db_type === node.db_type)))
+        .map((e) => ({ kind: "env", id: e.id, name: e.name, groups: e.groups, db_type: node.db_type }));
+    if (node.kind === "env") {
+      const groups = (node.groups || []).filter((g) => !(node.db_type) || (g.connections || []).some((c) => c.db_type === node.db_type));
+      return groups.map((g) => ({ kind: "group", id: g.id, name: g.name, connId: node.id, db_type: node.db_type }));
+    }
+    if (node.kind === "group") {
+      const gm = groupMeta(node.connId, node.id);
+      const conns = node.db_type ? (gm.connections || []).filter((c) => c.db_type === node.db_type) : (gm.connections || []);
+      return conns.map((c) => ({ kind: "conn", id: c.id, name: c.name, db_type: c.db_type }));
+    }
+    if (node.kind === "conn") {
+      if (node.db_type === "redis") {
+        return [0, 1, 2, 3].map((d) => ({ kind: "redisdb", connId: node.id, db: d }));
+      }
+      const dbs = Object.keys(STORE[node.id] || {});
+      return dbs.map((db) => ({ kind: "db", connId: node.id, db }));
+    }
+    if (node.kind === "db") {
+      const meta = (STORE[node.connId] || {})[node.db] || { tables: ["t1", "t2"], views: [], methods: [] };
+      return [
+        { kind: "folder", folder: "tables", connId: node.connId, db: node.db, count: meta.tables.length },
+        { kind: "folder", folder: "views", connId: node.connId, db: node.db, count: meta.views.length },
+        { kind: "folder", folder: "methods", connId: node.connId, db: node.db, count: meta.methods.length },
+      ];
+    }
+    if (node.kind === "folder") {
+      const meta = (STORE[node.connId] || {})[node.db] || { tables: [], views: [], methods: [] };
+      if (node.folder === "tables") return meta.tables.map((t) => ({ kind: "table", connId: node.connId, db: node.db, name: t, isView: false }));
+      if (node.folder === "views") return meta.views.map((t) => ({ kind: "table", connId: node.connId, db: node.db, name: t, isView: true }));
+      return meta.methods.map((m) => ({ kind: "method", connId: node.connId, db: node.db, name: m }));
+    }
+    if (node.kind === "table") {
+      const cols = colsFor(node.connId, node.db, node.name);
+      return cols.map((c) => ({ kind: "column", connId: node.connId, db: node.db, table: node.name, col: c }));
+    }
+    if (node.kind === "redisdb") {
+      const keys = ["user:" + (node.db + 1) + ":session", "cache:home", "queue:jobs", "counter:visits"];
+      return keys.map((k) => ({ kind: "rediskey", connId: node.connId, db: node.db, name: k }));
+    }
+    return [];
+  }
+
+  /* ---------- icon map ---------- */
+  const ICON = {
+    env: "🌐", group: "📁", conn_mysql: "🐬", conn_redis: "🔴", db: "🗄",
+    folder_tables: "📂", folder_views: "👁", folder_methods: "⚙",
+    table: "⊞", view: "👁", method: "ƒ", column: "▏", redisdb: "🗄", rediskey: "🔑",
+  };
+  function iconFor(node) {
+    switch (node.kind) {
+      case "type": return node.db_type === "redis" ? ICON.conn_redis : ICON.conn_mysql;
+      case "env": return ICON.env;
+      case "group": return ICON.group;
+      case "conn": return node.db_type === "redis" ? ICON.conn_redis : ICON.conn_mysql;
+      case "db": return ICON.db;
+      case "folder": return node.folder === "views" ? ICON.folder_views : node.folder === "methods" ? ICON.folder_methods : ICON.folder_tables;
+      case "table": return node.isView ? ICON.view : ICON.table;
+      case "method": return ICON.method;
+      case "column": return ICON.column;
+      case "redisdb": return ICON.redisdb;
+      case "rediskey": return ICON.rediskey;
+    }
+    return "•";
+  }
+
+  const LAZY = new Set(["conn", "db", "folder", "table", "redisdb"]);
+
+  /* ---------- tree render ---------- */
+  function renderTree() {
+    treeEl.innerHTML = "";
+    const types = ["mysql", "redis"].filter((t) => countConns(t) > 0);
+    if (types.length === 0) { treeEl.innerHTML = '<div class="tree-empty">暂无链接，点右上角 ＋ 添加</div>'; return; }
+    for (const t of types) treeEl.appendChild(renderNode({ kind: "type", db_type: t }, 0));
+  }
+
+  function renderNode(node, depth) {
+    const wrap = document.createElement("div");
+    wrap.className = "tree-node";
+    const hasChildren = node.kind === "type" || node.kind === "env" || node.kind === "group" || LAZY.has(node.kind);
+    const isOpen = S.expanded.has(keyOf(node));
+    const kids = buildChildren(node);
+    const cnt = node.count !== undefined ? node.count : (S.cache[keyOf(node)] ? S.cache[keyOf(node)].length : undefined);
+
+    const row = document.createElement("div");
+    row.className = "tree-row" + (node.kind === "type" ? " tree-row--type" : "") + (isSel(node) ? " active" : "");
+    row.style.paddingLeft = (depth * 14 + 8) + "px";
+
+    const tw = document.createElement("span");
+    tw.className = "tw" + (hasChildren ? "" : " leaf");
+    tw.textContent = hasChildren ? (isOpen ? "▾" : "▸") : "";
+    tw.onclick = (e) => { e.stopPropagation(); if (hasChildren) toggle(node); };
+
+    const badge = document.createElement("span");
+    badge.className = "tn-badge";
+    badge.textContent = iconFor(node);
+
+    const label = document.createElement("span");
+    label.className = "tn-label";
+    label.appendChild(document.createTextNode(nodeLabel(node)));
+    if (node.kind === "column" && node.col.key === "PRI") {
+      const pk = document.createElement("span"); pk.className = "pk"; pk.textContent = "PK"; label.appendChild(pk);
+    }
+    if (node.kind === "column" && node.col.data_type) {
+      const t = document.createElement("span"); t.className = "col-type"; t.textContent = node.col.data_type; label.appendChild(t);
+    }
+    if (node.kind === "method") {
+      const t = document.createElement("span"); t.className = "meth-arg"; t.textContent = node.name.replace(/^[^\(]+/, ""); label.appendChild(t);
+    }
+
+    row.appendChild(tw); row.appendChild(badge); row.appendChild(label);
+    if (node.kind === "conn" && node.db_type) {
+      const t = document.createElement("span");
+      t.className = "tn-type tn-type--" + (node.db_type === "redis" ? "redis" : node.db_type);
+      t.textContent = node.db_type === "redis" ? "Redis" : node.db_type === "mysql" ? "MySQL" : node.db_type;
+      t.title = "数据库类型：" + t.textContent;
+      row.appendChild(t);
+    }
+    if (node.kind === "type") {
+      const t = document.createElement("span");
+      t.className = "tree-count"; t.textContent = countConns(node.db_type); row.appendChild(t);
+    }
+    if (cnt !== undefined) { const c = document.createElement("span"); c.className = "tree-count"; c.textContent = cnt; row.appendChild(c); }
+    if (S.loading.has(keyOf(node))) { const l = document.createElement("span"); l.className = "tree-loading"; l.textContent = "…"; row.appendChild(l); }
+
+    row.onclick = () => select(node);
+    row.ondblclick = (e) => { e.stopPropagation(); onDbl(node); };
+    row.oncontextmenu = (e) => { e.preventDefault(); openTreeMenu(e, node); };
+    wrap.appendChild(row);
+
+    if (isOpen) for (const c of kids) wrap.appendChild(renderNode(c, depth + 1));
+    return wrap;
+  }
+
+  function keyOf(node) {
+    switch (node.kind) {
+      case "type": return "type:" + node.db_type;
+      case "env": return "env:" + node.id + (node.db_type ? ":" + node.db_type : "");
+      case "group": return "grp:" + node.id + (node.db_type ? ":" + node.db_type : "");
+      case "conn": return "conn:" + node.id;
+      case "db": return "db:" + node.connId + ":" + node.db;
+      case "folder": return "fld:" + node.connId + ":" + node.db + ":" + node.folder;
+      case "table": return "tbl:" + node.connId + ":" + node.db + ":" + node.name + (node.isView ? ":v" : "");
+      case "method": return "meth:" + node.connId + ":" + node.db + ":" + node.name;
+      case "column": return "col:" + node.connId + ":" + node.db + ":" + node.table + ":" + node.col.name;
+      case "redisdb": return "rdb:" + node.connId + ":" + node.db;
+      case "rediskey": return "rk:" + node.connId + ":" + node.db + ":" + node.name;
+    }
+  }
+  function nodeLabel(node) {
+    if (node.kind === "type") return TYPE_LABEL[node.db_type] || node.db_type;
+    if (node.kind === "method") return node.name.replace(/\(.*\)/, "");
+    if (node.kind === "folder") return node.folder === "views" ? "视图" : node.folder === "methods" ? "方法" : "表";
+    return node.name;
+  }
+  function isSel(node) {
+    if (node.kind === "conn") return node.id === S.selConnId;
+    if (node.kind === "db") return node.connId === S.selConnId && node.db === (S.selDb || "");
+    return false;
+  }
+
+  function toggle(node) {
+    const k = keyOf(node);
+    const willOpen = !S.expanded.has(k);
+    if (willOpen) S.expanded.add(k); else S.expanded.delete(k);
+    if (willOpen && LAZY.has(node.kind) && !S.cache[k] && !S.loading.has(k)) {
+      S.loading.add(k); renderTree();
+      setTimeout(() => {
+        S.cache[k] = buildChildren(node);
+        if (node.kind === "db") {
+          // pre-cache folder children for snappy expand
+          const meta = (STORE[node.connId] || {})[node.db] || { tables: [], views: [], methods: [] };
+          S.cache["fld:" + node.connId + ":" + node.db + ":tables"] = meta.tables.map((t) => ({ kind: "table", connId: node.connId, db: node.db, name: t, isView: false }));
+          S.cache["fld:" + node.connId + ":" + node.db + ":views"] = meta.views.map((t) => ({ kind: "table", connId: node.connId, db: node.db, name: t, isView: true }));
+          S.cache["fld:" + node.connId + ":" + node.db + ":methods"] = meta.methods.map((m) => ({ kind: "method", connId: node.connId, db: node.db, name: m }));
+        }
+        S.loading.delete(k); renderTree();
+      }, 120);
+    } else {
+      renderTree();
+    }
+  }
+
+  function select(node) {
+    if (node.kind === "type") { toggle(node); return; }
+    if (node.kind === "conn") { S.selConnId = node.id; S.selDb = null; }
+    else if (node.kind === "db") { S.selConnId = node.connId; S.selDb = node.db; }
+    else if (node.kind === "rediskey") { browseRedisKey(node.connId, node.db, node.name); return; }
+    else if (node.kind === "table") { browseTable(node.connId, node.db, node.name); return; }
+    else if (node.kind === "method") { showMethod(node.connId, node.db, node.name); return; }
+    else return;
+    syncConnButtons(); renderTree(); renderCtxDb();
+  }
+
+  function onDbl(node) {
+    if (node.kind === "table") browseTable(node.connId, node.db, node.name);
+    else if (node.kind === "column") insertText(node.col.name);
+    else if (node.kind === "method") showMethod(node.connId, node.db, node.name);
+  }
+
+  /* ---------- editor / tabs ---------- */
+  function renderTabs() {
+    const bar = $("tabBar");
+    bar.innerHTML = "";
+    S.tabs.forEach((t) => {
+      const d = document.createElement("div");
+      d.className = "qtab" + (t.id === S.activeTab ? " active" : "");
+      d.innerHTML = '<span>' + t.name + '</span>';
+      if (S.tabs.length > 1) {
+        const x = document.createElement("button");
+        x.className = "qtab__close"; x.textContent = "×"; x.title = "关闭";
+        x.onclick = (e) => { e.stopPropagation(); closeTab(t.id); };
+        d.appendChild(x);
+      }
+      d.onclick = () => switchTab(t.id);
+      bar.appendChild(d);
+    });
+    const add = document.createElement("button");
+    add.className = "tab-new"; add.textContent = "＋"; add.title = "新建查询";
+    add.onclick = newTab;
+    bar.appendChild(add);
+  }
+
+  function switchTab(id) {
+    if (id === S.activeTab) return;
+    saveEditorToTab();
+    S.activeTab = id;
+    const t = S.tabs.find((x) => x.id === id);
+    $("editor").value = t.sql;
+    updateGutter();
+    renderTabs();
+  }
+  function newTab() {
+    saveEditorToTab();
+    const id = "t" + Math.random().toString(36).slice(2, 8);
+    S.tabs.push({ id, name: "查询 " + S.tabs.length, sql: "" });
+    S.activeTab = id;
+    $("editor").value = "";
+    updateGutter();
+    renderTabs();
+  }
+  function closeTab(id) {
+    if (S.tabs.length <= 1) return;
+    const idx = S.tabs.findIndex((t) => t.id === id);
+    S.tabs = S.tabs.filter((t) => t.id !== id);
+    if (id === S.activeTab) { const nx = S.tabs[idx === 0 ? 0 : idx - 1]; S.activeTab = nx.id; $("editor").value = nx.sql; updateGutter(); }
+    renderTabs();
+  }
+  function activeTabObj() { return S.tabs.find((t) => t.id === S.activeTab); }
+  function saveEditorToTab() { const t = activeTabObj(); if (t) t.sql = $("editor").value; }
+
+  function updateGutter() {
+    const lines = $("editor").value.split("\n").length || 1;
+    let h = "";
+    for (let i = 1; i <= lines; i++) h += "<span>" + i + "</span>";
+    $("gutter").innerHTML = h;
+  }
+  function renderCtxDb() {
+    $("ctxDb").textContent = " · 库: " + (S.selDb || "默认");
+  }
+
+  /* ---------- run / browse ---------- */
+  function getEditorSql() {
+    const ta = $("editor");
+    if (ta.selectionStart !== ta.selectionEnd) return ta.value.substring(ta.selectionStart, ta.selectionEnd);
+    return ta.value;
+  }
+
+  function runQuery() {
+    const q = getEditorSql().trim();
+    if (!q) { toast("请输入 SQL"); return; }
+    if (!S.selConnId) { toast("请先选择一个链接"); return; }
+    clearEditState(); S.resultTab = "data";
+    const t0 = performance.now();
+    // simulate a table result from the selected db's first known table (or generic)
+    const conn = connById(S.selConnId);
+    let table = null;
+    if (S.selDb && STORE[S.selConnId] && STORE[S.selConnId][S.selDb]) {
+      const m = STORE[S.selConnId][S.selDb];
+      table = (m.tables[0]) || null;
+    }
+    if (!table) table = "result";
+    const cols = colsFor(S.selConnId, S.selDb || "db", table);
+    const rows = genRows(S.selConnId, S.selDb || "db", table, cols, 0, 200);
+    const ms = Math.round(performance.now() - t0);
+    S.result = { kind: "table", columns: cols.map((c) => c.name), rows, truncated: false, total: 1234, page: 0, pageSize: 200, primaryKeys: pkOf(cols) };
+    S.browseCtx = null;
+    setStatus("ok", "✓ " + ms + "ms · 返回 " + rows.length + " 行 (已截断, 请加 LIMIT)");
+    renderResult();
+  }
+
+  function explainQuery() {
+    const q = getEditorSql().trim();
+    if (!q) { toast("请输入 SQL"); return; }
+    clearEditState(); S.resultTab = "data";
+    S.result = {
+      kind: "table",
+      columns: ["id", "select_type", "table", "type", "key", "rows", "Extra"],
+      rows: [
+        ["1", "SIMPLE", (S.selDb ? "users" : "t"), "ALL", null, "982", ""],
+        ["1", "SIMPLE", "orders", "ref", "idx_user", "3", "Using where"],
+      ],
+      truncated: false, primaryKeys: [],
+    };
+    S.browseCtx = null;
+    setStatus("info", "✓ 已生成执行计划 (EXPLAIN)");
+    renderResult();
+  }
+
+  function browseTable(connId, db, table, page = 0, pageSize = 200) {
+    clearEditState(); S.resultTab = "data"; S.selConnId = connId; S.selDb = db;
+    const cols = colsFor(connId, db, table);
+    const rows = genRows(connId, db, table, cols, page, pageSize);
+    const ms = 40 + (hash(connId + db + table + page) % 80);
+    S.result = { kind: "table", columns: cols.map((c) => c.name), rows, truncated: false, total: 1234, page, pageSize, primaryKeys: pkOf(cols) };
+    S.browseCtx = { connId, db, table, page, pageSize };
+    setStatus("ok", "✓ " + ms + "ms · 返回 " + rows.length + " 行 (第 " + (page + 1) + " 页)");
+    syncConnButtons(); renderTree(); renderCtxDb(); renderResult();
+  }
+
+  function browseRedisKey(connId, db, key) {
+    clearEditState(); S.resultTab = "data"; S.selConnId = connId;
+    const v = "value:" + hash(connId + db + key) % 9999;
+    S.result = { kind: "redis", command: "GET " + key, lines: ["\"" + v + "\"", "TTL: 3600", "type: string"], note: "", truncated: false };
+    S.browseCtx = null;
+    setStatus("ok", "✓ Redis GET " + key);
+    renderResult();
+  }
+
+  function showStructure(connId, db, table) {
+    clearEditState();
+    const cols = colsFor(connId, db, table);
+    const indexes = [
+      { name: "PRIMARY", column: "id", unique: true, seq: 0 },
+      ...(cols.find((c) => c.key === "UNI") ? [{ name: "uni_" + table, column: cols.find((c) => c.key === "UNI").name, unique: true, seq: 0 }] : []),
+    ];
+    const create_sql = "CREATE TABLE `" + table + "` (\n" +
+      cols.map((c) => "  `" + c.name + "` " + c.data_type + (c.nullable === "NO" ? " NOT NULL" : "") + (c.default ? " DEFAULT " + c.default : "") + (c.extra ? " " + c.extra : "") + (c.key === "PRI" ? " PRIMARY KEY" : "")).join(",\n") +
+      "\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+    S.structureView = { connId, db, table, data: { columns: cols, indexes, create_sql } };
+    S.resultTab = "structure";
+    setStatus("info", "已加载表结构: " + db + "." + table);
+    renderResult();
+  }
+
+  function showRelationships(connId, db) {
+    clearEditState();
+    const fks = [
+      { constraint_name: "fk_order_user", table_name: "orders", column_name: "user_id", referenced_table: "users", referenced_column: "id" },
+      { constraint_name: "fk_item_order", table_name: "order_items", column_name: "order_id", referenced_table: "orders", referenced_column: "id" },
+    ];
+    S.relationView = { connId, db, fks };
+    S.resultTab = "relation";
+    setStatus("info", "已加载表关系: " + db);
+    renderResult();
+  }
+
+  function showMethod(connId, db, fullName) {
+    clearEditState();
+    const name = fullName.replace(/\(.*\)/, "");
+    const args = (fullName.match(/\((.*)\)/) || [, ""])[1];
+    const body =
+      "CREATE PROCEDURE `" + db + "`.`" + name + "`(" + args + ")\n" +
+      "BEGIN\n" +
+      "  -- 示例实现（演示用）\n" +
+      "  SELECT COUNT(*) INTO @cnt FROM `" + db + "`.`users`;\n" +
+      "  SELECT @cnt AS result;\n" +
+      "END";
+    S.methodView = { connId, db, method: name, info: { args, body } };
+    S.resultTab = "method";
+    setStatus("info", "已打开方法: " + db + "." + name);
+    renderResult();
+  }
+
+  /* ---------- result render ---------- */
+  function editable() {
+    return !!S.browseCtx && S.result && S.result.kind === "table" && (S.result.primaryKeys || []).length > 0;
+  }
+  function renderResult() {
+    renderResultTabs();
+    renderResultActions();
+    const body = $("resultBody");
+    body.innerHTML = "";
+    if (S.resultTab === "structure") { body.appendChild(renderStructure()); }
+    else if (S.resultTab === "relation") { body.appendChild(renderRelationships()); }
+    else if (S.resultTab === "method") { body.appendChild(renderMethod()); }
+    else body.appendChild(renderData());
+    renderPager();
+  }
+
+  function renderResultTabs() {
+    const tabs = $("resultTabs").querySelectorAll(".rtab");
+    const hasCtx = !!S.browseCtx;
+    tabs.forEach((t) => {
+      const r = t.getAttribute("data-rtab");
+      t.classList.toggle("active", r === S.resultTab);
+      if (r === "structure") t.disabled = !S.structureView && !hasCtx;
+      if (r === "relation") t.disabled = !S.relationView && !hasCtx;
+      if (r === "method") { t.style.display = S.methodView ? "" : "none"; t.disabled = !S.methodView; }
+    });
+    // if current tab becomes disabled, fall back to data
+    const cur = $("resultTabs").querySelector('.rtab[data-rtab="' + S.resultTab + '"]');
+    if (cur && cur.disabled && S.resultTab !== "data") { S.resultTab = "data"; renderResult(); }
+  }
+
+  function renderResultActions() {
+    const box = $("resultActions");
+    box.innerHTML = "";
+    if (S.resultTab === "data") {
+      if (editable()) {
+        if (S.edits && (Object.keys(S.edits).length || S.deletes.size || S.inserts.length)) {
+          addBtn(box, "保存修改", "primary", saveEdits);
+          addBtn(box, "撤销修改", "ghost", clearEditStateAndRender);
+        }
+        addBtn(box, "新增行", "ghost", addInsertRow);
+        addBtn(box, "双击单元格可编辑", "ghost", null, true);
+      }
+      if (S.result && S.result.kind === "table" && S.result.columns.length) {
+        addBtn(box, "导出 CSV", "ghost", exportCsv);
+      }
+    } else {
+      addBtn(box, "返回数据", "ghost", () => { S.resultTab = "data"; renderResult(); });
+    }
+  }
+  function addBtn(parent, label, variant, fn, isHint) {
+    const b = document.createElement("button");
+    b.className = "btn btn--" + (variant === "primary" ? "primary" : "secondary") + " btn--sm";
+    if (isHint) { b.className = "hint"; b.style.background = "transparent"; b.style.border = "none"; b.disabled = true; }
+    b.textContent = label;
+    if (fn) b.onclick = fn;
+    parent.appendChild(b);
+  }
+
+  function renderData() {
+    const frag = document.createElement("div");
+    if (!S.result) { frag.innerHTML = '<div class="empty">执行查询或双击左侧表以查看结果</div>'; return frag; }
+    if (S.result.kind === "redis") {
+      const d = document.createElement("div");
+      d.className = "structure-view";
+      d.innerHTML = '<div class="ddl-head">' + esc(S.result.command) + '</div><pre class="method-def">' +
+        S.result.lines.map(esc).join("\n") + '</pre>';
+      return d;
+    }
+    if (!S.result.columns || S.result.columns.length === 0) { frag.innerHTML = '<div class="empty">无结果集</div>'; return frag; }
+    const pkSet = new Set(S.result.primaryKeys || []);
+    const table = document.createElement("table");
+    table.className = "grid result-table";
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    if (editable()) { const th = document.createElement("th"); th.className = "row-action-col"; htr.appendChild(th); }
+    S.result.columns.forEach((c, i) => {
+      const th = document.createElement("th");
+      th.className = (pkSet.has(c) ? "pk " : "") + (S.selCol === i ? "col-selected " : "");
+      th.innerHTML = esc(c) + (pkSet.has(c) ? " 🔑" : "") + '<span class="col-type">' + (KNOWN[c] ? "" : "") + '</span>';
+      th.onclick = () => { S.selCol = i; S.selRows = new Set(); renderResult(); };
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr); table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    S.result.rows.forEach((row, ri) => {
+      const tr = document.createElement("tr");
+      tr.className = (S.deletes.has(ri) ? "is-deleted " : "") + (S.selRows.has(ri) ? "is-selected" : "");
+      tr.onclick = (e) => onRowClick(ri, e);
+      tr.oncontextmenu = (e) => onRowCtx(ri, e);
+      tr.onmousedown = (e) => onRowDown(ri, e);
+      tr.onmouseenter = () => onRowEnter(ri);
+      if (editable()) {
+        const td = document.createElement("td"); td.className = "row-action-col";
+        const b = document.createElement("button"); b.className = "row-del-btn"; b.textContent = S.deletes.has(ri) ? "↩" : "×"; b.title = S.deletes.has(ri) ? "取消删除" : "标记删除";
+        b.onclick = (e) => { e.stopPropagation(); toggleDelete(ri); };
+        td.appendChild(b); tr.appendChild(td);
+      }
+      row.forEach((v, ci) => {
+        const td = document.createElement("td");
+        const ov = S.edits[ri] && S.edits[ri][ci];
+        const isEditing = S.editing && S.editing.ri === ri && S.editing.ci === ci && !S.deletes.has(ri);
+        td.className = (ov !== undefined ? "cell-dirty " : "") + (editable() && !S.deletes.has(ri) ? "cell-editable " : "") + (S.selCol === ci ? "col-selected " : "");
+        td.title = editable() && !S.deletes.has(ri) ? "双击编辑单元格 · 单击选中整列" : "右键复制";
+        td.onclick = (e) => onCellClick(ri, ci, e);
+        td.oncontextmenu = (e) => onCellCtx(ri, ci, e);
+        td.ondblclick = () => { if (editable() && !S.deletes.has(ri)) { S.editing = { ri, ci }; S.draft = v; renderResult(); } };
+        if (isEditing) {
+          const inp = document.createElement("input"); inp.value = S.draft; inp.className = "cell-edit";
+          inp.onclick = (e) => e.stopPropagation();
+          inp.onblur = commitCell;
+          inp.onkeydown = (e) => { if (e.key === "Enter") commitCell(); else if (e.key === "Escape") { S.editing = null; renderResult(); } };
+          inp.oninput = (e) => S.draft = e.target.value;
+          td.appendChild(inp);
+        } else {
+          td.textContent = ov !== undefined ? ov : (v === null ? "NULL" : v);
+          if (v === null) td.classList.add("cell--null");
+        }
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    // insert rows
+    S.inserts.forEach((ins, ii) => {
+      const tr = document.createElement("tr"); tr.className = "row-insert is-selected";
+      const td0 = document.createElement("td"); td0.className = "row-action-col";
+      const b = document.createElement("button"); b.className = "row-del-btn"; b.textContent = "×"; b.onclick = () => removeInsert(ii);
+      td0.appendChild(b); tr.appendChild(td0);
+      S.result.columns.forEach((_, ci) => {
+        const td = document.createElement("td"); td.className = "insert-cell";
+        const inp = document.createElement("input"); inp.className = "cell-edit"; inp.placeholder = "—"; inp.value = ins[ci] || "";
+        inp.onchange = (e) => setInsertCell(ii, ci, e.target.value);
+        td.appendChild(inp); tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    const wrap = document.createElement("div"); wrap.style.overflow = "auto"; wrap.appendChild(table);
+    return wrap;
+  }
+
+  function renderStructure() {
+    const d = document.createElement("div"); d.className = "structure-view";
+    if (!S.structureView) { d.innerHTML = '<div class="empty">加载表结构…</div>'; return d; }
+    const { db, table, data } = S.structureView;
+    const cols = data.columns.map((c) =>
+      "<tr><td class='col-name'>" + esc(c.name) + "</td><td class='col-type'>" + esc(c.data_type) +
+      "</td><td>" + (c.nullable === "NO" ? "NO" : "YES") + "</td><td>" + (c.key || "—") +
+      "</td><td>" + (c.default != null ? esc(String(c.default)) : "—") + "</td><td>" + (c.extra || "—") + "</td></tr>").join("");
+    const idxMap = new Map();
+    data.indexes.forEach((ix) => { const e = idxMap.get(ix.name) || { columns: [], unique: ix.unique }; e.columns.push(ix.column); idxMap.set(ix.name, e); });
+    const idxRows = [...idxMap.entries()].map(([n, e]) =>
+      "<tr><td class='col-name'>" + esc(n) + "</td><td>" + e.columns.join(", ") + "</td><td>" + (e.unique ? "✓" : "") + "</td></tr>").join("");
+    d.innerHTML =
+      "<table class='grid struct-table'><caption>" + esc(db) + "." + esc(table) + " — 列结构</caption><thead><tr><th>Field</th><th>Type</th><th>Null</th><th>Key</th><th>Default</th><th>Extra</th></tr></thead><tbody>" + cols + "</tbody></table>" +
+      (idxMap.size ? "<table class='grid struct-table'><caption>索引</caption><thead><tr><th>Name</th><th>Columns</th><th>Unique</th></tr></thead><tbody>" + idxRows + "</tbody></table>" : "") +
+      "<div class='ddl-section'><div class='ddl-head'>DDL — SHOW CREATE TABLE</div><pre class='ddl-block'>" + esc(data.create_sql) + "</pre></div>";
+    return d;
+  }
+
+  function renderRelationships() {
+    const d = document.createElement("div"); d.className = "structure-view";
+    if (!S.relationView) { d.innerHTML = '<div class="empty">加载表关系…</div>'; return d; }
+    const { db, fks } = S.relationView;
+    if (!fks.length) { d.innerHTML = '<div class="empty">' + esc(db) + " 中没有外键关系</div>"; return d; }
+    const rows = fks.map((f) =>
+      "<tr><td class='col-name'>" + esc(f.constraint_name) + "</td><td>" + esc(f.table_name) + "</td><td>" + esc(f.column_name) +
+      "</td><td class='fk-arrow'>→</td><td>" + esc(f.referenced_table) + "</td><td>" + esc(f.referenced_column) + "</td></tr>").join("");
+    d.innerHTML = "<table class='grid struct-table'><caption>" + esc(db) + " — 外键关系 (" + fks.length + " 条)</caption><thead><tr><th>Constraint</th><th>子表</th><th>子列</th><th></th><th>父表</th><th>父列</th></tr></thead><tbody>" + rows + "</tbody></table>";
+    return d;
+  }
+
+  function renderMethod() {
+    const d = document.createElement("div"); d.className = "structure-view";
+    if (!S.methodView) { d.innerHTML = '<div class="empty">加载方法…</div>'; return d; }
+    const { db, method, info } = S.methodView;
+    d.innerHTML =
+      "<div class='kv-row'><span class='k'>数据库</span><span class='v'>" + esc(db) + "</span></div>" +
+      "<div class='kv-row'><span class='k'>方法名</span><span class='v'>" + esc(method) + "</span></div>" +
+      "<div class='kv-row'><span class='k'>参数</span><span class='v'>" + (info.args ? esc(info.args) : "(无)") + "</span></div>" +
+      "<div class='ddl-section' style='margin-top:12px'><div class='ddl-head'>定义 — SHOW CREATE PROCEDURE</div><pre class='ddl-block'>" + esc(info.body) + "</pre></div>";
+    return d;
+  }
+
+  function renderPager() {
+    const slot = $("pagerSlot");
+    slot.innerHTML = "";
+    if (S.browseCtx && S.result && S.result.kind === "table" && S.result.total != null) {
+      const totalPages = Math.max(1, Math.ceil(S.result.total / S.browseCtx.pageSize));
+      const cur = S.result.page != null ? S.result.page : 0;
+      const p = document.createElement("div"); p.className = "pager";
+      p.innerHTML = "<button " + (cur <= 0 ? "disabled" : "") + ">上一页</button><span class='pager-info'>第 " + (cur + 1) + " / " + totalPages + " 页 · 共 " + S.result.total + " 行</span><button " + (cur + 1 >= totalPages ? "disabled" : "") + ">下一页</button>";
+      p.children[0].onclick = () => goPage(cur - 1);
+      p.children[2].onclick = () => goPage(cur + 1);
+      slot.appendChild(p);
+    }
+  }
+  function goPage(p) {
+    if (!S.browseCtx) return;
+    const totalPages = Math.max(1, Math.ceil(S.result.total / S.browseCtx.pageSize));
+    const np = Math.min(Math.max(0, p), totalPages - 1);
+    browseTable(S.browseCtx.connId, S.browseCtx.db, S.browseCtx.table, np, S.browseCtx.pageSize);
+  }
+
+  /* ---------- inline edit ---------- */
+  function commitCell() {
+    if (!S.editing) return;
+    const { ri, ci } = S.editing;
+    S.edits[ri] = S.edits[ri] || {};
+    S.edits[ri][ci] = S.draft;
+    S.editing = null;
+    renderResult();
+  }
+  function toggleDelete(ri) {
+    if (S.deletes.has(ri)) S.deletes.delete(ri); else S.deletes.add(ri);
+    renderResult();
+  }
+  function addInsertRow() { S.inserts.push({}); renderResult(); }
+  function removeInsert(ii) { S.inserts = S.inserts.filter((_, i) => i !== ii); renderResult(); }
+  function setInsertCell(ii, ci, v) { S.inserts[ii] = S.inserts[ii] || {}; S.inserts[ii][ci] = v; }
+  function clearEditState() { S.edits = {}; S.deletes = new Set(); S.inserts = []; S.editing = null;
+    S.structureView = null; S.relationView = null; S.methodView = null; S.resultTab = "data"; S.selRows = new Set(); S.selCol = null; }
+  function clearEditStateAndRender() { clearEditState(); renderResult(); }
+  function saveEdits() {
+    const n = Object.keys(S.edits).length + S.deletes.size + S.inserts.length;
+    toast("已保存 " + n + " 处修改 (演示)");
+    clearEditState(); renderResult();
+  }
+
+  /* ---------- selection / copy ---------- */
+  let lastAnchor = 0;
+  function onRowClick(ri, e) {
+    if (e.shiftKey && S.selRows.size) { const [a, b] = [lastAnchor, ri].sort((x, y) => x - y); const s = new Set(); for (let k = a; k <= b; k++) s.add(k); S.selRows = s; }
+    else if (e.metaKey || e.ctrlKey) { const s = new Set(S.selRows); if (s.has(ri)) s.delete(ri); else s.add(ri); S.selRows = s; }
+    else S.selRows = new Set([ri]);
+    lastAnchor = ri; renderResult();
+  }
+  function onRowDown(ri, e) { if (e.button !== 0) return; S._drag = { anchor: ri }; }
+  function onRowEnter(ri) { if (S._drag) { const a = S._drag.anchor; const [lo, hi] = a <= ri ? [a, ri] : [ri, a]; const s = new Set(); for (let k = lo; k <= hi; k++) s.add(k); S.selRows = s; lastAnchor = ri; renderResult(); } }
+  window.addEventListener("mouseup", () => { S._drag = null; });
+  function onCellClick(ri, ci, e) { if (e.shiftKey || e.metaKey || e.ctrlKey) { onRowClick(ri, e); return; } S.selCol = ci; S.selRows = new Set(); renderResult(); }
+  function onRowCtx(ri, e) {
+    e.preventDefault();
+    const eff = S.selRows.has(ri) ? [...S.selRows].sort((a, b) => a - b) : [ri];
+    S.selRows = new Set(eff); lastAnchor = ri;
+    openCopyMenu(e.clientX, e.clientY, eff, null);
+  }
+  function onCellCtx(ri, ci, e) {
+    e.preventDefault(); e.stopPropagation();
+    S.selCol = ci;
+    const eff = S.selRows.has(ri) ? [...S.selRows].sort((a, b) => a - b) : [ri];
+    S.selRows = new Set(eff); lastAnchor = ri;
+    openCopyMenu(e.clientX, e.clientY, eff, ci);
+  }
+  function openCopyMenu(x, y, rows, col) {
+    const items = [];
+    if (col !== null) items.push({ title: "列：" + (S.result.kind === "table" ? S.result.columns[col] : ""), sepBefore: false, head: true });
+    if (col !== null) items.push({ label: "复制选中列为 JSON", onClick: () => copyColJson(col) });
+    if (col !== null) items.push({ sep: true });
+    items.push({ head: true, title: "复制选中 " + rows.length + " 行" });
+    items.push({ label: "复制为 JSON", onClick: () => copyRowsAs("json", rows) });
+    items.push({ label: "复制为 INSERT 语句" + (S.browseCtx ? "" : "（仅浏览表）"), disabled: !S.browseCtx, onClick: () => copyRowsAs("insert", rows) });
+    items.push({ label: "复制为 UPDATE 语句", disabled: !S.browseCtx || !(S.result.primaryKeys || []).length, onClick: () => copyRowsAs("update", rows) });
+    showCtx(x, y, items);
+  }
+
+  async function copyText(t) { try { await navigator.clipboard.writeText(t); } catch (e) {} }
+  function copyRowsAs(kind, rows) {
+    if (!S.result || S.result.kind !== "table") return;
+    const rs = rows.map((ri) => S.result.rows[ri]).filter(Boolean);
+    let text = "";
+    if (kind === "json") text = JSON.stringify(rs.map((r) => Object.fromEntries(S.result.columns.map((c, i) => [c, r[i]]))), null, 2);
+    else if (kind === "insert" && S.browseCtx) text = "INSERT INTO `" + S.browseCtx.table + "` (" + S.result.columns.join(", ") + ") VALUES\n" + rs.map((r) => "  (" + r.map((v) => "'" + (v == null ? "" : String(v).replace(/'/g, "''")) + "'").join(", ") + ")").join(",\n") + ";";
+    else if (kind === "update" && S.browseCtx) text = rs.map((r) => "UPDATE `" + S.browseCtx.table + "` SET " + S.result.columns.map((c, i) => c + " = '" + (r[i] == null ? "" : String(r[i]).replace(/'/g, "''")) + "'").join(", ") + " WHERE " + S.result.primaryKeys.map((pk) => pk + " = '" + r[S.result.columns.indexOf(pk)] + "'").join(" AND ") + ";").join("\n");
+    copyText(text); toast("已复制 " + rows.length + " 行 · " + (kind === "json" ? "JSON" : kind.toUpperCase()));
+    hideCtx();
+  }
+  async function copyColJson(ci) {
+    if (!S.result || S.result.kind !== "table" || ci < 0) return;
+    const arr = S.result.rows.map((r) => { const v = r[ci]; if (v == null) return null; const low = String(v).toLowerCase(); if (low === "true") return true; if (low === "false") return false; if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v); return v; });
+    await copyText(JSON.stringify(arr, null, 2));
+    toast("已复制列 " + S.result.columns[ci] + " · " + arr.length + " 个值 (JSON)");
+    hideCtx();
+  }
+
+  function exportCsv() {
+    if (!S.result || S.result.kind !== "table") return;
+    const lines = [S.result.columns.join(",")];
+    S.result.rows.forEach((r) => lines.push(r.map((v) => '"' + (v == null ? "" : String(v).replace(/"/g, '""')) + '"').join(",")));
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = (S.browseCtx ? S.browseCtx.table : "query") + ".csv"; a.click();
+    toast("已导出 CSV");
+  }
+
+  /* ---------- status bar ---------- */
+  function setStatus(kind, text) { S.status.text = text; S.status.kind = kind; const bar = $("statusBar"); bar.className = "status-bar " + kind; bar.querySelector(".status-text").textContent = text;
+    let extra = "";
+    const conn = connById(S.selConnId);
+    if (conn) extra += " · <span class='status-conn'>● " + esc(conn.name) + "</span>";
+    if (S.selDb) extra += " · <span class='status-db'>▦ " + esc(S.selDb) + "</span>";
+    bar.innerHTML = "<span class='status-dot'></span><span class='status-text'>" + esc(text) + "</span>" + extra;
+  }
+  function syncConnButtons() {
+    const has = !!S.selConnId;
+    $("editConnBtn").disabled = !has;
+    $("delConnBtn").disabled = !has;
+  }
+
+  /* ---------- chat ---------- */
+  function renderChat() {
+    const log = $("chatLog");
+    log.innerHTML = "";
+    S.chat.forEach((m) => {
+      const d = document.createElement("div"); d.className = "msg msg--" + m.role;
+      const role = m.role === "user" ? "你" : m.role === "tool" ? "工具" : "AI";
+      d.innerHTML = "<div class='msg__body'><div class='msg__role'>" + role + "</div>" + esc(m.content || "…") + "</div>";
+      log.appendChild(d);
+    });
+    log.scrollTop = log.scrollHeight;
+    $("chatStatus").textContent = (S.status.llm_enabled ? "LLM 已配置" : "LLM 未配置") + " · 脱敏: " + (S.status.mask_enabled ? "开" : "关");
+  }
+  function sendChat() {
+    const input = $("chatInput");
+    const text = input.value.trim();
+    if (!text || S.streaming) return;
+    S.chat.push({ role: "user", content: text }); input.value = "";
+    S.chat.push({ role: "assistant", content: "" });
+    renderChat(); S.streaming = true;
+    const reply = "已为你分析「" + (S.selDb || "当前库") + "」。基于示例数据，" + (S.browseCtx ? "表 `" + S.browseCtx.table + "`" : "该库") + " 共约 " + (S.result && S.result.total ? S.result.total : 1234) + " 行。可以切换到「表结构」查看字段定义，或使用「导出 CSV」下载结果。需要我生成具体的 SQL 吗？";
+    let i = 0;
+    const tick = () => {
+      if (i <= reply.length) { S.chat[S.chat.length - 1].content = reply.slice(0, i); renderChat(); i += 3; setTimeout(tick, 18); }
+      else { S.streaming = false; }
+    };
+    setTimeout(tick, 120);
+  }
+  function toggleChat() {
+    S.chatOpen = !S.chatOpen;
+    $("chatPanel").style.display = S.chatOpen ? "" : "none";
+    $("chatRail").style.display = S.chatOpen ? "none" : "flex";
+    document.querySelector(".app").classList.toggle("chat-collapsed", !S.chatOpen);
+  }
+
+  /* ---------- context menus (tree) ---------- */
+  function openTreeMenu(e, node) {
+    const items = treeMenuItems(node);
+    if (!items.length) return;
+    showCtx(e.clientX, e.clientY, items);
+  }
+  function treeMenuItems(node) {
+    const copy = (t) => { copyText(t); toast("已复制"); hideCtx(); };
+    switch (node.kind) {
+      case "conn": return [
+        { label: "新建查询", onClick: () => select(node) },
+        { label: "编辑链接", onClick: () => openConnForm(node.id) },
+        { sep: true },
+        { label: "删除链接", danger: true, onClick: () => delConn(node.id) },
+      ];
+      case "db": return [
+        { label: "新建查询 (USE `" + node.db + "`)", onClick: () => { S.selConnId = node.connId; S.selDb = node.db; insertText("USE `" + node.db + "`;\n"); syncConnButtons(); renderTree(); renderCtxDb(); } },
+        { label: "表关系", onClick: () => showRelationships(node.connId, node.db) },
+        { label: "刷新", onClick: () => refreshNode(node) },
+      ];
+      case "table": return [
+        { label: node.isView ? "打开视图" : "打开表", onClick: () => browseTable(node.connId, node.db, node.name) },
+        { label: "表结构", onClick: () => showStructure(node.connId, node.db, node.name) },
+        { label: "复制名称", onClick: () => copy(node.name) },
+        { label: "生成 SELECT", onClick: () => { S.selConnId = node.connId; S.selDb = node.db; insertText("SELECT * FROM `" + node.db + "`.`" + node.name + "` LIMIT 100;\n"); syncConnButtons(); renderTree(); renderCtxDb(); } },
+      ];
+      case "method": return [
+        { label: "查看方法定义", onClick: () => showMethod(node.connId, node.db, node.name) },
+        { label: "复制名称", onClick: () => copy(node.name.replace(/\(.*\)/, "")) },
+        { label: "生成 CALL", onClick: () => insertText("CALL `" + node.db + "`.`" + node.name.replace(/\(.*\)/, "") + "`();\n") },
+      ];
+      case "column": return [
+        { label: "插入列名", onClick: () => insertText(node.col.name) },
+        { label: "复制列名", onClick: () => copy(node.col.name) },
+      ];
+      case "redisdb": return [{ label: "刷新", onClick: () => refreshNode(node) }];
+      case "rediskey": return [
+        { label: "打开键", onClick: () => browseRedisKey(node.connId, node.db, node.name) },
+        { label: "复制键名", onClick: () => copy(node.name) },
+      ];
+      case "type": return [
+        { head: true, title: (TYPE_LABEL[node.db_type] || node.db_type) },
+        { label: "展开全部", onClick: () => expandType(node.db_type) },
+      ];
+      case "env": return [
+        { label: "新建组（在“" + node.name + "”下）", onClick: () => newGroup(node.id, node.db_type) },
+        { label: "重命名环境", onClick: () => renameContainer("env:" + node.id, node.name) },
+        { sep: true },
+        { label: "删除环境", danger: true, onClick: () => removeContainer("env:" + node.id) },
+      ];
+      case "group": return [
+        { label: "重命名分组", onClick: () => renameContainer("grp:" + node.id, node.name) },
+        { sep: true },
+        { label: "删除分组", danger: true, onClick: () => removeContainer("grp:" + node.id) },
+      ];
+    }
+    return [];
+  }
+  function refreshNode(node) {
+    const k = keyOf(node);
+    delete S.cache[k];
+    if (node.kind === "db") { delete S.cache["fld:" + node.connId + ":" + node.db + ":tables"]; delete S.cache["fld:" + node.connId + ":" + node.db + ":views"]; delete S.cache["fld:" + node.connId + ":" + node.db + ":methods"]; }
+    S.expanded.add(k); toggle(node); hideCtx();
+  }
+  function expandType(type) {
+    for (const env of TREE.environments) {
+      if ((env.groups || []).some((g) => (g.connections || []).some((c) => c.db_type === type))) {
+        S.expanded.add(keyOf({ kind: "env", id: env.id, db_type: type }));
+        for (const g of env.groups) if ((g.connections || []).some((c) => c.db_type === type)) S.expanded.add(keyOf({ kind: "group", id: g.id, db_type: type }));
+      }
+    }
+    renderTree(); hideCtx();
+  }
+  function showCtx(x, y, items) {
+    const root = $("ctxRoot");
+    root.innerHTML = "";
+    const bd = document.createElement("div"); bd.className = "ctx-backdrop"; bd.onmousedown = hideCtx; bd.oncontextmenu = (e) => { e.preventDefault(); hideCtx(); };
+    root.appendChild(bd);
+    const m = document.createElement("div"); m.className = "ctx-menu";
+    m.style.left = Math.min(x, window.innerWidth - 220) + "px";
+    m.style.top = Math.min(y, window.innerHeight - items.length * 32 - 12) + "px";
+    items.forEach((it) => {
+      if (it.sep) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); return; }
+      if (it.head) { const t = document.createElement("div"); t.className = "ctx-title"; t.textContent = it.title || ""; m.appendChild(t); return; }
+      const b = document.createElement("button"); b.textContent = it.label; if (it.danger) b.style.color = "var(--danger-500)"; if (it.disabled) b.disabled = true;
+      b.onclick = it.onClick; m.appendChild(b);
+    });
+    root.appendChild(m);
+  }
+  function hideCtx() { $("ctxRoot").innerHTML = ""; }
+
+  /* ---------- add / edit connections, groups, envs ---------- */
+  function newConnSeed() { return { id: "", name: "", db_type: "mysql", host: "127.0.0.1", port: 3306, user: "", password: "", database: "", group_id: null }; }
+  function openConnForm(id) {
+    const cfg = id ? (() => { const c = connById(id); return { ...c, password: "" }; })() : newConnSeed();
+    const editing = !!id;
+    const groupOpts = TREE.environments.flatMap((env) => env.groups.map((g) => '<option value="' + g.id + '">' + esc(env.name) + " / " + esc(g.name) + "</option>")).join("");
+    const html =
+      "<div class='overlay'><div class='modal'>" +
+      "<h3>" + (editing ? "编辑链接" : "新增链接") + "</h3>" +
+      field("名称", "<input id='f_name' value='" + esc(cfg.name) + "'>") +
+      field("类型", "<select id='f_type'><option value='mysql'" + (cfg.db_type === "mysql" ? " selected" : "") + ">mysql</option><option value='redis'" + (cfg.db_type === "redis" ? " selected" : "") + ">redis</option></select>") +
+      field("主机", "<input id='f_host' value='" + esc(cfg.host) + "'>") +
+      field("端口", "<input id='f_port' type='number' value='" + cfg.port + "'>") +
+      field("用户", "<input id='f_user' value='" + esc(cfg.user) + "'>") +
+      field("密码", "<input id='f_pass' type='password' placeholder='" + (editing ? "(留空保持不变)" : "") + "'>") +
+      field("数据库", "<input id='f_db' value='" + esc(cfg.database) + "'>") +
+      field("分组", "<select id='f_grp'><option value=''>（不分组）</option>" + groupOpts + "</select>") +
+      "<div class='modal-actions'><button class='btn btn--secondary btn--sm' id='f_test'>测试连接</button><span class='spacer'></span><button class='btn btn--secondary btn--sm' id='f_cancel'>取消</button><button class='btn btn--primary btn--sm' id='f_save'>保存</button></div>" +
+      "</div></div>";
+    $("modalRoot").innerHTML = html;
+    $("f_type").onchange = (e) => { $("f_port").value = e.target.value === "redis" ? 6379 : 3306; };
+    $("f_cancel").onclick = closeModal;
+    $("f_test").onclick = () => toast("连接成功 (演示)");
+    $("f_save").onclick = () => {
+      const type = $("f_type").value;
+      const rec = { id: cfg.id || "c_" + Math.random().toString(36).slice(2, 8), name: $("f_name").value || "未命名链接", db_type: type, host: $("f_host").value, port: Number($("f_port").value), user: $("f_user").value, password: $("f_pass").value, database: $("f_db").value, group_id: $("f_grp").value || null };
+      const grpId = rec.group_id || (TREE.environments[0] && TREE.environments[0].groups[0] && TREE.environments[0].groups[0].id);
+      // place into tree
+      let placed = false;
+      for (const env of TREE.environments) for (const g of env.groups) if (g.id === grpId) { if (!g.connections) g.connections = []; if (editing) { const i = g.connections.findIndex((c) => c.id === rec.id); if (i >= 0) g.connections[i] = rec; else g.connections.push(rec); } else g.connections.push(rec); placed = true; }
+      if (!placed && TREE.environments[0]) { const g = TREE.environments[0].groups[0]; if (!g.connections) g.connections = []; g.connections.push(rec); }
+      if (!editing) STORE[rec.id] = { main: { tables: ["t1", "t2"], views: [], methods: [] } };
+      else if (!STORE[rec.id]) STORE[rec.id] = { main: { tables: ["t1", "t2"], views: [], methods: [] } };
+      let envId = null;
+      for (const env of TREE.environments) if (env.groups.some((g) => g.id === grpId)) { envId = env.id; break; }
+      S.expanded.add("type:" + rec.db_type);
+      if (envId) S.expanded.add("env:" + envId + ":" + rec.db_type);
+      S.expanded.add("grp:" + grpId + ":" + rec.db_type);
+      if (!editing) { S.selConnId = rec.id; S.selDb = null; syncConnButtons(); renderCtxDb(); }
+      closeModal(); renderTree(); toast(editing ? "已更新链接" : "已新增链接");
+    };
+  }
+  function delConn(id) {
+    if (!confirm("确认删除该链接？")) return;
+    for (const env of TREE.environments) for (const g of env.groups) g.connections = g.connections.filter((c) => c.id !== id);
+    if (S.selConnId === id) { S.selConnId = null; S.selDb = null; }
+    renderTree(); syncConnButtons(); renderCtxDb(); toast("已删除链接"); hideCtx();
+  }
+  function newGroup(envId, dbType) {
+    const name = prompt("分组名称", "新分组"); if (!name || !name.trim()) return;
+    const env = TREE.environments.find((e) => e.id === envId) || TREE.environments[0];
+    env.groups.push({ id: "grp_" + Math.random().toString(36).slice(2, 6), name: name.trim(), order: env.groups.length, connections: [] });
+    S.expanded.add(keyOf({ kind: "env", id: env.id, db_type: dbType }));
+    renderTree(); toast("已新建分组");
+  }
+  function newEnv() {
+    const name = prompt("环境名称", "新环境"); if (!name || !name.trim()) return;
+    TREE.environments.push({ id: "env_" + Math.random().toString(36).slice(2, 6), name: name.trim(), order: TREE.environments.length, groups: [] });
+    renderTree(); toast("已新建环境");
+  }
+  function renameContainer(key, oldName) {
+    const name = prompt("重命名", oldName); if (!name || !name.trim() || name.trim() === oldName) return;
+    if (key.startsWith("env:")) { const e = TREE.environments.find((x) => x.id === key.slice(4)); if (e) e.name = name.trim(); }
+    else if (key.startsWith("grp:")) { for (const env of TREE.environments) { const g = env.groups.find((x) => x.id === key.slice(4)); if (g) { g.name = name.trim(); break; } } }
+    renderTree(); toast("已重命名"); hideCtx();
+  }
+  function removeContainer(key) {
+    if (!confirm("确认删除该容器？若其中还有分组或链接将无法删除。")) return;
+    if (key.startsWith("env:")) TREE.environments = TREE.environments.filter((e) => e.id !== key.slice(4));
+    else if (key.startsWith("grp:")) for (const env of TREE.environments) env.groups = env.groups.filter((g) => g.id !== key.slice(4));
+    renderTree(); toast("已删除容器"); hideCtx();
+  }
+
+  /* ---------- LLM settings modal ---------- */
+  const PRESETS = [
+    { id: "openai", label: "OpenAI", color: "#10a37f" },
+    { id: "qwen", label: "通义千问", color: "#615ced" },
+    { id: "hunyuan", label: "混元", color: "#0052d9" },
+    { id: "deepseek", label: "DeepSeek", color: "#4d6bfe" },
+    { id: "zhipu", label: "智谱 GLM", color: "#2f4ed8" },
+    { id: "openrouter", label: "OpenRouter", color: "#ff6b35" },
+    { id: "ollama", label: "Ollama", color: "#64748b" },
+    { id: "anthropic", label: "Claude", color: "#d97757" },
+    { id: "custom", label: "自定义", color: "#8b94a3" },
+  ];
+  function openSettings() {
+    let vendor = S.llmCfg.vendor;
+    const presetHtml = PRESETS.map((p) => "<button class='preset" + (p.id === vendor ? " is-active" : "") + "' data-vendor='" + p.id + "'><span class='preset__logo' style='background:" + p.color + "'>" + p.label.slice(0, 1) + "</span><span class='preset__name'>" + p.label + "</span></button>").join("");
+    const html =
+      "<div class='overlay'><div class='modal'>" +
+      "<h3>LLM 模型设置</h3>" +
+      "<div class='section'><div class='section__title'>模型厂商</div><div class='preset-grid' id='presetGrid'>" + presetHtml + "</div></div>" +
+      "<div class='section'><div class='section__title'>连接</div>" +
+      field("API Base URL", "<input id='s_url' value='" + esc(S.llmCfg.base_url) + "'>") +
+      field("模型名称", "<input id='s_model' value='" + esc(S.llmCfg.model) + "'>") +
+      field("API Key", "<input id='s_key' type='password' placeholder='" + (S.llmCfg.enabled ? "已保存（留空保持不变）" : "输入密钥") + "'>") +
+      "</div>" +
+      "<label class='cfg-check'><input type='checkbox' id='s_ai'" + (S.aiCompleteOn ? " checked" : "") + "><span>AI 内联补全（Tab 接受灰色建议）<small>输入停顿后由 LLM 续写 SQL；需先配置模型。默认关闭，以免产生延迟与费用。</small></span></label>" +
+      "<div class='modal-actions'><button class='btn btn--secondary btn--sm' id='s_cancel'>取消</button><button class='btn btn--primary btn--sm' id='s_save'>保存</button></div>" +
+      "</div></div>";
+    $("modalRoot").innerHTML = html;
+    $("presetGrid").querySelectorAll(".preset").forEach((b) => b.onclick = () => {
+      vendor = b.getAttribute("data-vendor");
+      $("presetGrid").querySelectorAll(".preset").forEach((x) => x.classList.toggle("is-active", x === b));
+    });
+    $("s_cancel").onclick = closeModal;
+    $("s_save").onclick = () => {
+      S.llmCfg = { vendor, base_url: $("s_url").value, model: $("s_model").value, enabled: true };
+      S.aiCompleteOn = $("s_ai").checked;
+      S.status.llm_enabled = true;
+      renderChat();
+      closeModal(); toast("已保存 LLM 配置");
+    };
+  }
+
+  /* ---------- history modal ---------- */
+  function openHistory() {
+    const items = S.history.map((h) =>
+      "<div class='history-item'><div class='history-meta'>" + (h.name ? "<span class='snippet-badge'>片段</span>" : "") +
+      "<span>" + esc(connById(h.conn_id) ? connById(h.conn_id).name : "—") + "</span><span>" + esc(h.db || "") + "</span></div>" +
+      "<pre class='history-sql'>" + esc(h.sql) + "</pre>" +
+      "<div class='history-actions'><button class='btn btn--secondary btn--sm' data-load='" + h.id + "'>载入</button><button class='btn btn--secondary btn--sm' data-del='" + h.id + "'>删除</button></div></div>"
+    ).join("");
+    const html = "<div class='overlay' id='histOverlay'><div class='modal wide'><h3>查询历史 / 片段</h3><div class='history-list'>" + (items || "<div class='empty'>暂无记录</div>") + "</div><div class='modal-actions'><span class='spacer'></span><button class='btn btn--secondary btn--sm' id='h_close'>关闭</button></div></div></div>";
+    $("modalRoot").innerHTML = html;
+    $("histOverlay").onclick = (e) => { if (e.target.id === "histOverlay") closeModal(); };
+    $("h_close").onclick = closeModal;
+    $("modalRoot").querySelectorAll("[data-load]").forEach((b) => b.onclick = () => { const h = S.history.find((x) => x.id === b.getAttribute("data-load")); saveEditorToTab(); $("editor").value = h.sql; updateGutter(); S.selConnId = h.conn_id; S.selDb = h.db; syncConnButtons(); renderCtxDb(); renderTree(); closeModal(); });
+    $("modalRoot").querySelectorAll("[data-del]").forEach((b) => b.onclick = () => { S.history = S.history.filter((x) => x.id !== b.getAttribute("data-del")); openHistory(); });
+  }
+  function saveSnippet() {
+    const sql = $("editor").value;
+    if (!sql.trim()) { toast("编辑器为空"); return; }
+    const name = prompt("片段名称", "我的查询"); if (!name || !name.trim()) return;
+    S.history.unshift({ id: "h" + Date.now(), name: name.trim(), conn_id: S.selConnId, db: S.selDb, sql, created: Date.now() });
+    toast("已保存为片段");
+  }
+  function formatSql() {
+    const v = $("editor").value;
+    const pretty = v.replace(/\s*;\s*/g, ";\n").replace(/\b(SELECT|FROM|WHERE|AND|OR|ORDER BY|GROUP BY|LIMIT|INSERT INTO|UPDATE|SET|VALUES|DELETE FROM|JOIN|LEFT JOIN|ON)\b/g, "\n$1").replace(/\n{2,}/g, "\n");
+    $("editor").value = pretty.trim() ? pretty : v;
+    updateGutter(); toast("已格式化");
+  }
+
+  /* ---------- command palette ---------- */
+  function buildPalette() {
+    const cmds = [];
+    TREE.environments.forEach((env) => env.groups.forEach((g) => g.connections.forEach((c) => {
+      cmds.push({ type: "链接", label: c.name, sub: c.db_type + " · " + (STORE[c.id] ? Object.keys(STORE[c.id]).join(", ") : ""), run: () => { S.selConnId = c.id; S.selDb = null; syncConnButtons(); renderTree(); renderCtxDb(); } });
+      if (STORE[c.id]) Object.entries(STORE[c.id]).forEach(([db, meta]) => {
+        meta.tables.forEach((t) => cmds.push({ type: "表", label: t, sub: c.name + " / " + db, run: () => browseTable(c.id, db, t) }));
+        meta.views.forEach((t) => cmds.push({ type: "视图", label: t, sub: c.name + " / " + db, run: () => browseTable(c.id, db, t) }));
+      });
+    })));
+    return cmds;
+  }
+  function openPalette() {
+    const p = $("palette"); p.classList.add("show");
+    const input = $("paletteInput"); input.value = ""; renderPaletteList(buildPalette());
+    input.focus();
+    input.oninput = () => { const q = input.value.toLowerCase(); renderPaletteList(buildPalette().filter((c) => c.label.toLowerCase().includes(q) || c.sub.toLowerCase().includes(q))); };
+  }
+  function renderPaletteList(list) {
+    const el = $("paletteList");
+    if (!list.length) { el.innerHTML = "<div class='palette__empty'>无匹配项</div>"; return; }
+    el.innerHTML = list.slice(0, 50).map((c, i) => "<div class='palette__item' data-i='" + i + "'><span>" + esc(c.label) + "</span><span class='muted'>" + esc(c.sub) + "</span><span class='pi-type'>" + c.type + "</span></div>").join("");
+    el.querySelectorAll(".palette__item").forEach((it) => it.onclick = () => { const i = Number(it.getAttribute("data-i")); list[i].run(); closePalette(); });
+  }
+  function closePalette() { $("palette").classList.remove("show"); }
+
+  /* ---------- helpers ---------- */
+  function field(label, control) { return "<label>" + label + control + "</label>"; }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+  function insertText(t) { const ta = $("editor"); ta.value += t; ta.focus(); updateGutter(); saveEditorToTab(); }
+  function toast(m) { if (window.CQ && window.CQ.toast) window.CQ.toast(m); else alert(m); }
+  function closeModal() { $("modalRoot").innerHTML = ""; }
+
+  /* ---------- global event wiring ---------- */
+  function wire() {
+    // delegated actions
+    document.addEventListener("click", (e) => {
+      const t = e.target.closest("[data-action]");
+      if (t) { const a = t.getAttribute("data-action");
+        if (a === "run") runQuery();
+        else if (a === "explain") explainQuery();
+        else if (a === "format") formatSql();
+        else if (a === "save-snippet") saveSnippet();
+        else if (a === "history") openHistory();
+        else if (a === "open-settings") openSettings();
+        else if (a === "send-chat") sendChat();
+        else if (a === "toggle-chat") toggleChat();
+        else if (a === "new-conn") { hideAddMenu(); openConnForm(null); }
+        else if (a === "new-group") { hideAddMenu(); newGroup(TREE.environments[0].id); }
+        else if (a === "new-env") { hideAddMenu(); newEnv(); }
+      }
+    });
+    $("addBtn").onclick = (e) => { e.stopPropagation(); const m = $("addMenu"); m.style.display = m.style.display === "none" ? "block" : "none"; };
+    document.addEventListener("click", () => hideAddMenu());
+    function hideAddMenu() { $("addMenu").style.display = "none"; }
+    $("editConnBtn").onclick = () => { if (S.selConnId) openConnForm(S.selConnId); };
+    $("delConnBtn").onclick = () => { if (S.selConnId) delConn(S.selConnId); };
+    $("searchTrigger").onclick = openPalette;
+    $("searchTrigger").onkeydown = (e) => { if (e.key === "Enter") openPalette(); };
+
+    $("editor").addEventListener("input", () => { updateGutter(); saveEditorToTab(); });
+    $("editor").addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); runQuery(); }
+    });
+    $("chatInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } });
+    $("chatInput").addEventListener("input", function () { this.style.height = "auto"; this.style.height = Math.min(this.scrollHeight, 120) + "px"; });
+
+    $("resultTabs").querySelectorAll(".rtab").forEach((b) => b.onclick = () => {
+      const r = b.getAttribute("data-rtab");
+      if (r === "structure") { if (S.structureView) S.resultTab = "structure"; else if (S.browseCtx) showStructure(S.browseCtx.connId, S.browseCtx.db, S.browseCtx.table); }
+      else if (r === "relation") { if (S.relationView) S.resultTab = "relation"; else if (S.browseCtx) showRelationships(S.browseCtx.connId, S.browseCtx.db); }
+      else if (r === "method") { if (S.methodView) S.resultTab = "method"; }
+      else S.resultTab = "data";
+      renderResult();
+    });
+
+    // palette close
+    $("palette").addEventListener("click", (e) => { if (e.target.id === "palette") closePalette(); });
+    document.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(); }
+      if (e.key === "Escape") { closePalette(); closeModal(); hideCtx(); }
+    });
+    document.addEventListener("contextmenu", (e) => { if (e.target.closest(".result-table")) e.preventDefault(); });
+  }
+
+  /* ---------- init ---------- */
+  function init() {
+    // auto-select first connection
+    const first = TREE.environments[0].groups[0].connections[0];
+    S.selConnId = first.id; S.selDb = null;
+    $("editor").value = "SELECT * FROM users LIMIT 100;\n";
+    renderTree();
+    ["mysql", "redis"].forEach((t) => { if (countConns(t) > 0) S.expanded.add("type:" + t); });
+    renderTree(); renderTabs(); updateGutter(); syncConnButtons(); renderCtxDb();
+    renderResult(); renderChat(); setStatus("ok", "就绪 · 已连接 " + first.name);
+    wire();
+  }
+  init();
+})();
+</script>
+</body>
+</html>

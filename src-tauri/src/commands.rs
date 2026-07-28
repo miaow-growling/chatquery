@@ -444,6 +444,8 @@ pub async fn execute_query(
     conn_id: String,
     query: String,
     db: String,
+    page: u32,
+    page_size: u32,
 ) -> Result<QueryOutput, String> {
     let cfg = {
         let store = state.store.lock().unwrap();
@@ -460,16 +462,22 @@ pub async fn execute_query(
             DbType::Mysql => {
                 let target_db: Option<&str> =
                     if db.is_empty() { None } else { Some(db.as_str()) };
-                let r: QueryResult = chatquery::db::mysql::query(&cfg, &query, target_db)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let r: QueryResult = chatquery::db::mysql::query_paged(
+                    &cfg,
+                    &query,
+                    target_db,
+                    page as usize,
+                    page_size as usize,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
                 Ok::<QueryOutput, String>(QueryOutput::Table {
                     columns: r.columns,
                     rows: r.rows,
                     truncated: r.truncated,
-                    total: None,
-                    page: 0,
-                    page_size: 0,
+                    total: r.total,
+                    page: page as usize,
+                    page_size: page_size as usize,
                     primary_keys: vec![],
                 })
             }

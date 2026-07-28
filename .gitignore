@@ -21,3 +21,6 @@ Thumbs.db
 *.local
 .env
 .env.*
+
+# Tauri dev runtime log (regenerated on every run, may leak local paths)
+.tauri-dev.log

@@ -18,6 +18,8 @@ import type {
   VendorPreset,
 } from "./types";
 
+const PAGE_SIZE = 200;
+
 export const api = {
   /// Full tree model (environments → groups → connections), supersedes
   /// `list_connections`.
@@ -26,8 +28,20 @@ export const api = {
   updateConnection: (cfg: ConnInput) => invoke("update_connection", { cfg }),
   deleteConnection: (id: string) => invoke("delete_connection", { id }),
   testConnection: (cfg: ConnInput) => invoke<boolean>("test_connection", { cfg }),
-  executeQuery: (connId: string, query: string, db?: string | null) =>
-    invoke<QueryOutput>("execute_query", { connId, query, db: db ?? "" }),
+  executeQuery: (
+    connId: string,
+    query: string,
+    db?: string | null,
+    page?: number,
+    pageSize?: number
+  ) =>
+    invoke<QueryOutput>("execute_query", {
+      connId,
+      query,
+      db: db ?? "",
+      page: page ?? 0,
+      pageSize: pageSize ?? PAGE_SIZE,
+    }),
   getSchema: (connId: string, db?: string | null) =>
     invoke<Schema>("get_schema", { connId, db: db ?? null }),
   // Inline AI completion (Copilot-style): ask the LLM for the SQL suffix that

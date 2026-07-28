@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ChatQuery · 设置</title>
+<link rel="stylesheet" href="assets/tokens.css" />
+<link rel="stylesheet" href="assets/components.css" />
+<style>
+  .settings__main { padding-bottom: 80px; }
+  .back-link { font-size: var(--fs-sm); color: var(--text-secondary); cursor: pointer; }
+  .back-link:hover { color: var(--brand); }
+  .conn-card { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-md); margin-bottom: var(--sp-3); background: var(--bg-surface); }
+  .conn-card__icon { width: 34px; height: 34px; border-radius: var(--r-sm); display: grid; place-items: center; background: var(--bg-inset); font-size: 16px; flex: none; }
+  .conn-card__body { flex: 1; min-width: 0; }
+  .conn-card__name { font-weight: var(--fw-medium); }
+  .conn-card__meta { font-size: var(--fs-xs); color: var(--text-tertiary); }
+  .appearance-opt { display: flex; align-items: center; justify-content: space-between; padding: var(--sp-3) var(--sp-4); border: 1px solid var(--border-strong); border-radius: var(--r-md); cursor: pointer; margin-bottom: var(--sp-3); }
+  .appearance-opt.is-active { border-color: var(--brand); background: var(--brand-soft); }
+  .appearance-opt__preview { display: flex; gap: 4px; }
+  .appearance-opt__preview i { width: 16px; height: 16px; border-radius: 3px; display: block; }
+  .swatch-light { background: #f7f8fa; border: 1px solid #cdd2d9; }
+  .swatch-dark { background: #0d1117; border: 1px solid #333c47; }
+  .swatch-brand { background: var(--brand-500); }
+  .mcp-item { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); border: 1px solid var(--border); border-radius: var(--r-md); margin-bottom: var(--sp-3); }
+  .mcp-item__body { flex: 1; }
+  .mcp-item__name { font-weight: var(--fw-medium); }
+  .mcp-item__desc { font-size: var(--fs-xs); color: var(--text-tertiary); }
+  .status-pill { font-size: var(--fs-2xs); padding: 2px 8px; border-radius: var(--r-full); }
+  .status-pill.on { background: var(--success-soft); color: var(--success-500); }
+  .status-pill.off { background: var(--bg-subtle); color: var(--text-tertiary); }
+</style>
+</head>
+<body>
+<div class="settings">
+  <nav class="settings__nav">
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 12px 4px">
+      <span class="back-link" id="backLink">← 返回工作区</span>
+    </div>
+    <div class="settings__group">设置</div>
+    <button class="nav-item is-active" data-nav="appearance">🎨 外观</button>
+    <button class="nav-item" data-nav="llm">⚙ LLM 模型</button>
+    <button class="nav-item" data-nav="links">🔗 链接管理</button>
+    <button class="nav-item" data-nav="mcp">🧩 MCP 服务</button>
+  </nav>
+
+  <div class="settings__main">
+    <!-- 外观 -->
+    <section class="settings__panel" data-panel="appearance">
+      <h1 class="settings__h">外观</h1>
+      <p class="settings__sub">主题与显示偏好，立即生效并自动保存。</p>
+      <div class="section">
+        <h2 class="section__title">主题</h2>
+        <div class="appearance-opt" data-theme-opt="light">
+          <span><b>浅色</b><div class="muted" style="font-size:12px">明亮干净，适合办公环境</div></span>
+          <span class="appearance-opt__preview"><i class="swatch-light"></i><i class="swatch-dark"></i><i class="swatch-brand"></i></span>
+        </div>
+        <div class="appearance-opt" data-theme-opt="dark">
+          <span><b>深色</b><div class="muted" style="font-size:12px">终端调性，长时间使用更护眼</div></span>
+          <span class="appearance-opt__preview"><i class="swatch-dark"></i><i class="swatch-light"></i><i class="swatch-brand"></i></span>
+        </div>
+        <div class="appearance-opt" data-theme-opt="system">
+          <span><b>跟随系统</b><div class="muted" style="font-size:12px">根据操作系统外观自动切换</div></span>
+          <span class="appearance-opt__preview"><i class="swatch-light"></i><i class="swatch-dark"></i></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- LLM -->
+    <section class="settings__panel" data-panel="llm" style="display:none">
+      <h1 class="settings__h">LLM 模型</h1>
+      <p class="settings__sub">配置用于 Chat 与 AI 补全的模型厂商。</p>
+      <div class="section">
+        <h2 class="section__title">模型厂商</h2>
+        <div class="preset-grid" id="presetGrid"></div>
+      </div>
+      <div class="section">
+        <h2 class="section__title">连接</h2>
+        <div class="field"><label class="field__label">API Base URL</label><input class="input" id="s_url" value="https://api.openai.com/v1"></div>
+        <div class="field"><label class="field__label">模型名称</label><input class="input" id="s_model" value="gpt-4o-mini"></div>
+        <div class="field"><label class="field__label">API Key</label><input class="input" type="password" id="s_key" placeholder="输入密钥"></div>
+        <label class="cfg-check"><input type="checkbox" id="s_ai"><span>AI 内联补全（Tab 接受灰色建议）<small>输入停顿后由 LLM 续写 SQL；需先配置模型。默认关闭，以免产生延迟与费用。</small></span></label>
+        <div class="modal-actions"><span class="spacer"></span><button class="btn btn--primary btn--sm" id="s_save">保存</button></div>
+      </div>
+    </section>
+
+    <!-- 链接管理 -->
+    <section class="settings__panel" data-panel="links" style="display:none">
+      <h1 class="settings__h">链接管理</h1>
+      <p class="settings__sub">管理与分组你的数据库连接。</p>
+      <div class="section">
+        <div style="display:flex;justify-content:flex-end;margin-bottom:12px"><button class="btn btn--primary btn--sm" id="addLink">＋ 新增链接</button></div>
+        <div id="linkList"></div>
+      </div>
+    </section>
+
+    <!-- MCP -->
+    <section class="settings__panel" data-panel="mcp" style="display:none">
+      <h1 class="settings__h">MCP 服务</h1>
+      <p class="settings__sub">开启后可在 Chat 中调用对应的外部工具。</p>
+      <div class="section" id="mcpList"></div>
+    </section>
+  </div>
+</div>
+
+<div id="modalRoot"></div>
+<script src="assets/theme.js"></script>
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+
+  /* nav */
+  document.querySelectorAll(".nav-item").forEach((b) => b.onclick = () => {
+    document.querySelectorAll(".nav-item").forEach((x) => x.classList.remove("is-active"));
+    b.classList.add("is-active");
+    const nav = b.getAttribute("data-nav");
+    document.querySelectorAll(".settings__panel").forEach((p) => p.style.display = p.getAttribute("data-panel") === nav ? "" : "none");
+  });
+  $("backLink").onclick = () => location.href = "workspace.html";
+
+  /* appearance */
+  function syncThemeOpts() {
+    const cur = document.documentElement.getAttribute("data-theme");
+    document.querySelectorAll("[data-theme-opt]").forEach((o) => o.classList.toggle("is-active", o.getAttribute("data-theme-opt") === cur));
+  }
+  document.querySelectorAll("[data-theme-opt]").forEach((o) => o.onclick = () => {
+    const v = o.getAttribute("data-theme-opt");
+    if (v === "system") {
+      const m = window.matchMedia("(prefers-color-scheme: dark)");
+      const apply = () => window.CQ.setTheme(m.matches ? "dark" : "light");
+      apply();
+      window.CQ._sysMedia = m; m.addEventListener("change", apply);
+      try { localStorage.setItem("cq_theme", "system"); } catch (e) {}
+    } else {
+      if (window.CQ._sysMedia) window.CQ._sysMedia = null;
+      window.CQ.setTheme(v);
+    }
+    syncThemeOpts();
+  });
+  syncThemeOpts();
+
+  /* LLM */
+  const PRESETS = [
+    { id: "openai", label: "OpenAI", color: "#10a37f" },
+    { id: "qwen", label: "通义千问", color: "#615ced" },
+    { id: "hunyuan", label: "混元", color: "#0052d9" },
+    { id: "deepseek", label: "DeepSeek", color: "#4d6bfe" },
+    { id: "zhipu", label: "智谱 GLM", color: "#2f4ed8" },
+    { id: "openrouter", label: "OpenRouter", color: "#ff6b35" },
+    { id: "ollama", label: "Ollama", color: "#64748b" },
+    { id: "anthropic", label: "Claude", color: "#d97757" },
+    { id: "custom", label: "自定义", color: "#8b94a3" },
+  ];
+  let vendor = "openai";
+  $("presetGrid").innerHTML = PRESETS.map((p) =>
+    "<button class='preset' data-vendor='" + p.id + "'><span class='preset__logo' style='background:" + p.color + "'>" + p.label.slice(0,1) + "</span><span class='preset__name'>" + p.label + "</span></button>"
+  ).join("");
+  $("presetGrid").querySelectorAll(".preset").forEach((b) => b.onclick = () => {
+    vendor = b.getAttribute("data-vendor");
+    $("presetGrid").querySelectorAll(".preset").forEach((x) => x.classList.toggle("is-active", x === b));
+    const def = { openai: ["https://api.openai.com/v1","gpt-4o-mini"], qwen:["https://dashscope.aliyuncs.com/compatible-mode/v1","qwen-plus"], hunyuan:["https://api.hunyuan.cloud.tencent.com/v1","hunyuan-turbo"], deepseek:["https://api.deepseek.com/v1","deepseek-chat"], zhipu:["https://open.bigmodel.cn/api/paas/v4","glm-4-flash"], openrouter:["https://openrouter.ai/api/v1","openai/gpt-4o"], ollama:["http://localhost:11434/v1","llama3"], anthropic:["https://api.anthropic.com/v1","claude-3-5-sonnet"], custom:["",""] }[vendor];
+    if (def) { $("s_url").value = def[0]; $("s_model").value = def[1]; }
+  });
+  $("presetGrid").querySelector(".preset").classList.add("is-active");
+  $("s_save").onclick = () => { toast("已保存 LLM 配置 (" + vendor + ")"); };
+
+  /* links */
+  const LINKS = [
+    { id: "c_shop", name: "shop-mysql", db_type: "mysql", host: "10.0.1.10", port: 3306, user: "root", database: "shop" },
+    { id: "c_redis", name: "session-redis", db_type: "redis", host: "10.0.1.20", port: 6379, user: "", database: "" },
+    { id: "c_test", name: "test-mysql", db_type: "mysql", host: "127.0.0.1", port: 3306, user: "dev", database: "test" },
+  ];
+  function renderLinks() {
+    $("linkList").innerHTML = LINKS.map((c) =>
+      "<div class='conn-card'><div class='conn-card__icon'>" + (c.db_type === "redis" ? "🔴" : "🐬") + "</div>" +
+      "<div class='conn-card__body'><div class='conn-card__name'>" + esc(c.name) + "</div><div class='conn-card__meta'>" + c.db_type + " · " + esc(c.host) + ":" + c.port + (c.database ? " / " + esc(c.database) : "") + "</div></div>" +
+      "<button class='btn btn--secondary btn--sm' data-edit='" + c.id + "'>编辑</button>" +
+      "<button class='btn btn--secondary btn--sm' data-del='" + c.id + "'>删除</button></div>"
+    ).join("");
+    $("linkList").querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => openLinkForm(b.getAttribute("data-edit")));
+    $("linkList").querySelectorAll("[data-del]").forEach((b) => b.onclick = () => { if (confirm("确认删除？")) { const id = b.getAttribute("data-del"); const i = LINKS.findIndex((x) => x.id === id); if (i >= 0) LINKS.splice(i, 1); renderLinks(); toast("已删除"); } });
+  }
+  function openLinkForm(id) {
+    const c = id ? { ...LINKS.find((x) => x.id === id), password: "" } : { id: "", name: "", db_type: "mysql", host: "127.0.0.1", port: 3306, user: "", password: "", database: "" };
+    const editing = !!id;
+    $("modalRoot").innerHTML =
+      "<div class='overlay'><div class='modal'><h3>" + (editing ? "编辑链接" : "新增链接") + "</h3>" +
+      "<label class='field__label'>名称</label><input class='input' id='f_name' value='" + esc(c.name) + "'>" +
+      "<label class='field__label'>类型</label><select class='select' id='f_type'><option value='mysql'" + (c.db_type==="mysql"?" selected":"") + ">mysql</option><option value='redis'" + (c.db_type==="redis"?" selected":"") + ">redis</option></select>" +
+      "<label class='field__label'>主机</label><input class='input' id='f_host' value='" + esc(c.host) + "'>" +
+      "<label class='field__label'>端口</label><input class='input' type='number' id='f_port' value='" + c.port + "'>" +
+      "<label class='field__label'>用户</label><input class='input' id='f_user' value='" + esc(c.user) + "'>" +
+      "<label class='field__label'>密码</label><input class='input' type='password' id='f_pass' placeholder='" + (editing?"(留空保持不变)":"") + "'>" +
+      "<label class='field__label'>数据库</label><input class='input' id='f_db' value='" + esc(c.database) + "'>" +
+      "<div class='modal-actions'><button class='btn btn--secondary btn--sm' id='f_cancel'>取消</button><button class='btn btn--primary btn--sm' id='f_save'>保存</button></div></div></div>";
+    $("f_type").onchange = (e) => $("f_port").value = e.target.value === "redis" ? 6379 : 3306;
+    $("f_cancel").onclick = () => $("modalRoot").innerHTML = "";
+    $("f_save").onclick = () => {
+      const rec = { id: c.id || "c_" + Math.random().toString(36).slice(2,8), name: $("f_name").value || "未命名", db_type: $("f_type").value, host: $("f_host").value, port: Number($("f_port").value), user: $("f_user").value, database: $("f_db").value };
+      if (editing) { const i = LINKS.findIndex((x) => x.id === rec.id); if (i >= 0) LINKS[i] = rec; } else LINKS.push(rec);
+      $("modalRoot").innerHTML = ""; renderLinks(); toast(editing ? "已更新链接" : "已新增链接");
+    };
+  }
+  $("addLink").onclick = () => openLinkForm(null);
+  renderLinks();
+
+  /* MCP */
+  const MCPS = [
+    { name: "filesystem", desc: "读写本地文件系统", on: true },
+    { name: "sqlite", desc: "查询本地 SQLite 数据库", on: false },
+    { name: "github", desc: "管理仓库与 Issue", on: false },
+    { name: "fetch", desc: "抓取网页内容", on: true },
+  ];
+  function renderMcp() {
+    $("mcpList").innerHTML = MCPS.map((m, i) =>
+      "<div class='mcp-item'><div class='mcp-item__body'><div class='mcp-item__name'>" + m.name + "</div><div class='mcp-item__desc'>" + m.desc + "</div></div>" +
+      "<span class='status-pill " + (m.on ? "on" : "off") + "'>" + (m.on ? "已启用" : "已停用") + "</span>" +
+      "<label class='switch'><input type='checkbox' " + (m.on ? "checked" : "") + " data-mcp='" + i + "'><span class='switch__track'></span><span class='switch__thumb'></span></label></div>"
+    ).join("");
+    $("mcpList").querySelectorAll("[data-mcp]").forEach((cb) => cb.onchange = () => {
+      const i = Number(cb.getAttribute("data-mcp")); MCPS[i].on = cb.checked; renderMcp();
+    });
+  }
+  renderMcp();
+
+  function toast(m) { if (window.CQ && window.CQ.toast) window.CQ.toast(m); else alert(m); }
+})();
+</script>
+</body>
+</html>
