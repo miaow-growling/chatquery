@@ -336,8 +336,9 @@ body {
 /* ---- pager (table browse) ---- */
 .pager {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 8px 12px;
   padding: 7px 12px;
   background: var(--bg-3);
   border-top: 1px solid var(--border);
@@ -368,27 +369,69 @@ body {
 }
 .pager-size,
 .pager-jump {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   color: var(--fg-dim);
 }
 .pager-size select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  min-width: 64px;
+  height: 24px;
+  padding: 0 22px 0 10px;
   background: var(--bg-2);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 2px 6px;
   font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+.pager-size select:hover,
+.pager-size select:focus {
+  border-color: var(--accent);
+}
+/* Theme-aware custom dropdown arrow */
+.pager-size::after {
+  content: "";
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 4px solid var(--fg-dim);
+  pointer-events: none;
 }
 .pager-jump-input {
-  width: 56px;
+  width: 52px;
+  height: 24px;
+  padding: 0 6px;
   background: var(--bg-2);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 2px 6px;
   font-size: 12px;
+  text-align: center;
+  outline: none;
+}
+.pager-jump-input:hover,
+.pager-jump-input:focus {
+  border-color: var(--accent);
+}
+/* Hide number spinners for a cleaner look */
+.pager-jump-input::-webkit-outer-spin-button,
+.pager-jump-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.pager-jump-input[type="number"] {
+  -moz-appearance: textfield;
 }
 .pager-warn {
   color: #f9c74f;

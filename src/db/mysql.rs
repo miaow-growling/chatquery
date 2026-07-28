@@ -85,14 +85,13 @@ pub async fn query(
 /// `LIMIT page_size OFFSET page*page_size` and computes the true total via a
 /// `SELECT COUNT(*) FROM (<sql>) AS _cq_sub` wrapper.
 ///
-/// The user's own trailing `LIMIT` is stripped first, so pagination always
-/// wins. This is the standard "paged results" semantics of SQL clients
-/// (DBeaver/Navicat "fetch page by page"): a query like `SELECT * FROM t
-/// LIMIT 1000` is taken over by the pager — every page is `page_size` rows and
-/// the UI shows the real total. Trade-off: an explicit small LIMIT such as
-/// `LIMIT 5` is also widened to `page_size`; users who truly want N rows should
-/// rely on the pager instead. `page_size` is clamped to MAX_PAGE_SIZE so a single
-/// page never blows up memory (ADR-006: bounded results).
+/// If the user already wrote a trailing `LIMIT n`, it is respected as a hard
+/// cap: the total is `COUNT(*)` over the limited result set and every page is
+/// drawn from those `n` rows. So `SELECT * FROM t LIMIT 1000` shows a total of
+/// at most 1000 and produces at most `ceil(1000 / page_size)` pages. Only when
+/// no user LIMIT is present does the pager compute/count against the full
+/// result set. `page_size` is clamped to MAX_PAGE_SIZE so a single page never
+/// blows up memory (ADR-006: bounded results).
 pub async fn query_paged(
     cfg: &ConnectionConfig,
     sql: &str,
@@ -107,21 +106,31 @@ pub async fn query_paged(
         _ => connect_pool(cfg).await?,
     };
 
-    let base = strip_limit_offset(sql);
+    let (base, user_limit) = strip_limit_offset(sql);
 
-    // True total row count so the UI can render a pager. Wrapped in a derived
-    // table; if the SQL is too exotic for COUNT (e.g. some top-level UNION
-    // shapes) we leave total = None and the UI simply hides the pager.
-    let total: Option<usize> = sqlx::query_scalar::<_, i64>(&format!(
-        "SELECT COUNT(*) FROM ({}) AS _cq_sub",
-        base
-    ))
-    .fetch_one(&pool)
-    .await
-    .ok()
-    .map(|n| n.max(0) as usize);
+    // True total row count so the UI can render a pager. When the user already
+    // supplied a LIMIT we wrap the limited query so COUNT respects that cap.
+    // If the SQL is too exotic for COUNT (e.g. some top-level UNION shapes) we
+    // leave total = None and the UI simply hides the pager.
+    let count_sql = user_limit.map_or_else(
+        || format!("SELECT COUNT(*) FROM ({}) AS _cq_sub", base),
+        |limit| format!("SELECT COUNT(*) FROM ({} LIMIT {}) AS _cq_sub", base, limit),
+    );
+    let total: Option<usize> = sqlx::query_scalar::<_, i64>(&count_sql)
+        .fetch_one(&pool)
+        .await
+        .ok()
+        .map(|n| n.max(0) as usize);
 
-    let page_sql = format!("{} LIMIT ? OFFSET ?", base);
+    // If the user supplied a LIMIT, paginate inside a derived table so we never
+    // return rows beyond their requested cap.
+    let page_sql = user_limit.map_or_else(
+        || format!("{} LIMIT ? OFFSET ?", base),
+        |limit| format!(
+            "SELECT * FROM ({} LIMIT {}) AS _cq_limited LIMIT ? OFFSET ?",
+            base, limit
+        ),
+    );
     let mut stream = sqlx::query(&page_sql)
         .bind(page_size as u64)
         .bind(offset as u64)
@@ -147,21 +156,33 @@ pub async fn query_paged(
 }
 
 /// Strip a trailing `LIMIT` clause (MySQL's `LIMIT n`, `LIMIT n, m`, and
-/// `LIMIT n OFFSET m` forms) so the SQL can be wrapped in a COUNT(*) derived
-/// table and re-paginated. Only the statement tail is matched; a literal
-/// "LIMIT" inside a string that isn't at the end is untouched. A trailing
-/// statement semicolon is also removed when there was no LIMIT to consume it.
-fn strip_limit_offset(sql: &str) -> String {
+/// `LIMIT n OFFSET m` forms) and return the maximum row cap the user asked for.
+/// Only the statement tail is matched; a literal "LIMIT" inside a string that
+/// isn't at the end is untouched. A trailing statement semicolon is also
+/// removed when there was no LIMIT to consume it.
+fn strip_limit_offset(sql: &str) -> (String, Option<usize>) {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        Regex::new(r"(?i)\s*LIMIT\s+\d+\s*(?:,\s*\d+|\s+OFFSET\s+\d+)?\s*;?\s*$").unwrap()
+        Regex::new(r"(?i)\s*LIMIT\s+(\d+)\s*(?:(?:,\s*(\d+))|(?:OFFSET\s+(\d+)))?\s*;?\s*$")
+            .unwrap()
+    });
+    let caps = re.captures(sql);
+    let user_limit = caps.as_ref().and_then(|c| {
+        // LIMIT offset, count  -> the second number is the cap
+        if let Some(m) = c.get(2) {
+            m.as_str().parse().ok()
+        } else {
+            // LIMIT count [OFFSET offset] -> the first number is the cap
+            c.get(1)?.as_str().parse().ok()
+        }
     });
     let stripped = re.replace(sql, "").trim_end().to_string();
-    if re.is_match(sql) {
+    let base = if caps.is_some() {
         stripped
     } else {
         stripped.trim_end_matches(';').trim_end().to_string()
-    }
+    };
+    (base, user_limit)
 }
 
 async fn decode_row(row: &sqlx::mysql::MySqlRow) -> Vec<String> {
