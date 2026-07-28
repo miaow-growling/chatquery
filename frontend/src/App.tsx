@@ -6,6 +6,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { ErrorBoundary } from "./ErrorBoundary";
 import {
   api,
   chatTurn,
@@ -510,6 +511,7 @@ export function App() {
   // Last operation feedback: timing, affected/returned rows, errors. Replaces
   // the old "run and hope" silence — DBeaver/TablePlus/DataGrip all have one.
   const [runInfo, setRunInfo] = useState<{ kind: "ok" | "err" | "warn" | "info"; text: string } | null>(null);
+  const [running, setRunning] = useState(false);
 
   // --- Collapsible AI panel + theme (Phase 18) ----------------------------
   const [chatOpen, setChatOpen] = useState<boolean>(() => {
@@ -888,8 +890,11 @@ export function App() {
   };
 
   const runQuery = useCallback(async () => {
-    const t = activeRef.current;
-    if (!t?.connId) return;
+    const t = active;
+    if (!t?.connId) {
+      setRunInfo({ kind: "warn", text: "请先选择连接 / 数据库" });
+      return;
+    }
     const editor = editorRef.current;
     if (!editor) return;
     const sel = editor.getSelection().trim();
@@ -897,6 +902,8 @@ export function App() {
     if (!q.trim()) return;
     clearEditState();
     setResultTab("data");
+    setRunInfo(null);
+    setRunning(true);
     const t0 = performance.now();
     try {
       const r = await api.executeQuery(t.connId, q, t.db);
@@ -912,17 +919,24 @@ export function App() {
         browseCtx: null,
       }));
       setRunInfo({ kind: "err", text: `✗ ${ms}ms · ${String(e)}` });
+    } finally {
+      setRunning(false);
     }
-  }, []);
+  }, [active]);
 
   // Keep a live ref so the editor's run-key (registered once) always calls the
   // latest `runQuery` closure with the current selected connection.
   const runQueryRef = useRef<() => void>(() => {});
-  runQueryRef.current = runQuery;
+  useEffect(() => {
+    runQueryRef.current = runQuery;
+  }, [runQuery]);
 
   const explainQuery = useCallback(async () => {
-    const t = activeRef.current;
-    if (!t?.connId) return;
+    const t = active;
+    if (!t?.connId) {
+      setRunInfo({ kind: "warn", text: "请先选择连接 / 数据库" });
+      return;
+    }
     const editor = editorRef.current;
     if (!editor) return;
     const sel = editor.getSelection().trim();
@@ -930,6 +944,8 @@ export function App() {
     if (!q.trim()) return;
     clearEditState();
     setResultTab("data");
+    setRunInfo(null);
+    setRunning(true);
     const t0 = performance.now();
     try {
       const r = await api.explainQuery(t.connId, q, t.db);
@@ -944,8 +960,10 @@ export function App() {
         browseCtx: null,
       }));
       setRunInfo({ kind: "err", text: `✗ ${ms}ms · ${String(e)}` });
+    } finally {
+      setRunning(false);
     }
-  }, []);
+  }, [active]);
 
   const selectConn = (id: string) => {
     setSelId(id);
@@ -1207,6 +1225,9 @@ export function App() {
   // appended at the bottom for INSERT. Otherwise it's a plain read-only table
   // (or Redis lines). Primary-key columns are tagged with a key glyph.
   const renderData = () => {
+    const fmt = (c: unknown) =>
+      c == null ? "" : typeof c === "object" ? JSON.stringify(c) : String(c);
+    if (running) return <div className="empty">执行中…</div>;
     if (!result) return <div className="empty">执行查询以查看结果</div>;
     if (result.kind === "redis") {
       return (
@@ -1216,18 +1237,37 @@ export function App() {
               {l}
             </div>
           ))}
-          {result.note && <div className="redis-note">{result.note}</div>}
+          {result.note && (
+            <div
+              className={
+                "redis-note" +
+                (result.lines.length === 0 ? " redis-error" : "")
+              }
+            >
+              {result.note}
+            </div>
+          )}
         </div>
       );
     }
-    if (result.columns.length === 0) return <div className="empty">无结果集</div>;
-    const pkSet = new Set(result.primaryKeys ?? []);
+    if (result.kind !== "table") {
+      return (
+        <div className="empty">未知结果类型：{String((result as any).kind)}</div>
+      );
+    }
+    const cols = Array.isArray(result.columns) ? result.columns : [];
+    const rows = Array.isArray(result.rows) ? result.rows : [];
+    const pkSet = new Set(
+      Array.isArray(result.primaryKeys) ? result.primaryKeys : []
+    );
+    if (cols.length === 0)
+      return <div className="empty">无结果集</div>;
     return (
       <table className={"result-table" + (dragging ? " selecting" : "")}>
         <thead>
           <tr>
             {editable && <th className="row-action-col" />}
-            {result.columns.map((c, i) => (
+            {cols.map((c, i) => (
               <th
                 key={i}
                 className={
@@ -1246,7 +1286,7 @@ export function App() {
           </tr>
         </thead>
         <tbody>
-          {result.rows.map((row, ri) => {
+          {rows.map((row, ri) => {
             const isDeleted = deletes.has(ri);
             return (
               <tr
@@ -1314,7 +1354,7 @@ export function App() {
                           }}
                         />
                       ) : (
-                        ov ?? v
+                        fmt(ov ?? v)
                       )}
                     </td>
                   );
@@ -1333,7 +1373,7 @@ export function App() {
                   ×
                 </button>
               </td>
-              {result.columns.map((_, ci) => (
+              {cols.map((_, ci) => (
                 <td key={ci} className="insert-cell">
                   <input
                     className="cell-edit"
@@ -1971,6 +2011,9 @@ export function App() {
               >
                 数据
               </button>
+              <span className="result-status">
+                [{result?.kind ?? "null"} rows={result?.kind === "table" && Array.isArray(result.rows) ? result.rows.length : "-"}]
+              </span>
               <button
                 className={"rtab" + (resultTab === "structure" ? " active" : "")}
                 disabled={!structureView && !browseCtx}
@@ -2001,7 +2044,7 @@ export function App() {
                   {editable && !hasEdits && (
                     <span className="hint">双击单元格可编辑</span>
                   )}
-                  {result && result.kind === "table" && result.columns.length > 0 && (
+                  {result && result.kind === "table" && Array.isArray(result.columns) && result.columns.length > 0 && (
                     <button onClick={() => exportCsv(result, browseCtx)}>导出 CSV</button>
                   )}
                   {result && "truncated" in result && result.truncated && (
@@ -2013,6 +2056,10 @@ export function App() {
               )}
             </div>
           </div>
+          {runInfo && (
+            <div className={"run-banner run-" + runInfo.kind}>{runInfo.text}</div>
+          )}
+          <ErrorBoundary>
           <div className="result-body">
             {resultTab === "structure" ? (
               structureView ? (
@@ -2030,11 +2077,12 @@ export function App() {
               renderData()
             )}
           </div>
+          </ErrorBoundary>
           {resultTab === "data" && pager}
         </div>
         <div className={"status-bar" + (runInfo ? " " + runInfo.kind : "")}>
           <span className="status-dot" />
-          <span className="status-text">{runInfo ? runInfo.text : "就绪"}</span>
+          <span className="status-text">{running ? "执行中…" : runInfo ? runInfo.text : "就绪"}</span>
           {active?.connId && findConn(active.connId) && (
             <span className="status-conn">● {findConn(active.connId)!.name}</span>
           )}
