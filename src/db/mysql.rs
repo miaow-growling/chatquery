@@ -4,10 +4,16 @@ use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 use sqlx::types::chrono::NaiveDateTime;
+use regex::Regex;
 use sqlx::{Column, Row, ValueRef};
+use std::sync::OnceLock;
 
 /// Max rows kept in memory per query result (ADR-006: bounded results).
 pub const PAGE_LIMIT: usize = 200;
+/// Hard ceiling for a single pager page. The UI offers 100..=1000; this guards
+/// the channel against absurd values. Beyond 1000 the per-page memory and
+/// WebView render cost grow fast, so keep it aligned with the UI max.
+pub const MAX_PAGE_SIZE: usize = 1000;
 
 #[derive(Debug, Clone)]
 pub struct QueryResult {
@@ -71,6 +77,91 @@ pub async fn query(
         total: None,
         primary_keys: vec![],
     })
+}
+
+/// Paginated execution of an arbitrary SQL string — powers the result pager for
+/// ad-hoc queries. Unlike `query` (which hard-truncates at PAGE_LIMIT and can
+/// leave a dirty streaming connection), this rewrites the SQL to
+/// `LIMIT page_size OFFSET page*page_size` and computes the true total via a
+/// `SELECT COUNT(*) FROM (<sql>) AS _cq_sub` wrapper.
+///
+/// The user's own trailing `LIMIT` is stripped first, so pagination always
+/// wins. This is the standard "paged results" semantics of SQL clients
+/// (DBeaver/Navicat "fetch page by page"): a query like `SELECT * FROM t
+/// LIMIT 1000` is taken over by the pager — every page is `page_size` rows and
+/// the UI shows the real total. Trade-off: an explicit small LIMIT such as
+/// `LIMIT 5` is also widened to `page_size`; users who truly want N rows should
+/// rely on the pager instead. `page_size` is clamped to MAX_PAGE_SIZE so a single
+/// page never blows up memory (ADR-006: bounded results).
+pub async fn query_paged(
+    cfg: &ConnectionConfig,
+    sql: &str,
+    database: Option<&str>,
+    page: usize,
+    page_size: usize,
+) -> Result<QueryResult> {
+    let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
+    let offset = page.saturating_mul(page_size);
+    let pool = match database {
+        Some(db) if !db.is_empty() => connect_pool_db(cfg, db).await?,
+        _ => connect_pool(cfg).await?,
+    };
+
+    let base = strip_limit_offset(sql);
+
+    // True total row count so the UI can render a pager. Wrapped in a derived
+    // table; if the SQL is too exotic for COUNT (e.g. some top-level UNION
+    // shapes) we leave total = None and the UI simply hides the pager.
+    let total: Option<usize> = sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT COUNT(*) FROM ({}) AS _cq_sub",
+        base
+    ))
+    .fetch_one(&pool)
+    .await
+    .ok()
+    .map(|n| n.max(0) as usize);
+
+    let page_sql = format!("{} LIMIT ? OFFSET ?", base);
+    let mut stream = sqlx::query(&page_sql)
+        .bind(page_size as u64)
+        .bind(offset as u64)
+        .fetch(&pool);
+    let mut columns: Vec<String> = Vec::new();
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    while let Some(row) = stream.try_next().await.map_err(AppError::Sqlx)? {
+        if columns.is_empty() {
+            for c in row.columns() {
+                columns.push(c.name().to_string());
+            }
+        }
+        rows.push(decode_row(&row).await);
+    }
+    pool.close().await;
+    Ok(QueryResult {
+        columns,
+        rows,
+        truncated: false,
+        total,
+        primary_keys: vec![],
+    })
+}
+
+/// Strip a trailing `LIMIT` clause (MySQL's `LIMIT n`, `LIMIT n, m`, and
+/// `LIMIT n OFFSET m` forms) so the SQL can be wrapped in a COUNT(*) derived
+/// table and re-paginated. Only the statement tail is matched; a literal
+/// "LIMIT" inside a string that isn't at the end is untouched. A trailing
+/// statement semicolon is also removed when there was no LIMIT to consume it.
+fn strip_limit_offset(sql: &str) -> String {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"(?i)\s*LIMIT\s+\d+\s*(?:,\s*\d+|\s+OFFSET\s+\d+)?\s*;?\s*$").unwrap()
+    });
+    let stripped = re.replace(sql, "").trim_end().to_string();
+    if re.is_match(sql) {
+        stripped
+    } else {
+        stripped.trim_end_matches(';').trim_end().to_string()
+    }
 }
 
 async fn decode_row(row: &sqlx::mysql::MySqlRow) -> Vec<String> {
@@ -334,7 +425,7 @@ pub async fn list_columns(
 /// Read-only paginated browse of a table:
 /// `SELECT * FROM \`db\`.\`tbl\` LIMIT ? OFFSET ?`, plus a `SELECT COUNT(*)`
 /// for the total row count so the UI can render a pager. `page` is 0-based;
-/// `page_size` is clamped to PAGE_LIMIT. Identifiers are quoted (backticks
+/// `page_size` is clamped to MAX_PAGE_SIZE. Identifiers are quoted (backticks
 /// stripped, then wrapped) so a hostile name can't break out — and legitimate
 /// names with spaces/special chars are preserved (unlike a sanitize that
 /// would have dropped them and produced "table not found").
@@ -345,7 +436,7 @@ pub async fn browse(
     page: usize,
     page_size: usize,
 ) -> Result<QueryResult> {
-    let page_size = page_size.min(PAGE_LIMIT).max(1);
+    let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
     let offset = page.saturating_mul(page_size);
     let pool = connect_pool_db(cfg, database).await?;
 

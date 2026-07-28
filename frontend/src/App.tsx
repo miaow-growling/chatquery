@@ -338,6 +338,8 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
 
 /// Rows per page when browsing a table (kept in sync with the backend PAGE_LIMIT).
 const PAGE_SIZE = 200;
+/// User-selectable page sizes for the result pager (must be <= backend MAX_PAGE_SIZE).
+const PAGE_SIZE_OPTIONS = [100, 200, 500, 1000];
 
 interface BrowseCtx {
   connId: string;
@@ -421,6 +423,10 @@ export function App() {
     },
   ]);
   const [activeTabId, setActiveTabId] = useState<string>(INITIAL_TAB);
+  // Current page size for query results / table browse. Selectable 100..1000.
+  const [pageSize, setPageSize] = useState<number>(PAGE_SIZE);
+  // Raw text of the "jump to page" input (kept as string for controlled input).
+  const [jumpPage, setJumpPage] = useState<string>("");
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
 
@@ -877,6 +883,12 @@ export function App() {
     if ("rows" in r) {
       const n = r.rows.length;
       const trunc = "truncated" in r && r.truncated;
+      if (r.total != null && r.total > n) {
+        return {
+          kind: "ok",
+          text: `✓ ${ms}ms · 第 ${(r.page ?? 0) + 1} 页 / 共 ${r.total} 行`,
+        };
+      }
       return {
         kind: trunc ? "warn" : "ok",
         text: `✓ ${ms}ms · 返回 ${n} 行${trunc ? " (已截断, 请加 LIMIT)" : ""}`,
@@ -906,9 +918,9 @@ export function App() {
     setRunning(true);
     const t0 = performance.now();
     try {
-      const r = await api.executeQuery(t.connId, q, t.db);
+      const r = await api.executeQuery(t.connId, q, t.db, 0, pageSize);
       const ms = Math.round(performance.now() - t0);
-      setActiveTab((tab) => ({ ...tab, result: r, browseCtx: null }));
+      setActiveTab((tab) => ({ ...tab, sql: q, result: r, browseCtx: null }));
       void api.logQuery(t.connId, t.db, q);
       setRunInfo(runStatFor(r, ms));
     } catch (e) {
@@ -922,7 +934,35 @@ export function App() {
     } finally {
       setRunning(false);
     }
-  }, [active]);
+  }, [active, pageSize]);
+
+  // Re-run the *currently displayed* SQL at a given page (pager navigation for
+  // ad-hoc query results). Uses the tab's stored `sql` — i.e. the last executed
+  // statement — not the editor buffer, so paging never picks up unsaved edits.
+  // `size` lets the page-size selector pass an explicit size; otherwise the
+  // current `pageSize` state is used.
+  const runQueryAt = useCallback(async (page: number, size?: number) => {
+    const t = active;
+    if (!t?.connId) return;
+    const q = t.sql;
+    if (!q.trim()) return;
+    const sz = size ?? pageSize;
+    setRunning(true);
+    setRunInfo(null);
+    const t0 = performance.now();
+    try {
+      const r = await api.executeQuery(t.connId, q, t.db, page, sz);
+      const ms = Math.round(performance.now() - t0);
+      setActiveTab((tab) => ({ ...tab, result: r, browseCtx: null }));
+      setRunInfo(runStatFor(r, ms));
+    } catch (e) {
+      const ms = Math.round(performance.now() - t0);
+      setActiveTab((tab) => ({ ...tab, result: errOut(String(e)), browseCtx: null }));
+      setRunInfo({ kind: "err", text: `✗ ${ms}ms · ${String(e)}` });
+    } finally {
+      setRunning(false);
+    }
+  }, [active, pageSize]);
 
   // Keep a live ref so the editor's run-key (registered once) always calls the
   // latest `runQuery` closure with the current selected connection.
@@ -1009,19 +1049,44 @@ export function App() {
     []
   );
 
-  // Pager navigation for table browse results.
+  // Page-size selector in the pager. For ad-hoc results we re-run the displayed
+  // SQL at page 0 with the new size; for table browse we re-browse with it.
+  // The size is passed explicitly so we don't read the not-yet-updated
+  // `pageSize` state via a stale closure.
+  const changePageSize = (v: number) => {
+    setPageSize(v);
+    if (browseCtx) {
+      void browseTable(browseCtx.connId, browseCtx.db, browseCtx.table, 0, v);
+    } else {
+      void runQueryAt(0, v);
+    }
+  };
+
+  // Pager navigation: table browse uses browseTable, ad-hoc query results use
+  // runQueryAt (re-runs the displayed SQL at the requested page).
   const goPage = (p: number) => {
-    if (!browseCtx || !result || result.kind !== "table" || result.total == null) return;
-    const totalPages = Math.max(1, Math.ceil(result.total / browseCtx.pageSize));
+    if (!result || result.kind !== "table" || result.total == null) return;
+    const ps = browseCtx?.pageSize ?? pageSize;
+    const totalPages = Math.max(1, Math.ceil(result.total / ps));
     const np = Math.min(Math.max(0, p), totalPages - 1);
-    void browseTable(browseCtx.connId, browseCtx.db, browseCtx.table, np, browseCtx.pageSize);
+    if (browseCtx) {
+      void browseTable(browseCtx.connId, browseCtx.db, browseCtx.table, np, ps);
+    } else {
+      void runQueryAt(np);
+    }
   };
 
   const pager =
-    browseCtx && result && result.kind === "table" && result.total != null ? (
+    result && result.kind === "table" && result.total != null ? (
       (() => {
-        const totalPages = Math.max(1, Math.ceil(result.total / browseCtx.pageSize));
-        const cur = result.page ?? browseCtx.page;
+        const ps = browseCtx?.pageSize ?? pageSize;
+        const totalPages = Math.max(1, Math.ceil(result.total / ps));
+        const cur = result.page ?? 0;
+        const doJump = () => {
+          const n = parseInt(jumpPage, 10);
+          if (!Number.isNaN(n)) goPage(n - 1);
+          setJumpPage("");
+        };
         return (
           <div className="pager">
             <button disabled={cur <= 0} onClick={() => goPage(cur - 1)}>
@@ -1033,6 +1098,42 @@ export function App() {
             <button disabled={cur + 1 >= totalPages} onClick={() => goPage(cur + 1)}>
               下一页
             </button>
+            <span className="pager-sep" />
+            <label className="pager-size">
+              每页
+              <select
+                value={ps}
+                onChange={(e) => changePageSize(Number(e.target.value))}
+              >
+                {PAGE_SIZE_OPTIONS.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+              行
+            </label>
+            <span className="pager-jump">
+              跳至
+              <input
+                type="number"
+                min={1}
+                max={totalPages}
+                value={jumpPage}
+                onChange={(e) => setJumpPage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") doJump();
+                }}
+                className="pager-jump-input"
+              />
+              页
+              <button onClick={doJump}>跳转</button>
+            </span>
+            {ps > 200 && (
+              <span className="pager-warn">
+                ⚠ 每页 {ps} 行：结果集较大，内存与渲染开销升高
+              </span>
+            )}
           </div>
         );
       })()
