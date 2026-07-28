@@ -1705,7 +1705,21 @@ export function App() {
   };
 
   const loadQuery = (item: QueryItem) => {
-    setActiveTab((t) => ({ ...t, sql: item.sql }));
+    // Restore the connection + database the query was logged under, so the
+    // user lands back in the same context they ran it from. If the connection
+    // has been deleted, fall back to loading only the SQL into the current tab.
+    const conn = item.conn_id ? findConn(item.conn_id) : undefined;
+    if (conn) {
+      setSelId(conn.id);
+      setActiveTab((t) => ({
+        ...t,
+        sql: item.sql,
+        connId: conn.id,
+        db: item.db ?? "",
+      }));
+    } else {
+      setActiveTab((t) => ({ ...t, sql: item.sql }));
+    }
     editorRef.current?.replaceValue(item.sql);
     editorRef.current?.view.focus();
     setHistoryOpen(false);
@@ -2370,6 +2384,7 @@ export function App() {
                   <div className="history-meta">
                     {h.name ? <span className="snippet-badge">片段</span> : null}
                     <span>{findConn(h.conn_id ?? "")?.name ?? "—"}</span>
+                    {h.db ? <span className="history-db">▦ {h.db}</span> : null}
                     <span className="history-time">{fmtTime(h.created)}</span>
                   </div>
                   <pre className="history-sql">{h.sql}</pre>

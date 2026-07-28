@@ -1217,6 +1217,10 @@ textarea:focus-visible {
 .history-time {
   margin-left: auto;
 }
+.history-db {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
 .snippet-badge {
   background: var(--mauve);
   color: #1e1e2e;
