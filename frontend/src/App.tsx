@@ -711,12 +711,25 @@ export function App() {
       .map((ri) => result.rows[ri])
       .filter(Boolean) as string[][];
     if (rows.length === 0) return;
+    // Table name: prefer browse context, then try to parse it from the SQL's
+    // FROM clause. If neither yields one (JOIN/UNION/subquery), use a
+    // placeholder so the user can still get a template to edit.
+    const table =
+      browseCtx?.table ??
+      extractTableFromSql(active?.sql ?? "") ??
+      "<table>";
+    let pks = result.primaryKeys ?? [];
     let text = "";
     if (kind === "json") text = rowsToJson(result.columns, rows);
-    else if (kind === "insert" && browseCtx)
-      text = rowsToInsert(browseCtx.table, result.columns, rows);
-    else if (kind === "update" && browseCtx)
-      text = rowsToUpdate(browseCtx.table, result.columns, result.primaryKeys ?? [], rows);
+    else if (kind === "insert")
+      text = rowsToInsert(table, result.columns, rows);
+    else if (kind === "update") {
+      // No PKs available (ad-hoc query without browseCtx): fall back to
+      // using all columns in WHERE. rowsToUpdate handles pks=[] by
+      // putting every column in both SET and WHERE — a template the user
+      // edits to change only the columns they want.
+      text = rowsToUpdate(table, result.columns, pks, rows);
+    }
     await copyText(text);
     showToast(
       `已复制 ${rows.length} 行 · ${
@@ -2503,31 +2516,16 @@ export function App() {
             <div className="ctx-title">复制选中 {ctxMenu.rows.length} 行</div>
             <button onClick={() => void copyRowsAs("json")}>复制为 JSON</button>
             <button
-              disabled={!browseCtx}
               onClick={() => void copyRowsAs("insert")}
-              title={browseCtx ? undefined : "仅浏览表时可生成 INSERT 语句"}
             >
-              复制为 INSERT 语句{browseCtx ? "" : "（仅浏览表）"}
+              复制为 INSERT 语句
             </button>
             <button
-              disabled={
-                !browseCtx ||
-                (result?.kind === "table" && (result.primaryKeys?.length ?? 0) === 0)
-              }
               onClick={() => void copyRowsAs("update")}
-              title={
-                !browseCtx
-                  ? "仅浏览表时可生成 UPDATE 语句"
-                  : result?.kind === "table" && (result.primaryKeys?.length ?? 0) === 0
-                  ? "该结果无主键，无法生成 UPDATE"
-                  : undefined
-              }
             >
               复制为 UPDATE 语句
-              {!browseCtx
-                ? "（仅浏览表）"
-                : result?.kind === "table" && (result.primaryKeys?.length ?? 0) === 0
-                ? "（无主键）"
+              {result?.kind === "table" && (result.primaryKeys?.length ?? 0) === 0
+                ? "（无主键·全列定位）"
                 : ""}
             </button>
               </>
@@ -2605,6 +2603,24 @@ function rowsToJson(columns: string[], rows: string[][]): string {
   return JSON.stringify(objs, null, 2);
 }
 
+/// Best-effort extraction of a single table name from a SQL statement's
+/// FROM clause. Handles `FROM \`table\``, `FROM table`, and
+/// `FROM db.table`. Returns null for JOINs, subqueries, and UNIONs (more
+/// than one table in the FROM), so the caller can fall back to a placeholder.
+function extractTableFromSql(sql: string): string | null {
+  // Remove newlines for easier matching, keep original for fallback.
+  const flat = sql.replace(/\n/g, " ");
+  // Match FROM clause: capture the table identifier. Stop at the first
+  // JOIN/ON/WHERE/GROUP/ORDER/LIMIT/HAVING/semicolon to avoid grabbing
+  // multiple tables.
+  const m = flat.match(
+    /\bFROM\s+`?(\w+)`?(?:\s*`?\s*\.?\s*`?(\w+)`?)?\s*(?:\s+(?:JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|WHERE|GROUP|ORDER|LIMIT|HAVING|UNION|;|$))/i
+  );
+  if (!m) return null;
+  // db.table form — take just the table part (last capture group).
+  return m[2] || m[1];
+}
+
 function rowsToInsert(table: string, columns: string[], rows: string[][]): string {
   const escId = (c: string) => "`" + c.replace(/`/g, "``") + "`";
   const cols = columns.map(escId).join(", ");
@@ -2621,6 +2637,22 @@ function rowsToUpdate(
   rows: string[][]
 ): string {
   const escId = (c: string) => "`" + c.replace(/`/g, "``") + "`";
+  const tname = table.replace(/`/g, "``");
+  // No primary keys: fall back to using every column in both SET and WHERE.
+  // This produces a template the user edits — change SET values to the new
+  // data, WHERE stays as-is to locate the row. It's verbose but correct.
+  if (pks.length === 0) {
+    const stmts = rows.map((r) => {
+      const set = columns
+        .map((c, i) => `${escId(c)}=${sqlLit(r[i] ?? "")}`)
+        .join(", ");
+      const where = columns
+        .map((c, i) => `${escId(c)}=${sqlLit(r[i] ?? "")}`)
+        .join(" AND ");
+      return `UPDATE \`${tname}\` SET ${set} WHERE ${where};`;
+    });
+    return stmts.join("\n");
+  }
   const pkIdx = pks.map((p) => columns.indexOf(p)).filter((i) => i >= 0);
   const stmts = rows.map((r) => {
     const set = columns
@@ -2632,7 +2664,7 @@ function rowsToUpdate(
     const where = pkIdx
       .map((i) => `${escId(columns[i])}=${sqlLit(r[i] ?? "")}`)
       .join(" AND ");
-    return `UPDATE \`${table.replace(/`/g, "``")}\` SET ${set} WHERE ${where};`;
+    return `UPDATE \`${tname}\` SET ${set} WHERE ${where};`;
   });
   return stmts.join("\n");
 }
