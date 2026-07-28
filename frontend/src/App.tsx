@@ -724,10 +724,49 @@ export function App() {
     else if (kind === "insert")
       text = rowsToInsert(table, result.columns, rows);
     else if (kind === "update") {
-      // No PKs available (ad-hoc query without browseCtx): fall back to
-      // using all columns in WHERE. rowsToUpdate handles pks=[] by
-      // putting every column in both SET and WHERE — a template the user
-      // edits to change only the columns they want.
+      // Ad-hoc queries don't carry result.primaryKeys (the server only
+      // fills them on the browse path). Resolve a real PK from the DB so
+      // an `id`-bearing row produces a proper `WHERE id=...` instead of a
+      // noisy all-column template. Order of fallbacks:
+      //   1. fetch real PKs via describeTable (most accurate)
+      //   2. an `id`-like column present in the result (common convention)
+      //   3. all columns (rowsToUpdate puts every column in SET + WHERE)
+      if (
+        pks.length === 0 &&
+        table !== "<table>" &&
+        active?.connId &&
+        active.db
+      ) {
+        try {
+          const struct = await api.describeTable(
+            active.connId,
+            active.db,
+            table
+          );
+          const realPks = struct.indexes
+            .filter((ix) => ix.name.toUpperCase() === "PRIMARY")
+            .map((ix) => ix.column)
+            .filter((c) => result.columns.includes(c));
+          if (realPks.length > 0) pks = realPks;
+          else {
+            const idCol = result.columns.find(
+              (c) => c.toLowerCase() === "id"
+            );
+            if (idCol) pks = [idCol];
+          }
+        } catch {
+          // describeTable failed (table in another db, no perms, etc.) —
+          // fall back to the id heuristic, then to all columns.
+          const idCol = result.columns.find(
+            (c) => c.toLowerCase() === "id"
+          );
+          if (idCol) pks = [idCol];
+        }
+      } else if (pks.length === 0) {
+        // No table context at all: try the id heuristic before all-column.
+        const idCol = result.columns.find((c) => c.toLowerCase() === "id");
+        if (idCol) pks = [idCol];
+      }
       text = rowsToUpdate(table, result.columns, pks, rows);
     }
     await copyText(text);
@@ -2524,8 +2563,11 @@ export function App() {
               onClick={() => void copyRowsAs("update")}
             >
               复制为 UPDATE 语句
-              {result?.kind === "table" && (result.primaryKeys?.length ?? 0) === 0
-                ? "（无主键·全列定位）"
+              {result?.kind === "table" &&
+              (result.primaryKeys?.length ?? 0) === 0
+                ? result.columns.some((c) => c.toLowerCase() === "id")
+                  ? "（按 ID 定位）"
+                  : "（全列定位）"
                 : ""}
             </button>
               </>
