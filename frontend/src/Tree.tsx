@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import type { ColumnInfo, ConnSummary, TreeModel } from "./types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -14,6 +14,7 @@ const PAGE_SIZE = 200;
 // ---------------------------------------------------------------------------
 
 type Node =
+  | { kind: "dbtype"; key: string; name: string; children: Node[]; count?: number }
   | { kind: "env"; key: string; id: string; name: string; children: Node[]; count?: number }
   | { kind: "group"; key: string; id: string; name: string; children: Node[]; count?: number }
   | { kind: "conn"; key: string; conn: ConnSummary; count?: number }
@@ -56,22 +57,52 @@ function connNode(c: ConnSummary): Node {
 
 function buildRoots(tree: TreeModel): Node[] {
   const envs = [...tree.environments].sort((a, b) => a.order - b.order);
+
+  // Top level is grouped by database type so the sidebar reads
+  //   MySQL ▸ 环境 ▸ 分组 ▸ 链接
+  // (and Redis ▸ … when redis connections exist). This gives the user the
+  // requested structure without mislabeling a redis connection under "MySQL".
+  const types = new Set<string>();
+  for (const env of envs)
+    for (const g of env.groups)
+      for (const c of g.connections) types.add(c.db_type);
+  const sortedTypes = [...types].sort();
+
+  const labelOf = (t: string) => (t === "redis" ? "Redis" : "MySQL");
+
   const roots: Node[] = [];
-  for (const env of envs) {
-    const groups = [...env.groups].sort((a, b) => a.order - b.order);
-    const envChildren: Node[] = groups.map((g) => ({
-      kind: "group",
-      key: `grp:${g.id}`,
-      id: g.id,
-      name: g.name,
-      children: g.connections.map(connNode),
-    }));
+  for (const t of sortedTypes) {
+    const envNodes: Node[] = [];
+    for (const env of envs) {
+      const groups = [...env.groups]
+        .sort((a, b) => a.order - b.order)
+        .map((g): Node | null => {
+          const conns = g.connections.filter((c) => c.db_type === t);
+          if (conns.length === 0) return null;
+          return {
+            kind: "group",
+            key: `grp:${g.id}:${t}`,
+            id: g.id,
+            name: g.name,
+            children: conns.map(connNode),
+          };
+        })
+        .filter((x): x is Node => x !== null);
+      if (groups.length === 0) continue;
+      envNodes.push({
+        kind: "env",
+        key: `env:${env.id}:${t}`,
+        id: env.id,
+        name: env.name,
+        children: groups,
+      });
+    }
+    if (envNodes.length === 0) continue;
     roots.push({
-      kind: "env",
-      key: `env:${env.id}`,
-      id: env.id,
-      name: env.name,
-      children: envChildren,
+      kind: "dbtype",
+      key: `type:${t}`,
+      name: labelOf(t),
+      children: envNodes,
     });
   }
   return roots;
@@ -213,6 +244,8 @@ async function loader(node: Node): Promise<LoadResult | null> {
 
 function badge(n: Node): { icon: string; cls: string } {
   switch (n.kind) {
+    case "dbtype":
+      return { icon: "🐬", cls: "b-mysql" };
     case "env":
       return { icon: "🌐", cls: "b-env" };
     case "group":
@@ -243,6 +276,9 @@ interface TreeProps {
   onSelectConn: (id: string) => void;
   // Selecting a database node makes it the context for ad-hoc SQL.
   onSelectDb?: (connId: string, db: string) => void;
+  // "New query" from a tree node: open a fresh tab bound to this connection +
+  // database (Phase 26 — per-tab context, no accidental global switch).
+  onNewQuery?: (connId: string, db: string | null) => void;
   onBrowseTable: (
     connId: string,
     db: string,
@@ -270,6 +306,20 @@ export function Tree(props: TreeProps) {
   const [cache, setCache] = useState<Record<string, Node[]>>({});
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
+
+  // Auto-expand the top-level database-type nodes (e.g. "MySQL") on first
+  // render so the sidebar opens directly at the 环境 level instead of hiding
+  // everything one extra click down.
+  const [autoExpanded, setAutoExpanded] = useState(false);
+  useEffect(() => {
+    if (autoExpanded || roots.length === 0) return;
+    setExpanded((e) => {
+      const next = { ...e };
+      for (const r of roots) next[r.key] = true;
+      return next;
+    });
+    setAutoExpanded(true);
+  }, [roots, autoExpanded]);
 
   const load = useCallback(async (node: Node) => {
     setLoading((l) => ({ ...l, [node.key]: true }));
@@ -339,7 +389,11 @@ export function Tree(props: TreeProps) {
       case "conn": {
         const id = node.conn.id;
         return [
-          { type: "item", label: "新建查询", onClick: () => props.onSelectConn(id) },
+          {
+            type: "item",
+            label: "新建查询",
+            onClick: () => props.onNewQuery?.(id, null),
+          },
           { type: "item", label: "编辑连接", onClick: () => props.onEditConn(id) },
           { type: "sep" },
           { type: "item", label: "删除连接", danger: true, onClick: () => props.onDeleteConn(id) },
@@ -351,10 +405,7 @@ export function Tree(props: TreeProps) {
           {
             type: "item",
             label: `新建查询 (USE \`${db}\`)`,
-            onClick: () => {
-              props.onSelectDb?.(connId, db);
-              props.onInsertText(`USE \`${db}\`;\n`);
-            },
+            onClick: () => props.onNewQuery?.(connId, db),
           },
           { type: "item", label: "表关系", onClick: () => void props.onShowRelationships(connId, db) },
           { type: "item", label: "刷新", onClick: () => refreshNode(node) },
@@ -434,6 +485,7 @@ export function Tree(props: TreeProps) {
 
   const nodeLabel = (node: Node): string => {
     switch (node.kind) {
+      case "dbtype":
       case "env":
       case "group":
         return node.name;
@@ -468,10 +520,13 @@ export function Tree(props: TreeProps) {
   const renderNode = (node: Node, depth: number): JSX.Element => {
     const b = badge(node);
     const hasChildren =
-      node.kind === "env" || node.kind === "group" || isLazy(node);
+      node.kind === "dbtype" ||
+      node.kind === "env" ||
+      node.kind === "group" ||
+      isLazy(node);
     const isOpen = !!expanded[node.key];
     const kids: Node[] =
-      node.kind === "env" || node.kind === "group"
+      node.kind === "dbtype" || node.kind === "env" || node.kind === "group"
         ? node.children
         : cache[node.key] ?? [];
     const pad = { paddingLeft: `${depth * 14 + 8}px` };

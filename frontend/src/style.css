@@ -566,6 +566,164 @@ body {
   filter: brightness(1.08);
 }
 
+/* ---- custom vendor dropdown in LLM settings ---- */
+.vendor-select {
+  position: relative;
+}
+.vendor-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.vendor-trigger:hover {
+  border-color: color-mix(in srgb, var(--accent-deep) 70%, var(--border));
+}
+.vendor-trigger:focus {
+  border-color: var(--accent-deep);
+  outline: none;
+}
+.vendor-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vendor-caret {
+  color: var(--fg-dim);
+  font-size: 10px;
+  flex: 0 0 auto;
+  transition: transform 0.12s;
+}
+.vendor-options {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  margin: 0;
+  list-style: none;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  z-index: 20;
+}
+.vendor-options li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.vendor-options li:hover,
+.vendor-options li.active {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.vendor-options li.active {
+  color: var(--fg);
+}
+.vendor-provider,
+.vendor-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--mauve);
+  color: #1e1e2e;
+  flex: 0 0 auto;
+}
+
+/* Per-tab database switch button in the editor pane header (Phase 26) */
+.ctx-db-btn {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--fg);
+  border: 1px solid var(--accent-deep);
+  border-radius: 6px;
+  padding: 1px 8px;
+  margin-left: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ctx-db-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.ctx-db-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Database picker list inside the switch popup */
+.db-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.db-pick {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+}
+.db-pick:hover {
+  background: var(--bg-hover);
+}
+.db-pick.active {
+  border-color: var(--accent-deep);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Database picker tree inside the switch popup (Phase 27).
+   Shows env → group → conn and fetches databases on demand. */
+.db-picker-modal {
+  width: 420px;
+  max-width: 92vw;
+  max-height: 76vh;
+}
+.db-pick-tree {
+  flex: 1;
+  min-height: 0;
+  max-height: 56vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 0;
+  background: var(--bg);
+}
+.db-pick-tree .tree-row {
+  margin: 1px 4px;
+}
+.db-pick-tree .db-pick-item {
+  cursor: pointer;
+}
+.db-pick-tree .db-pick-item:hover {
+  background: var(--bg-hover);
+}
+
 /* LLM settings feedback message */
 .cfg-msg {
   font-size: 12px;

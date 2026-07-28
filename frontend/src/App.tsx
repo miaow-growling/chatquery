@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
@@ -31,10 +32,307 @@ import type {
 import { createEditor, type EditorHandle } from "./editor";
 import { Tree } from "./Tree";
 
+interface DropdownOption {
+  value: string;
+  label: string;
+  tag?: string;
+}
+interface DropdownSelectProps {
+  label: string;
+  value: string;
+  options: DropdownOption[];
+  onChange: (value: string) => void;
+}
+
+function DropdownSelect({ label, value, options, onChange }: DropdownSelectProps) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const selected = options.find((o) => o.value === value);
+
+  return (
+    <label>
+      {label}
+      <div className="vendor-select" ref={ref}>
+        <button
+          type="button"
+          className="vendor-trigger"
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+        >
+          <span className="vendor-value">
+            {selected?.label || value || "—"}
+            {selected?.tag && <span className="vendor-provider">{selected.tag}</span>}
+          </span>
+          <span className="vendor-caret">▾</span>
+        </button>
+        {open && (
+          <ul className="vendor-options" role="listbox">
+            {options.map((o) => (
+              <li
+                key={o.value}
+                role="option"
+                aria-selected={o.value === value}
+                className={o.value === value ? "active" : ""}
+                onClick={() => {
+                  onChange(o.value);
+                  setOpen(false);
+                }}
+              >
+                <span>{o.label}</span>
+                {o.tag && <span className="vendor-tag">{o.tag}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </label>
+  );
+}
+
 interface ConnForm {
   open: boolean;
   editing: boolean;
   cfg: ConnInput;
+}
+
+// ---------------------------------------------------------------------------
+// Database-picker popup (Phase 27). Instead of a flat cached list, this shows
+// the connection hierarchy (env → group → conn) and fetches a connection's
+// databases on demand when the connection is expanded. All transient state
+// lives inside the component and is destroyed when the popup closes.
+// ---------------------------------------------------------------------------
+
+type PickerNode =
+  | { kind: "type"; key: string; name: string; children: PickerNode[] }
+  | { kind: "env"; key: string; name: string; children: PickerNode[] }
+  | { kind: "group"; key: string; name: string; children: PickerNode[] }
+  | { kind: "conn"; key: string; conn: ConnSummary };
+
+function buildPickerRoots(tree: TreeModel): PickerNode[] {
+  const envs = [...tree.environments].sort((a, b) => a.order - b.order);
+  const types = new Set<string>();
+  for (const env of envs)
+    for (const g of env.groups)
+      for (const c of g.connections) types.add(c.db_type);
+  const sortedTypes = [...types].sort();
+  const labelOf = (t: string) => (t === "redis" ? "Redis" : "MySQL");
+
+  const roots: PickerNode[] = [];
+  for (const t of sortedTypes) {
+    const envNodes: PickerNode[] = [];
+    for (const env of envs) {
+      const groups = [...env.groups]
+        .sort((a, b) => a.order - b.order)
+        .map((g): PickerNode | null => {
+          const conns = g.connections.filter((c) => c.db_type === t);
+          if (conns.length === 0) return null;
+          return {
+            kind: "group",
+            key: `grp:${g.id}:${t}`,
+            name: g.name,
+            children: conns.map((c) => ({
+              kind: "conn",
+              key: `conn:${c.id}`,
+              conn: c,
+            })),
+          };
+        })
+        .filter((x): x is PickerNode => x !== null);
+      if (groups.length === 0) continue;
+      envNodes.push({
+        kind: "env",
+        key: `env:${env.id}:${t}`,
+        name: env.name,
+        children: groups,
+      });
+    }
+    if (envNodes.length === 0) continue;
+    roots.push({ kind: "type", key: `type:${t}`, name: labelOf(t), children: envNodes });
+  }
+  return roots;
+}
+
+interface DbPickerProps {
+  tree: TreeModel;
+  activeConnId: string;
+  activeDb: string | null;
+  onSelect: (connId: string, db: string | null) => void;
+  onClose: () => void;
+}
+
+function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerProps) {
+  const roots = useMemo(() => buildPickerRoots(tree), [tree]);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  // Auto-expand type and env nodes whenever the tree changes so the user
+  // starts at the group level.
+  useEffect(() => {
+    if (roots.length === 0) return;
+    setExpanded((prev) => {
+      const next = { ...prev };
+      for (const r of roots) {
+        next[r.key] = true;
+        if (r.kind === "type") {
+          for (const e of r.children) next[e.key] = true;
+        }
+      }
+      return next;
+    });
+  }, [roots]);
+  const [dbs, setDbs] = useState<Record<string, string[]>>({});
+  const [loading, setLoading] = useState<Record<string, boolean>>({});
+
+  const toggleConn = async (conn: ConnSummary) => {
+    const key = `conn:${conn.id}`;
+    const willExpand = !expanded[key];
+    setExpanded((e) => ({ ...e, [key]: willExpand }));
+    if (willExpand && !(key in dbs) && !loading[key]) {
+      setLoading((l) => ({ ...l, [key]: true }));
+      try {
+        const list =
+          conn.db_type === "redis"
+            ? (await api.listRedisDbs(conn.id)).map(String)
+            : await api.listDatabases(conn.id);
+        setDbs((m) => ({ ...m, [key]: list }));
+      } catch (e) {
+        console.error("db picker load failed", key, e);
+        setDbs((m) => ({ ...m, [key]: [] }));
+      } finally {
+        setLoading((l) => ({ ...l, [key]: false }));
+      }
+    }
+  };
+
+  const iconFor = (n: PickerNode) => {
+    switch (n.kind) {
+      case "type":
+        return n.name === "Redis" ? "🔴" : "🐬";
+      case "env":
+        return "🌐";
+      case "group":
+        return "📁";
+      case "conn":
+        return n.conn.db_type === "redis" ? "🔴" : "🐬";
+    }
+  };
+
+  const renderNode = (node: PickerNode, depth: number): JSX.Element => {
+    const hasChildren = node.kind !== "conn";
+    const isOpen = !!expanded[node.key];
+    const kids = node.kind === "conn" ? [] : node.children;
+    const pad = { paddingLeft: `${depth * 16 + 8}px` };
+
+    const onCaretClick = (e: ReactMouseEvent) => {
+      e.stopPropagation();
+      if (node.kind === "conn") {
+        toggleConn(node.conn);
+      } else if (hasChildren) {
+        setExpanded((ex) => ({ ...ex, [node.key]: !isOpen }));
+      }
+    };
+
+    const onRowClick = () => {
+      if (node.kind === "conn") {
+        onSelect(node.conn.id, null);
+      } else if (hasChildren) {
+        setExpanded((ex) => ({ ...ex, [node.key]: !isOpen }));
+      }
+    };
+
+    const isActive =
+      node.kind === "conn" &&
+      node.conn.id === activeConnId &&
+      activeDb == null;
+
+    return (
+      <div key={node.key} className="tree-node">
+        <div
+          className={"tree-row" + (isActive ? " active" : "")}
+          style={pad}
+          onClick={onRowClick}
+          title={node.kind === "conn" ? "点击选中连接默认库，点箭头展开数据库" : undefined}
+        >
+          <span
+            className={"tw" + (node.kind === "conn" ? "" : hasChildren ? "" : " leaf")}
+            onClick={onCaretClick}
+          >
+            {node.kind === "conn" ? (isOpen ? "▾" : "▸") : hasChildren ? (isOpen ? "▾" : "▸") : ""}
+          </span>
+          <span className="badge">{iconFor(node)}</span>
+          <span className="tree-label">{node.kind === "conn" ? node.conn.name : node.name}</span>
+          {node.kind === "conn" && loading[`conn:${node.conn.id}`] && (
+            <span className="tree-loading">…</span>
+          )}
+        </div>
+        {node.kind === "conn" && isOpen && (
+          <div>
+            <div
+              className={
+                "tree-row db-pick-item" +
+                (node.conn.id === activeConnId && activeDb == null ? " active" : "")
+              }
+              style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
+              onClick={() => onSelect(node.conn.id, null)}
+            >
+              <span className="tw leaf" />
+              <span className="badge">🏠</span>
+              <span className="tree-label">连接默认库</span>
+            </div>
+            {(dbs[`conn:${node.conn.id}`] ?? []).map((db) => (
+              <div
+                key={db}
+                className={
+                  "tree-row db-pick-item" +
+                  (node.conn.id === activeConnId && activeDb === db ? " active" : "")
+                }
+                style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
+                onClick={() => onSelect(node.conn.id, db)}
+              >
+                <span className="tw leaf" />
+                <span className="badge">🗄</span>
+                <span className="tree-label">{db}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {node.kind !== "conn" && isOpen &&
+          kids.map((c) => <div key={c.key}>{renderNode(c, depth + 1)}</div>)}
+      </div>
+    );
+  };
+
+  return (
+    <div className="modal-mask" onClick={onClose}>
+      <div className="modal db-picker-modal" onClick={(e) => e.stopPropagation()}>
+        <h3>切换数据库（当前查询）</h3>
+        <div className="db-pick-tree">
+          {roots.length === 0 && (
+            <div className="tree-empty">暂无连接，请先在左侧添加连接</div>
+          )}
+          {roots.map((r) => (
+            <div key={r.key}>{renderNode(r, 0)}</div>
+          ))}
+        </div>
+        <div className="modal-actions">
+          <span className="spacer" />
+          <button onClick={onClose}>关闭</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /// Rows per page when browsing a table (kept in sync with the backend PAGE_LIMIT).
@@ -56,6 +354,10 @@ interface QueryTab {
   sql: string;
   result: QueryOutput | null;
   browseCtx: BrowseCtx | null;
+  // Per-tab database context (Phase 26): each query keeps its own connection
+  // and database so switching tabs never clobbers another query's context.
+  connId: string;
+  db: string | null;
 }
 
 const genTabId = () => "t" + Math.random().toString(36).slice(2, 9);
@@ -86,16 +388,11 @@ const errOut = (msg: string): QueryOutput => ({
 export function App() {
   const [tree, setTree] = useState<TreeModel>({ environments: [] });
   const [selId, setSelId] = useState<string>("");
-  // Currently selected database (schema) in the tree. Ad-hoc SQL runs against
-  // this when set; cleared on connection switch so it falls back to the
-  // connection's default database.
+  // Currently selected connection/database in the TREE. This is only the
+  // "intended" context — new queries inherit it, but each query tab keeps its
+  // own connection/db (Phase 26), so selecting a node in the tree never
+  // switches an existing query's context.
   const [selDb, setSelDb] = useState<string | null>(null);
-  // Latest connection/db snapshots so the AI-completion provider (registered
-  // once on the editor) always requests the right context without re-binding.
-  const selIdRef = useRef(selId);
-  selIdRef.current = selId;
-  const selDbRef = useRef(selDb);
-  selDbRef.current = selDb;
   const [status, setStatus] = useState<StatusInfo>({
     llm_enabled: false,
     mask_enabled: true,
@@ -112,11 +409,24 @@ export function App() {
 
   // --- Query tabs -----------------------------------------------------------
   const [tabs, setTabs] = useState<QueryTab[]>([
-    { id: INITIAL_TAB, name: "查询 1", sql: "", result: null, browseCtx: null },
+    {
+      id: INITIAL_TAB,
+      name: "查询 1",
+      sql: "",
+      result: null,
+      browseCtx: null,
+      connId: "",
+      db: null,
+    },
   ]);
   const [activeTabId, setActiveTabId] = useState<string>(INITIAL_TAB);
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+
+  // Phase 26: per-tab database picker. The active query tab's DB is changed
+  // through this popup (not by clicking the tree) to avoid accidental context
+  // switches between queries.
+  const [dbPickerOpen, setDbPickerOpen] = useState(false);
 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<QueryItem[]>([]);
@@ -302,6 +612,8 @@ export function App() {
   // Derived active-tab view of result + browse context (used by the pager and
   // the result renderer — keeps those unchanged).
   const active = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const result = active?.result ?? null;
   const browseCtx = active?.browseCtx ?? null;
 
@@ -530,23 +842,23 @@ export function App() {
     [findConn]
   );
 
-  // Keep the editor's autocomplete schema in sync with the selected connection
-  // and database. Re-runs whenever either changes (ADR-006: bounded to one db).
+  // Keep the editor's autocomplete schema in sync with the ACTIVE TAB's
+  // connection and database (Phase 26: per-tab context). Re-runs whenever the
+  // active tab's connection or database changes.
   const loadSchemaRef = useRef(loadSchema);
   loadSchemaRef.current = loadSchema;
   useEffect(() => {
-    if (selId) loadSchemaRef.current(selId, selDb);
-  }, [selId, selDb]);
+    if (active?.connId) loadSchemaRef.current(active.connId, active.db);
+  }, [active?.connId, active?.db]);
 
   // Provider for inline AI completion: asks the LLM for the SQL suffix that
   // completes `prefix`. Returns null on any failure so the editor shows nothing.
   // Stable (reads live context via refs) — registered once on the editor.
   const aiProvider = useCallback(async (prefix: string): Promise<string | null> => {
-    const id = selIdRef.current;
-    const db = selDbRef.current;
-    if (!id) return null;
+    const t = activeRef.current;
+    if (!t?.connId) return null;
     try {
-      return await api.completeSql(id, db, prefix);
+      return await api.completeSql(t.connId, t.db, prefix);
     } catch {
       return null;
     }
@@ -576,7 +888,8 @@ export function App() {
   };
 
   const runQuery = useCallback(async () => {
-    if (!selId) return;
+    const t = activeRef.current;
+    if (!t?.connId) return;
     const editor = editorRef.current;
     if (!editor) return;
     const sel = editor.getSelection().trim();
@@ -586,17 +899,21 @@ export function App() {
     setResultTab("data");
     const t0 = performance.now();
     try {
-      const r = await api.executeQuery(selId, q, selDb);
+      const r = await api.executeQuery(t.connId, q, t.db);
       const ms = Math.round(performance.now() - t0);
-      setActiveTab((t) => ({ ...t, result: r, browseCtx: null }));
-      void api.logQuery(selId, selDb, q);
+      setActiveTab((tab) => ({ ...tab, result: r, browseCtx: null }));
+      void api.logQuery(t.connId, t.db, q);
       setRunInfo(runStatFor(r, ms));
     } catch (e) {
       const ms = Math.round(performance.now() - t0);
-      setActiveTab((t) => ({ ...t, result: errOut(String(e)), browseCtx: null }));
+      setActiveTab((tab) => ({
+        ...tab,
+        result: errOut(String(e)),
+        browseCtx: null,
+      }));
       setRunInfo({ kind: "err", text: `✗ ${ms}ms · ${String(e)}` });
     }
-  }, [selId, selDb]);
+  }, []);
 
   // Keep a live ref so the editor's run-key (registered once) always calls the
   // latest `runQuery` closure with the current selected connection.
@@ -604,7 +921,8 @@ export function App() {
   runQueryRef.current = runQuery;
 
   const explainQuery = useCallback(async () => {
-    if (!selId) return;
+    const t = activeRef.current;
+    if (!t?.connId) return;
     const editor = editorRef.current;
     if (!editor) return;
     const sel = editor.getSelection().trim();
@@ -614,25 +932,30 @@ export function App() {
     setResultTab("data");
     const t0 = performance.now();
     try {
-      const r = await api.explainQuery(selId, q, selDb);
+      const r = await api.explainQuery(t.connId, q, t.db);
       const ms = Math.round(performance.now() - t0);
-      setActiveTab((t) => ({ ...t, result: r, browseCtx: null }));
+      setActiveTab((tab) => ({ ...tab, result: r, browseCtx: null }));
       setRunInfo(runStatFor(r, ms));
     } catch (e) {
       const ms = Math.round(performance.now() - t0);
-      setActiveTab((t) => ({ ...t, result: errOut(String(e)), browseCtx: null }));
+      setActiveTab((tab) => ({
+        ...tab,
+        result: errOut(String(e)),
+        browseCtx: null,
+      }));
       setRunInfo({ kind: "err", text: `✗ ${ms}ms · ${String(e)}` });
     }
-  }, [selId, selDb]);
+  }, []);
 
   const selectConn = (id: string) => {
     setSelId(id);
     setSelDb(null);
   };
 
-  // Selecting a database node in the tree makes it the context for ad-hoc SQL.
-  // The schema is (re)loaded by the effect below whenever the connection or
-  // selected database changes, so we only flip state here.
+  // Selecting a database node in the tree only records the "intended" context
+  // (selDb / selId). It is inherited by freshly created queries, but it never
+  // switches an existing query tab's connection/db (Phase 26). The editor
+  // schema is driven by the ACTIVE TAB, not by this global state.
   const onSelectDb = useCallback((connId: string, db: string) => {
     setSelDb(db);
     setSelId((prev) => (prev === connId ? prev : connId));
@@ -1171,18 +1494,50 @@ export function App() {
     if (t) editorRef.current?.replaceValue(t.sql);
   };
 
-  const newTab = () => {
+  // `newTab` accepts an explicit connection/database so a "new query" spawned
+  // from a tree node binds to that exact context (Phase 26). Called with no
+  // args it inherits the current tree selection (selId / selDb).
+  const newTab = (connId?: string, db?: string | null) => {
     const id = genTabId();
     const n = tabs.length + 1;
+    const cid = connId ?? selId;
+    const cdb = db !== undefined ? db : selDb;
     setTabs((prev) => [
       ...prev,
-      { id, name: "查询 " + n, sql: "", result: null, browseCtx: null },
+      {
+        id,
+        name: "查询 " + n,
+        sql: "",
+        result: null,
+        browseCtx: null,
+        connId: cid,
+        db: cdb,
+      },
     ]);
     activeTabIdRef.current = id;
     setActiveTabId(id);
     clearEditState();
     editorRef.current?.replaceValue("");
     editorRef.current?.view.focus();
+  };
+
+  // "New query" spawned from a tree node: select that connection and open a
+  // fresh tab bound to the node's connection + database.
+  const onNewQuery = (connId: string, db: string | null) => {
+    setSelId(connId);
+    newTab(connId, db);
+  };
+
+  // Open the database-switch popup for the active tab. The popup shows the
+  // connection hierarchy (env → group → conn) and fetches a connection's
+  // database list only when the connection is expanded — nothing is cached
+  // globally.
+  const openDbPicker = () => {
+    setDbPickerOpen(true);
+  };
+  const changeTabContext = (connId: string, db: string | null) => {
+    setActiveTab((t) => ({ ...t, connId, db }));
+    setDbPickerOpen(false);
   };
 
   const closeTab = (id: string) => {
@@ -1535,6 +1890,7 @@ export function App() {
           onShowStructure={showStructure}
           onShowRelationships={showRelationships}
           onSelectDb={onSelectDb}
+          onNewQuery={onNewQuery}
         />
         <div className="sidebar-actions">
           <button onClick={() => openEditFor(selId)} disabled={!selId}>
@@ -1571,27 +1927,32 @@ export function App() {
                 )}
               </div>
             ))}
-            <button className="tab-new" title="新建查询" onClick={newTab}>
+            <button className="tab-new" title="新建查询" onClick={() => newTab()}>
               ＋
             </button>
           </div>
           <div className="pane-head">
             <span>
               查询编辑器
-              {selDb ? (
-                <span className="ctx-db"> · 库: {selDb}</span>
-              ) : (
-                <span className="ctx-db ctx-db-default"> · 库: 默认</span>
-              )}
+              <button
+                className="ctx-db-btn"
+                onClick={() => void openDbPicker()}
+                title="点击切换连接 / 数据库（每个查询独立）"
+              >
+                · {active?.connId ? `库: ${active.db || "默认"}` : "未选择连接"}
+              </button>
               <span className="hint"> (Ctrl/Cmd+Enter 执行)</span>
             </span>
             <div className="pane-actions">
-              <button onClick={() => editorRef.current?.formatSql()} disabled={!selId}>
+              <button
+                onClick={() => editorRef.current?.formatSql()}
+                disabled={!active?.connId}
+              >
                 格式化
               </button>
               <button onClick={saveCurrentAsSnippet}>存为片段</button>
               <button onClick={openHistory}>历史</button>
-              <button onClick={explainQuery} disabled={!selId}>
+              <button onClick={explainQuery} disabled={!active?.connId}>
                 执行计划
               </button>
               <button className="primary" onClick={runQuery}>
@@ -1674,10 +2035,12 @@ export function App() {
         <div className={"status-bar" + (runInfo ? " " + runInfo.kind : "")}>
           <span className="status-dot" />
           <span className="status-text">{runInfo ? runInfo.text : "就绪"}</span>
-          {selId && findConn(selId) && (
-            <span className="status-conn">● {findConn(selId)!.name}</span>
+          {active?.connId && findConn(active.connId) && (
+            <span className="status-conn">● {findConn(active.connId)!.name}</span>
           )}
-          {selId && selDb && <span className="status-db">▦ {selDb}</span>}
+          {active?.connId && active?.db && (
+            <span className="status-db">▦ {active.db}</span>
+          )}
         </div>
       </main>
 
@@ -1748,20 +2111,18 @@ export function App() {
                 }
               />
             </label>
-            <label>
-              类型
-              <select
-                value={form.cfg.db_type}
-                onChange={(e) => {
-                  const db_type = e.target.value;
-                  const port = db_type === "redis" ? 6379 : 3306;
-                  setForm({ ...form, cfg: { ...form.cfg, db_type, port } });
-                }}
-              >
-                <option value="mysql">mysql</option>
-                <option value="redis">redis</option>
-              </select>
-            </label>
+            <DropdownSelect
+              label="类型"
+              value={form.cfg.db_type}
+              options={[
+                { value: "mysql", label: "mysql" },
+                { value: "redis", label: "redis" },
+              ]}
+              onChange={(v) => {
+                const port = v === "redis" ? 6379 : 3306;
+                setForm({ ...form, cfg: { ...form.cfg, db_type: v, port } });
+              }}
+            />
             <label>
               主机
               <input
@@ -1816,29 +2177,27 @@ export function App() {
                 }
               />
             </label>
-            <label>
-              分组
-              <select
-                value={form.cfg.group_id ?? ""}
-                onChange={(e) =>
-                  setForm({
-                    ...form,
-                    cfg: { ...form.cfg, group_id: e.target.value || null },
-                  })
-                }
-              >
-                <option value="">（不分组）</option>
-                {tree.environments
+            <DropdownSelect
+              label="分组"
+              value={form.cfg.group_id ?? ""}
+              options={[
+                { value: "", label: "（不分组）" },
+                ...tree.environments
                   .filter((e) => e.id !== "__ungrouped")
                   .flatMap((e) =>
-                    e.groups.map((g) => (
-                      <option key={g.id} value={g.id}>
-                        {e.name} / {g.name || "(未命名)"}
-                      </option>
-                    ))
-                  )}
-              </select>
-            </label>
+                    e.groups.map((g) => ({
+                      value: g.id,
+                      label: `${e.name} / ${g.name || "(未命名)"}`,
+                    }))
+                  ),
+              ]}
+              onChange={(v) =>
+                setForm({
+                  ...form,
+                  cfg: { ...form.cfg, group_id: v || null },
+                })
+              }
+            />
             <div className="modal-actions">
               <button onClick={testForm}>测试连接</button>
               <span className="spacer" />
@@ -1887,20 +2246,16 @@ export function App() {
         <div className="modal-mask" onClick={() => setSettingsOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>LLM 模型设置</h3>
-            <label>
-              模型厂商
-              <select
-                value={cfgForm.vendor}
-                onChange={(e) => onVendorChange(e.target.value)}
-              >
-                {presets.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
-                    {p.provider === "anthropic" ? "（Anthropic）" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <DropdownSelect
+              label="模型厂商"
+              value={cfgForm.vendor}
+              options={presets.map((p) => ({
+                value: p.id,
+                label: p.label,
+                tag: p.provider === "anthropic" ? "Anthropic" : undefined,
+              }))}
+              onChange={onVendorChange}
+            />
             <label>
               API Base URL
               <input
@@ -2016,6 +2371,16 @@ export function App() {
             </button>
           </div>
         </>
+      )}
+
+      {dbPickerOpen && (
+        <DbPicker
+          tree={tree}
+          activeConnId={active?.connId ?? ""}
+          activeDb={active?.db ?? null}
+          onSelect={changeTabContext}
+          onClose={() => setDbPickerOpen(false)}
+        />
       )}
 
       {toast && <div className="toast">{toast}</div>}
