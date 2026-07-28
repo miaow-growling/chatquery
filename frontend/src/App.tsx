@@ -726,25 +726,6 @@ export function App() {
     setCtxMenu(null);
   };
 
-  // --- Column selection (click a field) + copy column as JSON -----------
-  // Clicking a data cell (or a column header) selects the whole column. A
-  // plain click clears the row selection so the two selection modes don't
-  // fight. Modifier+click still delegates to row selection, so Ctrl/Shift
-  // multi-select and the marquee drag remain untouched.
-  const onCellClick = (ri: number, ci: number, e: ReactMouseEvent) => {
-    e.stopPropagation();
-    if (e.shiftKey || e.metaKey || e.ctrlKey) {
-      onRowClick(ri, e);
-      return;
-    }
-    // Plain left click on a field: select the whole column only. The copy
-    // menu is reserved for right-click (see onCellCtx) so a normal click never
-    // pops a menu — matching the user's expectation.
-    setSelCol(ci);
-    setSelRows(new Set());
-    lastAnchorRef.current = ri;
-  };
-
   // Right-click a field: pin the column (for "copy as JSON") and keep the row
   // selection behaviour identical to before — if the row isn't already in the
   // selection it becomes the sole selected row, so the row menu stays useful.
@@ -760,6 +741,20 @@ export function App() {
     const x = Math.min(e.clientX, window.innerWidth - 220);
     const y = Math.min(e.clientY, window.innerHeight - 130);
     setCtxMenu({ x, y, rows: eff });
+  };
+
+  // Right-click a column header: pin the column selection and surface the
+  // column copy actions. Row selection is left untouched so the user can
+  // still copy rows from the same menu if any are selected.
+  const onColCtx = (ci: number, e: ReactMouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelCol(ci);
+    const rows =
+      selRows.size > 0 ? Array.from(selRows).sort((a, b) => a - b) : [];
+    const x = Math.min(e.clientX, window.innerWidth - 220);
+    const y = Math.min(e.clientY, window.innerHeight - 130);
+    setCtxMenu({ x, y, rows });
   };
 
   // Serialize a single column to a JSON array, applying the same NULL / bool /
@@ -1378,7 +1373,8 @@ export function App() {
                   setSelCol(i);
                   setSelRows(new Set());
                 }}
-                title="点击选中整列"
+                onContextMenu={(e) => onColCtx(i, e)}
+                title="左键选中整列 · 右键复制列"
               >
                 {c}
                 {pkSet.has(c) ? " 🔑" : ""}
@@ -1429,10 +1425,9 @@ export function App() {
                       }
                       title={
                         editable && !isDeleted
-                          ? "双击编辑单元格 · 单击选中整列"
-                          : "单击选中整列 · 右键复制"
+                          ? "双击编辑 · 右键复制"
+                          : "右键复制"
                       }
-                      onClick={(e) => onCellClick(ri, ci, e)}
                       onContextMenu={(e) => onCellCtx(ri, ci, e)}
                       onDoubleClick={() => {
                         if (!editable || isDeleted) return;
@@ -2503,6 +2498,8 @@ export function App() {
                 <div className="ctx-sep" />
               </>
             )}
+            {ctxMenu.rows.length > 0 ? (
+              <>
             <div className="ctx-title">复制选中 {ctxMenu.rows.length} 行</div>
             <button onClick={() => void copyRowsAs("json")}>复制为 JSON</button>
             <button
@@ -2533,6 +2530,8 @@ export function App() {
                 ? "（无主键）"
                 : ""}
             </button>
+              </>
+            ) : null}
           </div>
         </>
       )}
