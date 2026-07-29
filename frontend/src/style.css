@@ -106,6 +106,12 @@
   --sidebar-w: 248px;
   --chat-w: 360px;
   --statusbar-h: 28px;
+  --titlebar-h: 30px;
+
+  /* Vibrancy surfaces (macOS glass) */
+  --app-bg: radial-gradient(120% 90% at 0% 0%, rgb(22 30 50) 0%, rgb(20 20 22) 55%, rgb(15 15 17) 100%);
+  --sidebar-bg: rgb(30 30 32 / 0.62);
+  --titlebar-bg: rgb(30 30 32 / 0.66);
 
   /* Motion (Apple spring-ish easing) */
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
@@ -187,6 +193,11 @@
   --shadow-pop: 0 18px 50px rgb(0 0 0 / 0.22);
 
   --focus-ring: 0 0 0 3px rgb(0 122 255 / 0.35);
+
+  /* Vibrancy surfaces (light) */
+  --app-bg: radial-gradient(120% 90% at 0% 0%, rgb(228 236 255) 0%, rgb(255 255 255) 55%);
+  --sidebar-bg: rgb(246 246 251 / 0.62);
+  --titlebar-bg: rgb(246 246 251 / 0.66);
 }
 
 /* =====================  RESET / BASE  ===================== */
@@ -221,20 +232,50 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* Focus visibility (a11y) */
 :focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--r-sm); }
 
-/* App shell: sidebar | main | chat (chat collapses to a rail) */
-.app {
-  display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr var(--chat-w);
+/* App shell: titlebar + grid(sidebar | main | chat, chat collapses to a rail) */
+.root {
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   width: 100vw;
   overflow: hidden;
-  background: var(--bg-base);
+  background: var(--app-bg);
+}
+.titlebar {
+  flex: 0 0 var(--titlebar-h);
+  height: var(--titlebar-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px 0 76px;
+  background: var(--titlebar-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 1px solid var(--border-soft);
+  user-select: none;
+}
+.titlebar-title {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-tertiary);
+  opacity: 0.9;
+}
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr var(--chat-w);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
 }
 .app.chat-collapsed { grid-template-columns: var(--sidebar-w) 1fr 44px; }
 
 /* =====================  SIDEBAR  ===================== */
 .sidebar {
-  background: var(--bg-surface);
+  background: var(--sidebar-bg);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -376,11 +417,15 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-size: var(--fs-sm);
   transition: background var(--t-fast), color var(--t-fast);
 }
-.tree-row:hover { background: var(--bg-subtle); }
+.tree-row:hover:not(.active) { background: var(--brand-soft); }
+.tree-row:hover:not(.active) .tw { color: var(--brand); }
 .tree-row.active {
-  background: var(--brand-soft);
-  color: var(--brand);
+  background: var(--brand);
+  color: #fff;
 }
+.tree-row.active .tw { color: #fff; }
+.tree-row.active .badge { color: #fff; }
+.tree-row.active .tree-count { background: rgb(255 255 255 / 0.20); color: #fff; }
 .tw {
   width: 18px;
   height: 18px;

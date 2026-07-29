@@ -647,6 +647,25 @@ export function App() {
     window.setTimeout(() => setToast((t) => (t === msg ? null : t)), 1800);
   };
 
+  // Tauri's webview does NOT implement window.prompt / confirm / alert, so those
+  // calls silently no-op in the desktop build (the "新建环境/组 点了没反应" bug).
+  // We provide promise-based replacements rendered as an in-app modal.
+  type DialogState =
+    | { kind: "prompt"; title: string; def: string; resolve: (v: string | null) => void }
+    | { kind: "confirm"; title: string; message: string; resolve: (v: boolean) => void }
+    | null;
+  const [dlg, setDlg] = useState<DialogState>(null);
+  const promptAsync = (title: string, def = ""): Promise<string | null> =>
+    new Promise((res) => setDlg({ kind: "prompt", title, def, resolve: res }));
+  const confirmAsync = (message: string, title = "请确认"): Promise<boolean> =>
+    new Promise((res) => setDlg({ kind: "confirm", title, message, resolve: res }));
+  const closeDlg = (val: string | null | boolean) => {
+    setDlg((cur) => {
+      if (cur) (cur.resolve as (v: string | null | boolean) => void)(val);
+      return null;
+    });
+  };
+
   const onRowClick = (ri: number, e: ReactMouseEvent) => {
     if (e.shiftKey && selRows.size > 0) {
       const [a, b] = [lastAnchorRef.current, ri].sort((x, y) => x - y);
@@ -1331,7 +1350,7 @@ export function App() {
         browseCtx.pageSize
       );
     } catch (e) {
-      alert("保存失败: " + String(e));
+      showToast("保存失败: " + String(e));
     }
   };
 
@@ -1754,7 +1773,7 @@ export function App() {
       setHistory(await api.listQueries());
       setHistoryOpen(true);
     } catch (e) {
-      alert("读取历史失败: " + String(e));
+      showToast("读取历史失败: " + String(e));
     }
   };
 
@@ -1780,36 +1799,36 @@ export function App() {
   };
 
   const saveSnippetFromItem = async (item: QueryItem) => {
-    const name = window.prompt("片段名称", item.name ?? "我的查询");
+    const name = await promptAsync("片段名称", item.name ?? "我的查询");
     if (!name || !name.trim()) return;
     try {
       await api.saveQuery(item.id, name.trim(), item.sql, item.conn_id, item.db);
       setHistory(await api.listQueries());
     } catch (e) {
-      alert("保存失败: " + String(e));
+      showToast("保存失败: " + String(e));
     }
   };
 
   const saveCurrentAsSnippet = async () => {
     const sql = editorRef.current?.getDoc() ?? "";
     if (!sql.trim()) return;
-    const name = window.prompt("片段名称", "我的查询");
+    const name = await promptAsync("片段名称", "我的查询");
     if (!name || !name.trim()) return;
     try {
       await api.saveQuery(null, name.trim(), sql, selId || null, null);
-      alert("已保存为片段");
+      showToast("已保存为片段");
     } catch (e) {
-      alert("保存失败: " + String(e));
+      showToast("保存失败: " + String(e));
     }
   };
 
   const deleteQueryItem = async (item: QueryItem) => {
-    if (!confirm("删除该记录？")) return;
+    if (!await confirmAsync("删除该记录？")) return;
     try {
       await api.deleteQuery(item.id);
       setHistory(await api.listQueries());
     } catch (e) {
-      alert("删除失败: " + String(e));
+      showToast("删除失败: " + String(e));
     }
   };
 
@@ -1846,13 +1865,13 @@ export function App() {
 
   const newEnvironment = async () => {
     setAddOpen(false);
-    const name = window.prompt("环境名称", "新环境");
+    const name = await promptAsync("环境名称", "新环境");
     if (!name || !name.trim()) return;
     try {
       await api.createEnvironment(name.trim());
       await refresh();
     } catch (e) {
-      alert("创建环境失败: " + String(e));
+      showToast("创建环境失败: " + String(e));
     }
   };
 
@@ -1867,53 +1886,53 @@ export function App() {
         try {
           envId = await api.createEnvironment("默认环境");
         } catch (e) {
-          alert("创建环境失败: " + String(e));
+          showToast("创建环境失败: " + String(e));
           return;
         }
       } else {
         envId = envs[0].id;
       }
     }
-    const name = window.prompt("分组名称", "新分组");
+    const name = await promptAsync("分组名称", "新分组");
     if (!name || !name.trim()) return;
     try {
       await api.createGroup(envId, name.trim());
       await refresh();
     } catch (e) {
-      alert("创建分组失败: " + String(e));
+      showToast("创建分组失败: " + String(e));
     }
   };
 
   // Create a group under an explicit environment (right-click "新建组" on an env).
   const newGroupUnder = async (envId: string) => {
-    const name = window.prompt("分组名称", "新分组");
+    const name = await promptAsync("分组名称", "新分组");
     if (!name || !name.trim()) return;
     try {
       await api.createGroup(envId, name.trim());
       await refresh();
     } catch (e) {
-      alert("创建分组失败: " + String(e));
+      showToast("创建分组失败: " + String(e));
     }
   };
 
   const renameContainer = async (id: string, oldName: string) => {
-    const name = window.prompt("重命名", oldName);
+    const name = await promptAsync("重命名", oldName);
     if (!name || !name.trim() || name.trim() === oldName) return;
     try {
       await api.renameContainer(id, name.trim());
       await refresh();
     } catch (e) {
-      alert("重命名失败: " + String(e));
+      showToast("重命名失败: " + String(e));
     }
   };
 
   const removeContainer = async (id: string) => {
-    if (!confirm("确认删除该容器？若其中还有分组或连接将无法删除。")) return;
+    if (!await confirmAsync("确认删除该容器？若其中还有分组或连接将无法删除。")) return;
     try {
       await api.deleteContainer(id);
       await refresh();
     } catch (e) {
-      alert("删除失败: " + String(e));
+      showToast("删除失败: " + String(e));
     }
   };
 
@@ -1935,12 +1954,12 @@ export function App() {
       await refresh();
       if (form.editing) await loadSchema(form.cfg.id);
     } catch (e) {
-      alert("保存失败: " + String(e));
+      showToast("保存失败: " + String(e));
     }
   };
   const delConnFor = async (id: string) => {
     if (!id) return;
-    if (!confirm("确认删除该连接？")) return;
+    if (!await confirmAsync("确认删除该连接？")) return;
     await api.deleteConnection(id);
     if (id === selId) setSelId("");
     await refresh();
@@ -1948,9 +1967,9 @@ export function App() {
   const testForm = async () => {
     try {
       const ok = await api.testConnection(form.cfg);
-      alert(ok ? "连接成功" : "连接失败");
+      showToast(ok ? "连接成功" : "连接失败");
     } catch (e) {
-      alert("连接失败: " + String(e));
+      showToast("连接失败: " + String(e));
     }
   };
 
@@ -2038,7 +2057,11 @@ export function App() {
   }, [chat]);
 
   return (
-    <div className={"app" + (chatOpen ? "" : " chat-collapsed")}>
+    <div className="root">
+      <div className="titlebar" data-tauri-drag-region>
+        <span className="titlebar-title">ChatQuery</span>
+      </div>
+      <div className={"app" + (chatOpen ? "" : " chat-collapsed")}>
       <aside className="sidebar">
         <div className="sidebar-head">
           <span>连接</span>
@@ -2593,7 +2616,53 @@ export function App() {
         />
       )}
 
+      {dlg && (
+        <div
+          className="modal-mask"
+          onMouseDown={() => closeDlg(dlg.kind === "prompt" ? null : false)}
+        >
+          <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+            <h3>{dlg.title}</h3>
+            {dlg.kind === "prompt" ? (
+              <input
+                id="dlg-input"
+                defaultValue={dlg.def}
+                autoFocus
+                onKeyDown={(e) => {
+                  const v = (e.target as HTMLInputElement).value;
+                  if (e.key === "Enter") closeDlg(v);
+                  if (e.key === "Escape") closeDlg(null);
+                }}
+              />
+            ) : (
+              <p className="modal-msg">{dlg.message}</p>
+            )}
+            <div className="modal-actions">
+              <button
+                onClick={() => closeDlg(dlg.kind === "prompt" ? null : false)}
+              >
+                取消
+              </button>
+              <button
+                className="primary"
+                onClick={() => {
+                  if (dlg.kind === "prompt") {
+                    const el = document.getElementById("dlg-input") as HTMLInputElement | null;
+                    closeDlg(el ? el.value : dlg.def);
+                  } else {
+                    closeDlg(true);
+                  }
+                }}
+              >
+                确定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {toast && <div className="toast">{toast}</div>}
+    </div>
     </div>
   );
 }
