@@ -866,13 +866,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .result-table tr.row-insert td.insert-cell { padding: 1px 2px; }
 .insert-cell .cell-edit { background: var(--bg-surface); }
 
-/* Row-number gutter (sticky left). Opaque in every state so the gutter and the
-   sticky selected-column header never show scrolled rows behind them. */
+/* Row-number gutter (plain first column). NOTE: it is intentionally NOT
+   `position: sticky` — a left-sticky cell combined with the page's many
+   `backdrop-filter` (vibrancy) layers inside the `overflow:auto` result body
+   is a documented WKWebView compositor crash on macOS (the window vanishes
+   with no JS error). The selected-column header stays sticky-top only, which
+   is safe; the double-sticky (top+left) corner cell was the trigger. */
 .result-table th.row-num,
 .result-table td.row-num {
-  position: sticky;
-  left: 0;
-  z-index: 2;
   width: 46px;
   min-width: 46px;
   max-width: 46px;
@@ -888,7 +889,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 6px 8px;
 }
 .result-table thead th.row-num {
-  z-index: 3;
   background: var(--bg-subtle);
   font-weight: var(--fw-semibold);
   color: var(--text-secondary);
