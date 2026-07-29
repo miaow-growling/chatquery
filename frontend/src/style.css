@@ -78,6 +78,12 @@
   /* Text selection */
   --sel-bg: rgb(10 132 255 / 0.35);
 
+  /* Opaque selection fills — used by sticky cells (selected column header,
+     row-number gutter) so scrolled content never bleeds through behind them. */
+  --sel-col-bg: #28527f;
+  --sel-row-bg: #1c3a63;
+  --sel-row-del-bg: #5b2b2b;
+
   /* Shadows (soft, layered) */
   --shadow-sm:  0 1px 2px rgb(0 0 0 / 0.30);
   --shadow-md:  0 4px 14px rgb(0 0 0 / 0.40);
@@ -196,6 +202,11 @@
   --segment-active: #ffffff;
   --panel-bg: rgb(255 255 255 / 0.80);
   --sel-bg: rgb(0 122 255 / 0.30);
+
+  /* Opaque selection fills (light) */
+  --sel-col-bg: #a9cdff;
+  --sel-row-bg: #cfe3ff;
+  --sel-row-del-bg: #f4d6d4;
 
   --shadow-sm:  0 1px 2px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.04);
   --shadow-md:  0 4px 12px rgb(0 0 0 / 0.10), 0 2px 4px rgb(0 0 0 / 0.05);
@@ -855,6 +866,39 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .result-table tr.row-insert td.insert-cell { padding: 1px 2px; }
 .insert-cell .cell-edit { background: var(--bg-surface); }
 
+/* Row-number gutter (sticky left). Opaque in every state so the gutter and the
+   sticky selected-column header never show scrolled rows behind them. */
+.result-table th.row-num,
+.result-table td.row-num {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  width: 46px;
+  min-width: 46px;
+  max-width: 46px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  background: var(--bg-surface);
+  border-right: 1px solid var(--grid-line);
+  user-select: none;
+  cursor: pointer;
+  padding: 6px 8px;
+}
+.result-table thead th.row-num {
+  z-index: 3;
+  background: var(--bg-subtle);
+  font-weight: var(--fw-semibold);
+  color: var(--text-secondary);
+}
+.result-table tbody tr:nth-child(even) td.row-num { background: var(--bg-inset); }
+.result-table tbody tr:hover td.row-num { background: var(--bg-hover); }
+.result-table td.row-num:hover { color: var(--brand); }
+.result-table tr.row-selected > td.row-num { background: var(--sel-row-bg) !important; color: var(--text-primary); }
+.result-table tr.row-selected.row-deleted > td.row-num { background: var(--sel-row-del-bg) !important; color: var(--text-primary); }
+
 .result-table th:last-child,
 .result-table td:last-child { border-right: none; }
 
@@ -862,7 +906,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .row-selected > td { background: var(--brand-soft) !important; }
 .row-selected.row-deleted > td { background: var(--danger-soft) !important; }
 td.col-selected { background: var(--brand-soft) !important; }
-th.col-selected { background: var(--sel-bg) !important; color: var(--text-primary); outline: 2px solid var(--brand); }
+/* Selected-column header: sticky, so it MUST be opaque — a translucent fill
+   would let the rows scrolling underneath show through (the "transparent
+   header" bug). */
+th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-primary); outline: 2px solid var(--brand); }
+/* Single-cell selection (click a cell) */
+.result-table td.cell-selected {
+  background: var(--brand-soft) !important;
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+}
 
 /* =====================  PAGER  ===================== */
 .pager {

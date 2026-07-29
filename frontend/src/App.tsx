@@ -466,7 +466,15 @@ export function App() {
   // `selRows` holds result-row indices selected for copy (JSON / INSERT / UPDATE).
   const [selRows, setSelRows] = useState<Set<number>>(new Set());
   const [selCol, setSelCol] = useState<number | null>(null);
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; rows: number[] } | null>(null);
+  // Single-cell selection (set by clicking a data cell; cleared on row/column
+  // selection). Drives the .cell-selected highlight independently of rows/cols.
+  const [selCell, setSelCell] = useState<{ ri: number; ci: number } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number;
+    y: number;
+    rows: number[];
+    cell?: { ri: number; ci: number };
+  } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const lastAnchorRef = useRef(0);
 
@@ -646,6 +654,7 @@ export function App() {
   useEffect(() => {
     setSelRows(new Set());
     setSelCol(null);
+    setSelCell(null);
     setCtxMenu(null);
   }, [active?.id, result]);
 
@@ -692,6 +701,7 @@ export function App() {
   };
 
   const onRowClick = (ri: number, e: ReactMouseEvent) => {
+    setSelCell(null);
     if (e.shiftKey && selRows.size > 0) {
       const [a, b] = [lastAnchorRef.current, ri].sort((x, y) => x - y);
       const next = new Set<number>();
@@ -822,12 +832,35 @@ export function App() {
     setCtxMenu(null);
   };
 
+  // Copy a single cell's exact displayed value to the clipboard. Reads the
+  // edit overlay first (so an in-progress edit is copied), then the DB snapshot.
+  const copyCell = async (ri: number, ci: number) => {
+    if (!result || result.kind !== "table") return;
+    const row = result.rows[ri];
+    if (!row) return;
+    const raw = (edits[ri]?.[ci] ?? row[ci]) ?? "";
+    const text = fmtCell(raw);
+    await copyText(text);
+    const colName = result.columns[ci] ?? `#${ci + 1}`;
+    showToast(`已复制单元格 · ${colName}`);
+    setCtxMenu(null);
+  };
+
+  // Single left-click on a data cell: select ONLY that cell. Row/column
+  // selections are cleared so the highlight is unambiguous.
+  const onCellClick = (ri: number, ci: number) => {
+    setSelRows(new Set());
+    setSelCol(null);
+    setSelCell({ ri, ci });
+  };
+
   // Right-click a field: pin the column (for "copy as JSON") and keep the row
   // selection behaviour identical to before — if the row isn't already in the
   // selection it becomes the sole selected row, so the row menu stays useful.
-  const onCellCtx = (ri: number, _ci: number, e: ReactMouseEvent) => {
+  const onCellCtx = (ri: number, ci: number, e: ReactMouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    setSelCell({ ri, ci });
     const eff = selRows.has(ri)
       ? Array.from(selRows).sort((a, b) => a - b)
       : [ri];
@@ -835,7 +868,7 @@ export function App() {
     lastAnchorRef.current = ri;
     const x = Math.min(e.clientX, window.innerWidth - 220);
     const y = Math.min(e.clientY, window.innerHeight - 130);
-    setCtxMenu({ x, y, rows: eff });
+    setCtxMenu({ x, y, rows: eff, cell: { ri, ci } });
   };
 
   // Right-click a column header: pin the column selection and surface the
@@ -1424,8 +1457,7 @@ export function App() {
   // appended at the bottom for INSERT. Otherwise it's a plain read-only table
   // (or Redis lines). Primary-key columns are tagged with a key glyph.
   const renderData = () => {
-    const fmt = (c: unknown) =>
-      c == null ? "" : typeof c === "object" ? JSON.stringify(c) : String(c);
+    const fmt = fmtCell;
     if (running) return <div className="empty">执行中…</div>;
     if (!result) return <div className="empty">执行查询以查看结果</div>;
     if (result.kind === "redis") {
@@ -1465,6 +1497,7 @@ export function App() {
       <table className={"result-table" + (dragging ? " selecting" : "")}>
         <thead>
           <tr>
+            <th className="row-num" title="行号 · 点击行号选中整行">#</th>
             {editable && <th className="row-action-col" />}
             {cols.map((c, i) => (
               <th
@@ -1475,6 +1508,7 @@ export function App() {
                 onClick={() => {
                   setSelCol(i);
                   setSelRows(new Set());
+                  setSelCell(null);
                 }}
                 onContextMenu={(e) => onColCtx(i, e)}
                 title="左键选中整列 · 右键复制列"
@@ -1495,11 +1529,17 @@ export function App() {
                   (isDeleted ? "row-deleted " : "") +
                   (selRows.has(ri) ? "row-selected" : "")
                 }
-                onMouseDown={(e) => onRowMouseDown(ri, e)}
-                onMouseEnter={() => onRowMouseEnter(ri)}
-                onClick={(e) => onRowClick(ri, e)}
-                onContextMenu={(e) => onRowCtx(ri, e)}
               >
+                <td
+                  className="row-num"
+                  onMouseDown={(e) => onRowMouseDown(ri, e)}
+                  onMouseEnter={() => onRowMouseEnter(ri)}
+                  onClick={(e) => onRowClick(ri, e)}
+                  onContextMenu={(e) => onRowCtx(ri, e)}
+                  title="点击选中整行 · 右键复制行"
+                >
+                  {ri + 1}
+                </td>
                 {editable && (
                   <td className="row-action-col">
                     <button
@@ -1518,19 +1558,23 @@ export function App() {
                   const ov = edits[ri]?.[ci];
                   const isEditing =
                     editing?.ri === ri && editing?.ci === ci && !isDeleted;
+                  const isCellSel =
+                    selCell?.ri === ri && selCell?.ci === ci;
                   return (
                     <td
                       key={ci}
                       className={
                         (ov !== undefined ? "dirty " : "") +
                         (editable && !isDeleted ? "editable " : "") +
-                        (selCol === ci ? "col-selected " : "")
+                        (selCol === ci ? "col-selected " : "") +
+                        (isCellSel ? "cell-selected " : "")
                       }
                       title={
                         editable && !isDeleted
-                          ? "双击编辑 · 右键复制"
-                          : "右键复制"
+                          ? "单击选中单元格 · 双击编辑 · 右键复制"
+                          : "单击选中单元格 · 右键复制"
                       }
+                      onClick={() => onCellClick(ri, ci)}
                       onContextMenu={(e) => onCellCtx(ri, ci, e)}
                       onDoubleClick={() => {
                         if (!editable || isDeleted) return;
@@ -1570,6 +1614,7 @@ export function App() {
           })}
           {inserts.map((ins, ii) => (
             <tr key={"ins-" + ii} className="row-insert">
+              <td className="row-num" title="新增行">·</td>
               <td className="row-action-col">
                 <button
                   className="row-del-btn"
@@ -2649,6 +2694,22 @@ export function App() {
             }}
           />
           <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
+            {ctxMenu.cell && result?.kind === "table" && (
+              <>
+                <div className="ctx-title">
+                  单元格：
+                  {result.columns[ctxMenu.cell.ci] ?? `#${ctxMenu.cell.ci + 1}`}
+                </div>
+                <button
+                  onClick={() =>
+                    void copyCell(ctxMenu.cell!.ri, ctxMenu.cell!.ci)
+                  }
+                >
+                  复制单元格
+                </button>
+                <div className="ctx-sep" />
+              </>
+            )}
             {selCol !== null && (
               <>
                 <div className="ctx-title">
@@ -2779,6 +2840,10 @@ export function App() {
 }
 
 /// Serialize a table result to CSV with proper RFC-4180 quoting.
+function fmtCell(c: unknown): string {
+  return c == null ? "" : typeof c === "object" ? JSON.stringify(c) : String(c);
+}
+
 function toCsv(columns: string[], rows: string[][]): string {
   const esc = (s: string) => {
     if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
