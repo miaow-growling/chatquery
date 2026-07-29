@@ -56,6 +56,11 @@
   --border-soft:   #2e2e30;
   --border-strong: #4a4a4e;
 
+  /* Scrollbars: translucent neutral, macOS-style overlay */
+  --scrollbar-thumb:       rgba(150,150,160,0.42);
+  --scrollbar-thumb-hover: rgba(180,180,190,0.72);
+  --scrollbar-track:       transparent;
+
   --text-primary:   #f5f5f7;
   --text-secondary: #aeaeb2;
   --text-tertiary:  #8e8e93;
@@ -175,6 +180,11 @@
   --border-soft:   #e5e5ea;
   --border-strong: #c2c2c7;
 
+  /* Scrollbars: translucent neutral, macOS-style overlay */
+  --scrollbar-thumb:       rgba(60,60,67,0.28);
+  --scrollbar-thumb-hover: rgba(60,60,67,0.52);
+  --scrollbar-track:       transparent;
+
   --text-primary:   #1c1c1e;
   --text-secondary: #48484a;
   --text-tertiary:  #8e8e93;
@@ -217,17 +227,39 @@ body {
 button, input, select, textarea { font: inherit; color: inherit; }
 ::selection { background: var(--sel-bg); }
 
-/* Scrollbars (thin, rounded, macOS-like) */
-* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
-*::-webkit-scrollbar { width: 9px; height: 9px; }
+/* Scrollbars (thin, rounded, macOS-like overlay) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+*::-webkit-scrollbar { width: 11px; height: 11px; }
+*::-webkit-scrollbar-track { background: var(--scrollbar-track); }
 *::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
+  background: var(--scrollbar-thumb);
   border-radius: var(--r-full);
-  border: 2px solid transparent;
+  border: 3px solid transparent;
+  background-clip: content-box;
+  transition: background-color 0.15s ease;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); background-clip: content-box; }
+*::-webkit-scrollbar-thumb:active { background: var(--scrollbar-thumb-hover); background-clip: content-box; }
+*::-webkit-scrollbar-corner { background: transparent; }
+
+/* Result grid: refined scrollbars (right + bottom) with floating pill thumb */
+.result-body {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+.result-body::-webkit-scrollbar { width: 12px; height: 12px; }
+.result-body::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+.result-body::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--r-full);
+  border: 3px solid transparent;
   background-clip: content-box;
 }
-*::-webkit-scrollbar-thumb:hover { background: var(--gray-100); background-clip: content-box; }
-*::-webkit-scrollbar-corner { background: transparent; }
+.result-body::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); background-clip: content-box; }
+.result-body::-webkit-scrollbar-corner { background: transparent; }
 
 /* Focus visibility (a11y) */
 :focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--r-sm); }
@@ -402,6 +434,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: var(--sp-4);
   font-size: var(--fs-sm);
   text-align: center;
+}
+.tree-empty-child {
+  color: var(--text-tertiary);
+  padding: 4px 8px;
+  font-size: var(--fs-sm);
+  font-style: italic;
 }
 .tree-node { user-select: none; }
 .tree-row {
