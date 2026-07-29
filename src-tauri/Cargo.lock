@@ -490,6 +490,7 @@ name = "chatquery-desktop"
 version = "0.1.0"
 dependencies = [
  "chatquery",
+ "objc2",
  "serde",
  "serde_json",
  "tauri",
