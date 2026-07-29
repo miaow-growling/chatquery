@@ -39,7 +39,7 @@ interface DropdownOption {
   tag?: string;
 }
 interface DropdownSelectProps {
-  label: string;
+  label?: string;
   value: string;
   options: DropdownOption[];
   onChange: (value: string) => void;
@@ -87,7 +87,11 @@ function DropdownSelect({ label, value, options, onChange }: DropdownSelectProps
                 role="option"
                 aria-selected={o.value === value}
                 className={o.value === value ? "active" : ""}
-                onClick={() => {
+                onMouseDown={(e) => {
+                  // Close on mousedown (not click) so the trigger <button>'s
+                  // focus/blur cycle can't re-toggle it open. preventDefault
+                  // keeps focus on the trigger instead of the <li>.
+                  e.preventDefault();
                   onChange(o.value);
                   setOpen(false);
                 }}
@@ -437,6 +441,9 @@ export function App() {
 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<QueryItem[]>([]);
+  const [historyTab, setHistoryTab] = useState<"history" | "snippet">("history");
+  const [historySearch, setHistorySearch] = useState("");
+  const [historyConn, setHistoryConn] = useState<string>("");
 
   const editorRef = useRef<EditorHandle | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
@@ -653,15 +660,33 @@ export function App() {
   type DialogState =
     | { kind: "prompt"; title: string; def: string; resolve: (v: string | null) => void }
     | { kind: "confirm"; title: string; message: string; resolve: (v: boolean) => void }
+    | {
+        kind: "envType";
+        title: string;
+        resolve: (v: { name: string; dbType: "mysql" | "redis" } | null) => void;
+      }
     | null;
   const [dlg, setDlg] = useState<DialogState>(null);
+  // Local state for the envType dialog (name + db_type picker).
+  const [envDlgName, setEnvDlgName] = useState("");
+  const [envDlgType, setEnvDlgType] = useState<"mysql" | "redis">("mysql");
   const promptAsync = (title: string, def = ""): Promise<string | null> =>
     new Promise((res) => setDlg({ kind: "prompt", title, def, resolve: res }));
   const confirmAsync = (message: string, title = "请确认"): Promise<boolean> =>
     new Promise((res) => setDlg({ kind: "confirm", title, message, resolve: res }));
-  const closeDlg = (val: string | null | boolean) => {
+  const promptEnvType = (
+    title: string
+  ): Promise<{ name: string; dbType: "mysql" | "redis" } | null> => {
+    setEnvDlgName("");
+    setEnvDlgType("mysql");
+    return new Promise((res) => setDlg({ kind: "envType", title, resolve: res }));
+  };
+  // `val` may be a string (prompt), boolean (confirm), the envType payload
+  // ({name, dbType}), or null — kept loosely typed because each dialog variant
+  // only ever receives its own shape at runtime.
+  const closeDlg = (val: any) => {
     setDlg((cur) => {
-      if (cur) (cur.resolve as (v: string | null | boolean) => void)(val);
+      if (cur) (cur.resolve as (v: any) => void)(val);
       return null;
     });
   };
@@ -800,10 +825,9 @@ export function App() {
   // Right-click a field: pin the column (for "copy as JSON") and keep the row
   // selection behaviour identical to before — if the row isn't already in the
   // selection it becomes the sole selected row, so the row menu stays useful.
-  const onCellCtx = (ri: number, ci: number, e: ReactMouseEvent) => {
+  const onCellCtx = (ri: number, _ci: number, e: ReactMouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setSelCol(ci);
     const eff = selRows.has(ri)
       ? Array.from(selRows).sort((a, b) => a - b)
       : [ri];
@@ -883,6 +907,14 @@ export function App() {
     },
     [tree]
   );
+
+  // Flat connection list (for the history/snippet connection filter).
+  const allConns = useMemo(() => {
+    const out: ConnSummary[] = [];
+    for (const env of tree.environments)
+      for (const g of env.groups) out.push(...g.connections);
+    return out;
+  }, [tree]);
 
   const setActiveTab = (updater: (t: QueryTab) => QueryTab) => {
     setTabs((prev) =>
@@ -1782,17 +1814,15 @@ export function App() {
     // user lands back in the same context they ran it from. If the connection
     // has been deleted, fall back to loading only the SQL into the current tab.
     const conn = item.conn_id ? findConn(item.conn_id) : undefined;
-    if (conn) {
-      setSelId(conn.id);
-      setActiveTab((t) => ({
-        ...t,
-        sql: item.sql,
-        connId: conn.id,
-        db: item.db ?? "",
-      }));
-    } else {
-      setActiveTab((t) => ({ ...t, sql: item.sql }));
-    }
+    if (conn) setSelId(conn.id);
+    setActiveTab((t) => ({
+      ...t,
+      sql: item.sql,
+      connId: conn ? conn.id : t.connId,
+      db: conn ? (item.db ?? "") : t.db,
+      // Carry a snippet's name onto the tab so the title stays meaningful.
+      ...(item.name ? { name: item.name } : {}),
+    }));
     editorRef.current?.replaceValue(item.sql);
     editorRef.current?.view.focus();
     setHistoryOpen(false);
@@ -1815,7 +1845,7 @@ export function App() {
     const name = await promptAsync("片段名称", "我的查询");
     if (!name || !name.trim()) return;
     try {
-      await api.saveQuery(null, name.trim(), sql, selId || null, null);
+      await api.saveQuery(null, name.trim(), sql, active.connId || selId || null, active.db);
       showToast("已保存为片段");
     } catch (e) {
       showToast("保存失败: " + String(e));
@@ -1865,10 +1895,10 @@ export function App() {
 
   const newEnvironment = async () => {
     setAddOpen(false);
-    const name = await promptAsync("环境名称", "新环境");
-    if (!name || !name.trim()) return;
+    const r = await promptEnvType("新建环境");
+    if (!r || !r.name.trim()) return;
     try {
-      await api.createEnvironment(name.trim());
+      await api.createEnvironment(r.name.trim(), r.dbType);
       await refresh();
     } catch (e) {
       showToast("创建环境失败: " + String(e));
@@ -2117,6 +2147,7 @@ export function App() {
           onInsertText={insertText}
           onRefreshConns={refresh}
           onNewGroup={(envId) => void newGroupUnder(envId)}
+          onNewConnection={(groupId) => openAddSeed({ group_id: groupId })}
           onRenameContainer={(id, name) => void renameContainer(id, name)}
           onDeleteContainer={(id) => void removeContainer(id)}
           onShowStructure={showStructure}
@@ -2450,14 +2481,62 @@ export function App() {
         </div>
       )}
 
-      {historyOpen && (
+      {historyOpen && (() => {
+        const kw = historySearch.trim().toLowerCase();
+        const visible = history.filter((h) => {
+          const isSnippet = !!h.name;
+          if (historyTab === "snippet" ? !isSnippet : isSnippet) return false;
+          if (historyConn && h.conn_id !== historyConn) return false;
+          if (
+            kw &&
+            !h.sql.toLowerCase().includes(kw) &&
+            !(h.db ?? "").toLowerCase().includes(kw) &&
+            !(h.name ?? "").toLowerCase().includes(kw)
+          )
+            return false;
+          return true;
+        });
+        return (
         <div className="modal-mask" onClick={() => setHistoryOpen(false)}>
           <div className="modal wide" onClick={(e) => e.stopPropagation()}>
             <h3>查询历史 / 片段</h3>
+            <div className="seg">
+              <button
+                className={historyTab === "history" ? "seg-on" : ""}
+                onClick={() => setHistoryTab("history")}
+              >
+                历史
+              </button>
+              <button
+                className={historyTab === "snippet" ? "seg-on" : ""}
+                onClick={() => setHistoryTab("snippet")}
+              >
+                片段
+              </button>
+            </div>
+            <div className="history-toolbar">
+              <input
+                className="history-search"
+                placeholder="搜索 SQL 或库名…"
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+              />
+              <div className="history-conn">
+                <DropdownSelect
+                  value={historyConn}
+                  options={[
+                    { value: "", label: "全部连接" },
+                    ...allConns.map((c) => ({ value: c.id, label: c.name })),
+                  ]}
+                  onChange={(v) => setHistoryConn(v)}
+                />
+              </div>
+            </div>
             <div className="history-list">
-              {history.length === 0 && <div className="empty">暂无记录</div>}
-              {history.map((h) => (
+              {visible.length === 0 && <div className="empty">暂无记录</div>}
+              {visible.map((h) => (
                 <div key={h.id} className="history-item">
+                  {h.name && <div className="history-title">{h.name}</div>}
                   <div className="history-meta">
                     {h.name ? <span className="snippet-badge">片段</span> : null}
                     <span>{findConn(h.conn_id ?? "")?.name ?? "—"}</span>
@@ -2481,7 +2560,8 @@ export function App() {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {settingsOpen && (
         <div className="modal-mask" onClick={() => setSettingsOpen(false)}>
@@ -2619,7 +2699,7 @@ export function App() {
       {dlg && (
         <div
           className="modal-mask"
-          onMouseDown={() => closeDlg(dlg.kind === "prompt" ? null : false)}
+          onMouseDown={() => closeDlg(dlg.kind === "confirm" ? false : null)}
         >
           <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
             <h3>{dlg.title}</h3>
@@ -2634,12 +2714,41 @@ export function App() {
                   if (e.key === "Escape") closeDlg(null);
                 }}
               />
+            ) : dlg.kind === "envType" ? (
+              <>
+                <input
+                  id="env-name-input"
+                  value={envDlgName}
+                  autoFocus
+                  placeholder="环境名称"
+                  onChange={(e) => setEnvDlgName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter")
+                      closeDlg({ name: envDlgName.trim(), dbType: envDlgType });
+                    if (e.key === "Escape") closeDlg(null);
+                  }}
+                />
+                <div className="seg">
+                  <button
+                    className={envDlgType === "mysql" ? "seg-on" : ""}
+                    onClick={() => setEnvDlgType("mysql")}
+                  >
+                    MySQL
+                  </button>
+                  <button
+                    className={envDlgType === "redis" ? "seg-on" : ""}
+                    onClick={() => setEnvDlgType("redis")}
+                  >
+                    Redis
+                  </button>
+                </div>
+              </>
             ) : (
               <p className="modal-msg">{dlg.message}</p>
             )}
             <div className="modal-actions">
               <button
-                onClick={() => closeDlg(dlg.kind === "prompt" ? null : false)}
+                onClick={() => closeDlg(dlg.kind === "confirm" ? false : null)}
               >
                 取消
               </button>
@@ -2649,6 +2758,8 @@ export function App() {
                   if (dlg.kind === "prompt") {
                     const el = document.getElementById("dlg-input") as HTMLInputElement | null;
                     closeDlg(el ? el.value : dlg.def);
+                  } else if (dlg.kind === "envType") {
+                    closeDlg({ name: envDlgName.trim(), dbType: envDlgType });
                   } else {
                     closeDlg(true);
                   }

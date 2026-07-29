@@ -195,7 +195,7 @@
 
   --segment-active: #ffffff;
   --panel-bg: rgb(255 255 255 / 0.80);
-  --sel-bg: rgb(0 122 255 / 0.22);
+  --sel-bg: rgb(0 122 255 / 0.30);
 
   --shadow-sm:  0 1px 2px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.04);
   --shadow-md:  0 4px 12px rgb(0 0 0 / 0.10), 0 2px 4px rgb(0 0 0 / 0.05);
@@ -783,6 +783,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .result-table th,
 .result-table td {
   border-bottom: 1px solid var(--grid-line);
+  border-right: 1px solid var(--grid-line);
   padding: 6px 12px;
   text-align: left;
   white-space: nowrap;
@@ -852,12 +853,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .result-table tr.row-insert td.insert-cell { padding: 1px 2px; }
 .insert-cell .cell-edit { background: var(--bg-surface); }
 
+.result-table th:last-child,
+.result-table td:last-child { border-right: none; }
+
 /* Selection highlight (row / column) */
 .row-selected > td { background: var(--brand-soft) !important; }
 .row-selected.row-deleted > td { background: var(--danger-soft) !important; }
 td.col-selected { background: var(--brand-soft) !important; }
-th.col-selected { background: var(--brand-soft) !important; outline: 1px solid var(--brand); }
-.result-table thead th.col-selected { color: var(--text-primary); }
+th.col-selected { background: var(--sel-bg) !important; color: var(--text-primary); outline: 2px solid var(--brand); }
 
 /* =====================  PAGER  ===================== */
 .pager {
@@ -1176,6 +1179,35 @@ th.col-selected { background: var(--brand-soft) !important; outline: 1px solid v
   border-color: var(--border-focus);
   box-shadow: var(--focus-ring);
 }
+/* Segmented control for the "new environment" db_type picker (ADR-022). */
+.seg {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+.seg button {
+  flex: 1;
+  height: 34px;
+  padding: 0 16px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-canvas);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.seg button:hover {
+  border-color: var(--border-focus);
+  color: var(--text-primary);
+}
+.seg button.seg-on {
+  background: var(--brand);
+  color: var(--text-on-brand);
+  border-color: transparent;
+  font-weight: 600;
+}
 .modal-actions {
   display: flex;
   gap: var(--sp-2);
@@ -1336,6 +1368,15 @@ th.col-selected { background: var(--brand-soft) !important; outline: 1px solid v
   padding: var(--sp-3);
   background: var(--bg-canvas);
 }
+.history-title {
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .history-meta {
   display: flex;
   align-items: center;
@@ -1379,6 +1420,16 @@ th.col-selected { background: var(--brand-soft) !important; outline: 1px solid v
   transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
 }
 .history-actions button:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-strong); }
+.history-toolbar {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+.history-search { flex: 1; min-width: 0; }
+.history-conn { flex: none; width: 168px; position: relative; }
+.history-conn .vendor-select { width: 100%; }
+.history-conn .vendor-options { min-width: 100%; width: max-content; right: auto; }
+.history-conn .vendor-options li { white-space: nowrap; }
 
 /* =====================  STRUCTURE / RELATION VIEWS  ===================== */
 .structure-view { overflow: auto; height: 100%; padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-5); }
