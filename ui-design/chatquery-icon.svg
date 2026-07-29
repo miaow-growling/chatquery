@@ -1,0 +1,55 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background gradient: system blue -> deep indigo (diagonal) -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"  stop-color="#5AA8FF"/>
+      <stop offset="45%" stop-color="#2E86FF"/>
+      <stop offset="100%" stop-color="#0A46E6"/>
+    </linearGradient>
+    <!-- Radial sheen near top -->
+    <radialGradient id="sheen" cx="50%" cy="20%" r="70%">
+      <stop offset="0%"  stop-color="#FFFFFF" stop-opacity="0.28"/>
+      <stop offset="55%" stop-color="#FFFFFF" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Database cylinder body gradient -->
+    <linearGradient id="dbGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"  stop-color="#FFFFFF"/>
+      <stop offset="60%" stop-color="#F2F6FC"/>
+      <stop offset="100%" stop-color="#D7E2F2"/>
+    </linearGradient>
+    <!-- Bottom vignette for depth -->
+    <linearGradient id="vign" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"  stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#001A66" stop-opacity="0.22"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Squircle background -->
+  <rect x="32" y="32" width="960" height="960" rx="224" ry="224" fill="url(#bgGrad)"/>
+  <rect x="32" y="32" width="960" height="960" rx="224" ry="224" fill="url(#sheen)"/>
+  <rect x="32" y="32" width="960" height="960" rx="224" ry="224" fill="url(#vign)"/>
+
+  <!-- Contact shadow under cylinder -->
+  <ellipse cx="512" cy="742" rx="196" ry="44" fill="#00103F" opacity="0.20"/>
+
+  <!-- Database cylinder -->
+  <g>
+    <!-- Body -->
+    <path d="M 336 392 L 336 712 A 176 52 0 0 0 688 712 L 688 392 A 176 52 0 0 1 336 392 Z" fill="url(#dbGrad)"/>
+    <!-- Disc separators (front arcs) -->
+    <path d="M 336 512 A 176 52 0 0 0 688 512" fill="none" stroke="#C2D2EA" stroke-width="6" opacity="0.9"/>
+    <path d="M 336 632 A 176 52 0 0 0 688 632" fill="none" stroke="#C2D2EA" stroke-width="6" opacity="0.9"/>
+    <!-- Top ellipse -->
+    <ellipse cx="512" cy="392" rx="176" ry="52" fill="#FFFFFF"/>
+    <ellipse cx="512" cy="392" rx="176" ry="52" fill="none" stroke="#E2EAF6" stroke-width="3"/>
+    <!-- Base ellipse highlight -->
+    <path d="M 336 712 A 176 52 0 0 0 688 712" fill="none" stroke="#FFFFFF" stroke-width="4" opacity="0.7"/>
+  </g>
+
+  <!-- Execute-query badge (white rounded square + blue chevron) -->
+  <g>
+    <rect x="690" y="656" width="172" height="172" rx="44" fill="#FFFFFF"/>
+    <path d="M 752 700 L 808 742 L 752 784" fill="none" stroke="#0A84FF" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
