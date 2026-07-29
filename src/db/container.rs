@@ -1,3 +1,4 @@
+use crate::db::connection::DbType;
 use serde::{Deserialize, Serialize};
 
 /// A tree container: either an environment (top-level bucket) or a group
@@ -15,6 +16,12 @@ pub struct Container {
     pub id: String,
     pub kind: ContainerKind,
     pub name: String,
+    /// Database type this environment is bound to (ADR-022). Lets an empty
+    /// environment be placed under the correct root (MySQL/Redis) before it
+    /// holds any connection. Only meaningful for environments; groups and
+    /// legacy containers use None. Missing on disk ⇒ treated as MySQL.
+    #[serde(default)]
+    pub db_type: Option<DbType>,
     /// Parent environment id. Only meaningful for groups; envs use None.
     #[serde(default)]
     pub parent: Option<String>,

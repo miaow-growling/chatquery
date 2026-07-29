@@ -3,7 +3,7 @@ use crate::error::{AppError, Result};
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
-use sqlx::types::chrono::NaiveDateTime;
+use sqlx::types::chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use regex::Regex;
 use sqlx::{Column, Row, ValueRef};
 use std::sync::OnceLock;
@@ -195,12 +195,18 @@ fn strip_limit_offset(sql: &str) -> (String, Option<usize>) {
 /// Return true when `sql` is a single SELECT statement that we can safely wrap
 /// with `COUNT(*)` and `LIMIT/OFFSET`. Anything else — SHOW, EXPLAIN, INSERT,
 /// UPDATE, DELETE, CALL, or multi-statement scripts — must run unmodified.
+///
+/// A trailing statement semicolon is perfectly normal for a single SELECT and
+/// must NOT disqualify it (it only terminates the one statement). We strip it
+/// before classifying, so `SELECT * FROM t;` still paginates. Only *internal*
+/// separators mark a multi-statement script that we must not rewrite.
 fn is_select_query(sql: &str) -> bool {
-    let body = skip_leading_inline_comment(sql.trim());
+    let no_tail = sql.trim().trim_end_matches(';').trim();
+    let body = skip_leading_inline_comment(no_tail);
     if !body.eq_ignore_ascii_case("select") && !body.to_ascii_uppercase().starts_with("SELECT ") {
         return false;
     }
-    !has_unquoted_semicolon(sql)
+    !has_unquoted_semicolon(no_tail)
 }
 
 /// Skip a leading `-- ` or `#` comment line so that `-- comment\nSELECT ...`
@@ -243,7 +249,10 @@ async fn decode_row(row: &sqlx::mysql::MySqlRow) -> Vec<String> {
     let mut out = Vec::new();
     for c in row.columns() {
         let ord = c.ordinal();
-        let v: String = if let Ok(Some(s)) = row.try_get::<Option<String>, _>(ord) {
+        let is_null = row.try_get_raw(ord).map(|v| v.is_null()).unwrap_or(false);
+        let v: String = if is_null {
+            "NULL".to_string()
+        } else if let Ok(Some(s)) = row.try_get::<Option<String>, _>(ord) {
             s
         } else if let Ok(Some(n)) = row.try_get::<Option<i64>, _>(ord) {
             n.to_string()
@@ -253,10 +262,18 @@ async fn decode_row(row: &sqlx::mysql::MySqlRow) -> Vec<String> {
             b.to_string()
         } else if let Ok(Some(dt)) = row.try_get::<Option<NaiveDateTime>, _>(ord) {
             dt.to_string()
+        } else if let Ok(Some(d)) = row.try_get::<Option<NaiveDate>, _>(ord) {
+            d.to_string()
+        } else if let Ok(Some(t)) = row.try_get::<Option<NaiveTime>, _>(ord) {
+            t.to_string()
+        } else if let Ok(Some(ts)) = row.try_get::<Option<DateTime<Utc>>, _>(ord) {
+            ts.to_string()
+        } else if let Ok(Some(n)) = row.try_get::<Option<sqlx::types::Decimal>, _>(ord) {
+            n.to_string()
+        } else if let Ok(Some(j)) = row.try_get::<Option<serde_json::Value>, _>(ord) {
+            j.to_string()
         } else if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(ord) {
             format!("0x{}", to_hex(&bytes))
-        } else if row.try_get_raw(ord).map(|v| v.is_null()).unwrap_or(false) {
-            "NULL".to_string()
         } else {
             "?".to_string()
         };
@@ -309,7 +326,7 @@ async fn connect_pool(cfg: &ConnectionConfig) -> Result<MySqlPool> {
 async fn connect_pool_db(cfg: &ConnectionConfig, database: &str) -> Result<MySqlPool> {
     let db = if database.is_empty() { "mysql" } else { database };
     let url = format!(
-        "mysql://{}:{}@{}:{}/{}",
+        "mysql://{}:{}@{}:{}/{}?charset=utf8mb4",
         cfg.user, cfg.password, cfg.host, cfg.port, db
     );
     MySqlPoolOptions::new()
@@ -334,8 +351,12 @@ pub async fn schema(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Sc
         }
     };
     let pool = connect_pool_db(cfg, &db).await?;
+    // CAST every INFORMATION_SCHEMA text column to CHAR so sqlx decodes them as
+    // VARCHAR instead of BINARY (binary charset would break String mapping).
     let rows = sqlx::query(
-        "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_KEY, IS_NULLABLE, COLUMN_DEFAULT \
+        "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, \
+                CAST(DATA_TYPE AS CHAR) AS DATA_TYPE, CAST(COLUMN_KEY AS CHAR) AS COLUMN_KEY, \
+                CAST(IS_NULLABLE AS CHAR) AS IS_NULLABLE, CAST(COLUMN_DEFAULT AS CHAR) AS COLUMN_DEFAULT \
          FROM INFORMATION_SCHEMA.COLUMNS \
          WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION",
     )
@@ -421,8 +442,10 @@ pub struct TableMeta {
 /// List non-system databases on the server (Navicat's "database" level).
 pub async fn list_databases(cfg: &ConnectionConfig) -> Result<Vec<String>> {
     let pool = connect_pool_db(cfg, "mysql").await?;
+    // CAST SCHEMA_NAME to CHAR: INFORMATION_SCHEMA columns use a binary charset
+    // and would decode as SQL type BINARY, incompatible with Rust String.
     let rows = sqlx::query(
-        "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA \
+        "SELECT CAST(SCHEMA_NAME AS CHAR) AS SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA \
          WHERE SCHEMA_NAME NOT IN ('information_schema','performance_schema','mysql','sys') \
          ORDER BY SCHEMA_NAME",
     )
@@ -440,8 +463,12 @@ pub async fn list_databases(cfg: &ConnectionConfig) -> Result<Vec<String>> {
 /// List tables and views within a single database, ordered by name.
 pub async fn list_tables(cfg: &ConnectionConfig, database: &str) -> Result<Vec<TableMeta>> {
     let pool = connect_pool_db(cfg, database).await?;
+    // INFORMATION_SCHEMA text columns are defined with a binary charset in MySQL,
+    // so sqlx reports them as SQL type BINARY and refuses to map them to String.
+    // CAST to CHAR so they come back as VARCHAR (see list_tables/schema/describe_table).
     let rows = sqlx::query(
-        "SELECT TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES \
+        "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE \
+         FROM INFORMATION_SCHEMA.TABLES \
          WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME",
     )
     .bind(database)
@@ -524,8 +551,9 @@ pub async fn browse(
     // Primary-key columns so the UI can locate a row for writes. Careful: a
     // table with no primary key can't be safely written back (no stable row
     // identity), so we surface the empty list and the UI disables editing.
+    // CAST COLUMN_NAME to CHAR: INFORMATION_SCHEMA text columns are binary-charset.
     let pk_rows = sqlx::query(
-        "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS \
+        "SELECT CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS \
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_KEY = 'PRI' \
          ORDER BY ORDINAL_POSITION",
     )
@@ -747,8 +775,12 @@ pub async fn describe_table(
 
     // 1. Column details — use COLUMN_TYPE (full) and EXTRA which list_columns
     //    doesn't select.
+    // CAST every INFORMATION_SCHEMA text column to CHAR so sqlx decodes them as
+    // VARCHAR instead of BINARY (binary charset would break String mapping).
     let col_rows = sqlx::query(
-        "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA \
+        "SELECT CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, CAST(COLUMN_TYPE AS CHAR) AS COLUMN_TYPE, \
+                CAST(IS_NULLABLE AS CHAR) AS IS_NULLABLE, CAST(COLUMN_KEY AS CHAR) AS COLUMN_KEY, \
+                CAST(COLUMN_DEFAULT AS CHAR) AS COLUMN_DEFAULT, CAST(EXTRA AS CHAR) AS EXTRA \
          FROM INFORMATION_SCHEMA.COLUMNS \
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
     )
@@ -840,9 +872,14 @@ pub async fn list_relationships(
     database: &str,
 ) -> Result<Vec<ForeignKeyInfo>> {
     let pool = connect_pool_db(cfg, database).await?;
+    // CAST every INFORMATION_SCHEMA text column to CHAR: they use a binary
+    // charset and would decode as SQL type BINARY, incompatible with Rust String.
     let rows = sqlx::query(
-        "SELECT CONSTRAINT_NAME, TABLE_NAME, COLUMN_NAME, \
-         REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME \
+        "SELECT CAST(CONSTRAINT_NAME AS CHAR) AS CONSTRAINT_NAME, \
+                CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, \
+                CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, \
+                CAST(REFERENCED_TABLE_NAME AS CHAR) AS REFERENCED_TABLE_NAME, \
+                CAST(REFERENCED_COLUMN_NAME AS CHAR) AS REFERENCED_COLUMN_NAME \
          FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
          WHERE TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME IS NOT NULL \
          ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION",
@@ -931,7 +968,8 @@ mod tests {
         assert!(!is_select_query("EXPLAIN SELECT * FROM t"));
         assert!(!is_select_query("INSERT INTO t VALUES (1)"));
         assert!(!is_select_query("SELECT * FROM t; SHOW CREATE TABLE t"));
-        assert!(!is_select_query("SELECT * FROM t;"));
+        assert!(is_select_query("SELECT * FROM t;"));
+        assert!(!is_select_query("SELECT * FROM t; SHOW CREATE TABLE t"));
     }
 
     #[test]

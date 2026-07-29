@@ -11,7 +11,6 @@ use commands::*;
 use state::AppState;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
 
 fn main() {
     let storage = match Storage::open() {
@@ -79,29 +78,6 @@ fn main() {
             describe_table,
             list_relationships,
         ])
-        .setup(|app| {
-            #[cfg(target_os = "macos")]
-            {
-                // macOS WKWebView follows the system scroller style. With the
-                // default "Automatically" setting (trackpad Macs) it uses the
-                // overlay scroller, which ignores `::-webkit-scrollbar` styling.
-                // Force the legacy (always-visible) style so our custom CSS
-                // scrollbars actually render.
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.with_webview(|webview| {
-                        unsafe {
-                            use objc2::msg_send;
-                            use objc2::runtime::AnyObject;
-                            let view = webview.inner() as *mut AnyObject;
-                            let scroll_view: *mut AnyObject = msg_send![view, scrollView];
-                            // NSScrollerStyleLegacy = 0
-                            let _: () = msg_send![scroll_view, setScrollerStyle: 0isize];
-                        }
-                    });
-                }
-            }
-            Ok(())
-        })
         .run(tauri::generate_context!())
         .expect("error while running ChatQuery");
 }

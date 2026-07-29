@@ -178,12 +178,15 @@ impl ConnectionStore {
 
     // --- Container CRUD (ADR-016) -----------------------------------------
 
-    pub fn create_env(&mut self, name: &str) -> Result<String> {
-        let id = self.storage.create_container(ContainerKind::Env, name, None)?;
+    pub fn create_env(&mut self, name: &str, db_type: Option<DbType>) -> Result<String> {
+        let id = self
+            .storage
+            .create_container(ContainerKind::Env, name, None, db_type)?;
         self.containers.push(Container {
             id: id.clone(),
             kind: ContainerKind::Env,
             name: name.to_string(),
+            db_type,
             parent: None,
             ord: 0,
         });
@@ -201,11 +204,12 @@ impl ConnectionStore {
         }
         let id = self
             .storage
-            .create_container(ContainerKind::Group, name, Some(env_id))?;
+            .create_container(ContainerKind::Group, name, Some(env_id), None)?;
         self.containers.push(Container {
             id: id.clone(),
             kind: ContainerKind::Group,
             name: name.to_string(),
+            db_type: None,
             parent: Some(env_id.to_string()),
             ord: 0,
         });
@@ -278,11 +282,12 @@ fn ensure_env(
     {
         return Ok(c.id.clone());
     }
-    let id = storage.create_container(ContainerKind::Env, name, None)?;
+    let id = storage.create_container(ContainerKind::Env, name, None, None)?;
     containers.push(Container {
         id: id.clone(),
         kind: ContainerKind::Env,
         name: name.to_string(),
+        db_type: None,
         parent: None,
         ord: 0,
     });
@@ -303,11 +308,12 @@ fn ensure_group(
     }) {
         return Ok(c.id.clone());
     }
-    let id = storage.create_container(ContainerKind::Group, name, Some(env_id))?;
+    let id = storage.create_container(ContainerKind::Group, name, Some(env_id), None)?;
     containers.push(Container {
         id: id.clone(),
         kind: ContainerKind::Group,
         name: name.to_string(),
+        db_type: None,
         parent: Some(env_id.to_string()),
         ord: 0,
     });

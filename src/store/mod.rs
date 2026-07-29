@@ -1,5 +1,5 @@
 use crate::crypto;
-use crate::db::connection::ConnectionConfig;
+use crate::db::connection::{ConnectionConfig, DbType};
 use crate::db::container::{gen_id, Container, ContainerKind, LegacyConnection};
 use crate::error::{AppError, Result};
 use rusqlite::{params, Connection};
@@ -52,6 +52,18 @@ impl Storage {
                 ord    INTEGER NOT NULL DEFAULT 0
             );",
         )?;
+        // ADR-022: environments are bound to a db_type so empty ones can be
+        // placed under the right root. Existing deployments lack the column;
+        // add it idempotently (PRAGMA-guarded so re-running is a no-op).
+        {
+            let mut pragma = conn.prepare("PRAGMA table_info(containers)")?;
+            let has_db_type: bool = pragma
+                .query_map([], |r| r.get::<_, String>(1))?
+                .any(|c| c.map(|n| n == "db_type").unwrap_or(false));
+            if !has_db_type {
+                conn.execute("ALTER TABLE containers ADD COLUMN db_type TEXT", [])?;
+            }
+        } // `pragma` dropped here, releasing its borrow of `conn`
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS queries (
                 id      TEXT PRIMARY KEY,
@@ -115,8 +127,14 @@ impl Storage {
     pub fn load_containers(&self) -> Result<Vec<Container>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, kind, name, parent, ord FROM containers")?;
+            .prepare("SELECT id, kind, name, parent, ord, db_type FROM containers")?;
         let rows = stmt.query_map([], |r| {
+            let raw: Option<String> = r.get(5)?;
+            let db_type = match raw.as_deref() {
+                Some("redis") => Some(DbType::Redis),
+                Some("mysql") => Some(DbType::Mysql),
+                _ => None,
+            };
             Ok(Container {
                 id: r.get(0)?,
                 kind: match r.get::<_, String>(1)?.as_str() {
@@ -124,6 +142,7 @@ impl Storage {
                     _ => ContainerKind::Env,
                 },
                 name: r.get(2)?,
+                db_type,
                 parent: r.get(3)?,
                 ord: r.get(4)?,
             })
@@ -141,15 +160,21 @@ impl Storage {
         kind: ContainerKind,
         name: &str,
         parent: Option<&str>,
+        db_type: Option<DbType>,
     ) -> Result<String> {
         let id = gen_id(if kind == ContainerKind::Env { "e" } else { "g" });
         let kind_str = match kind {
             ContainerKind::Env => "env",
             ContainerKind::Group => "group",
         };
+        let db_type_str: Option<&str> = match db_type {
+            Some(DbType::Mysql) => Some("mysql"),
+            Some(DbType::Redis) => Some("redis"),
+            None => None,
+        };
         self.conn.execute(
-            "INSERT INTO containers (id, kind, name, parent, ord) VALUES (?1, ?2, ?3, ?4, 0)",
-            params![id, kind_str, name, parent],
+            "INSERT INTO containers (id, kind, name, parent, ord, db_type) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+            params![id, kind_str, name, parent, db_type_str],
         )?;
         Ok(id)
     }

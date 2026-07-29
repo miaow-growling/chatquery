@@ -75,9 +75,10 @@ export const api = {
     invoke<QueryOutput>("browse_table", { connId, database, table, page, pageSize }),
   browseRedisKey: (connId: string, db: number, key: string) =>
     invoke<QueryOutput>("browse_redis_key", { connId, db, key }),
-  // Container (environment / group) CRUD (ADR-016).
-  createEnvironment: (name: string) =>
-    invoke<string>("create_environment", { name }),
+  // Container (environment / group) CRUD (ADR-016). `dbType` binds the new
+  // environment to MySQL/Redis so it lands under the correct root (ADR-022).
+  createEnvironment: (name: string, dbType: "mysql" | "redis" = "mysql") =>
+    invoke<string>("create_environment", { name, db_type: dbType }),
   createGroup: (envId: string, name: string) =>
     invoke<string>("create_group", { envId, name }),
   renameContainer: (id: string, name: string) =>

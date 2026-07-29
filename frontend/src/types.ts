@@ -34,6 +34,9 @@ export interface EnvNode {
   id: string;
   name: string;
   order: number;
+  /// Database type this environment is bound to (ADR-022). Missing on legacy
+  /// data ⇒ treat as "mysql".
+  db_type?: "mysql" | "redis";
   groups: GroupNode[];
 }
 

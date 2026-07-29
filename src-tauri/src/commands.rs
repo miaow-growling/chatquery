@@ -159,6 +159,9 @@ pub struct EnvNode {
     pub id: String,
     pub name: String,
     pub order: i64,
+    /// Database type this environment is bound to (ADR-022). Empty/missing on
+    /// disk is serialized as "mysql" for forward-compatible rendering.
+    pub db_type: String,
     pub groups: Vec<GroupNode>,
 }
 
@@ -199,6 +202,10 @@ pub fn list_tree(state: State<AppState>) -> TreeModel {
             id: env.id.clone(),
             name: env.name.clone(),
             order: env.ord,
+            db_type: match env.db_type {
+                Some(DbType::Redis) => "redis".to_string(),
+                _ => "mysql".to_string(),
+            },
             groups,
         });
     }
@@ -214,6 +221,7 @@ pub fn list_tree(state: State<AppState>) -> TreeModel {
             id: "__ungrouped".to_string(),
             name: "未分组".to_string(),
             order: i64::MAX,
+            db_type: "mysql".to_string(),
             groups: vec![GroupNode {
                 id: "__ungrouped".to_string(),
                 name: String::new(),
@@ -267,12 +275,22 @@ pub fn delete_connection(state: State<AppState>, id: String) -> Result<(), Strin
 // --- Container (environment / group) CRUD (ADR-016) -------------------------
 
 #[tauri::command]
-pub fn create_environment(state: State<AppState>, name: String) -> Result<String, String> {
+pub fn create_environment(
+    state: State<AppState>,
+    name: String,
+    db_type: Option<String>,
+) -> Result<String, String> {
+    // ADR-022: environments are bound to a single db_type so they can be
+    // placed under the correct root even when empty. Unknown/missing ⇒ MySQL.
+    let db_type = match db_type.as_deref() {
+        Some("redis") => Some(DbType::Redis),
+        _ => Some(DbType::Mysql),
+    };
     state
         .store
         .lock()
         .unwrap()
-        .create_env(&name)
+        .create_env(&name, db_type)
         .map_err(|e| e.to_string())
 }
 

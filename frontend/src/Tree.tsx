@@ -57,45 +57,67 @@ function connNode(c: ConnSummary): Node {
 
 function buildRoots(tree: TreeModel): Node[] {
   const envs = [...tree.environments].sort((a, b) => a.order - b.order);
-
-  // Top level is grouped by database type so the sidebar reads
-  //   MySQL ▸ 环境 ▸ 分组 ▸ 链接
-  // (and Redis ▸ … when redis connections exist). This gives the user the
-  // requested structure without mislabeling a redis connection under "MySQL".
-  const types = new Set<string>();
-  for (const env of envs)
-    for (const g of env.groups)
-      for (const c of g.connections) types.add(c.db_type);
-  const sortedTypes = [...types].sort();
-
   const labelOf = (t: string) => (t === "redis" ? "Redis" : "MySQL");
+
+  // ADR-022: environments are bound to a single db_type, so the root grouping
+  // is driven by each environment's own `db_type` — not inferred from its
+  // connections. This means an empty environment still lands under the correct
+  // root (MySQL/Redis) instead of being orphaned at the top level.
+  // The synthetic "__ungrouped" bucket holds mixed-type connections with no
+  // group, so it is split by connection type like before.
+  const types = new Set<string>();
+  for (const env of envs) {
+    if (env.id === "__ungrouped") {
+      for (const g of env.groups)
+        for (const c of g.connections) types.add(c.db_type);
+    } else {
+      types.add(env.db_type || "mysql");
+    }
+  }
+  const sortedTypes = [...types].sort();
 
   const roots: Node[] = [];
   for (const t of sortedTypes) {
     const envNodes: Node[] = [];
     for (const env of envs) {
-      const groups = [...env.groups]
-        .sort((a, b) => a.order - b.order)
-        .map((g): Node | null => {
-          const conns = g.connections.filter((c) => c.db_type === t);
-          if (conns.length === 0) return null;
-          return {
-            kind: "group",
-            key: `grp:${g.id}:${t}`,
-            id: g.id,
-            name: g.name,
-            children: conns.map(connNode),
-          };
-        })
-        .filter((x): x is Node => x !== null);
-      if (groups.length === 0) continue;
-      envNodes.push({
-        kind: "env",
-        key: `env:${env.id}:${t}`,
-        id: env.id,
-        name: env.name,
-        children: groups,
-      });
+      if (env.id === "__ungrouped") {
+        const conns = env.groups
+          .flatMap((g) => g.connections)
+          .filter((c) => c.db_type === t);
+        if (conns.length === 0) continue;
+        envNodes.push({
+          kind: "env",
+          key: `env:${env.id}:${t}`,
+          id: env.id,
+          name: env.name,
+          children: [
+            {
+              kind: "group",
+              key: `grp:${env.id}:${t}`,
+              id: env.id,
+              name: "",
+              children: conns.map(connNode),
+            },
+          ],
+        });
+      } else {
+        if ((env.db_type || "mysql") !== t) continue;
+        envNodes.push({
+          kind: "env",
+          key: `env:${env.id}`,
+          id: env.id,
+          name: env.name,
+          children: [...env.groups]
+            .sort((a, b) => a.order - b.order)
+            .map((g) => ({
+              kind: "group" as const,
+              key: `grp:${g.id}`,
+              id: g.id,
+              name: g.name,
+              children: g.connections.map(connNode),
+            })),
+        });
+      }
     }
     if (envNodes.length === 0) continue;
     roots.push({
@@ -105,6 +127,7 @@ function buildRoots(tree: TreeModel): Node[] {
       children: envNodes,
     });
   }
+
   return roots;
 }
 
@@ -293,6 +316,7 @@ interface TreeProps {
   onInsertText: (text: string) => void;
   onRefreshConns: () => void;
   onNewGroup: (envId: string) => void;
+  onNewConnection?: (groupId: string) => void;
   onRenameContainer: (id: string, name: string) => void;
   onDeleteContainer: (id: string) => void;
   onShowStructure: (connId: string, db: string, table: string) => void;
@@ -463,6 +487,7 @@ export function Tree(props: TreeProps) {
         if (isSynthetic(node.id))
           return [{ type: "item", label: "刷新连接列表", onClick: () => props.onRefreshConns() }];
         return [
+          { type: "item", label: "新建链接", onClick: () => props.onNewConnection?.(node.id) },
           { type: "item", label: "重命名分组", onClick: () => props.onRenameContainer(node.id, node.name) },
           { type: "sep" },
           { type: "item", label: "删除分组", danger: true, onClick: () => props.onDeleteContainer(node.id) },
@@ -557,7 +582,7 @@ export function Tree(props: TreeProps) {
         : node.kind === "table"
         ? "双击浏览数据（点 ▸ 可展开字段，右键更多操作）"
         : node.kind === "env" || node.kind === "group"
-        ? "右键可新建组 / 重命名 / 删除"
+        ? "右键可新建组 / 新建链接 / 重命名 / 删除"
         : node.kind === "conn"
         ? "单击选中，点左侧箭头展开数据库"
         : node.kind === "db"
@@ -601,8 +626,12 @@ export function Tree(props: TreeProps) {
           {loading[node.key] && <span className="tree-loading">…</span>}
         </div>
         {isOpen &&
-          kids.map((c) => (
-            <div key={c.key}>{renderNode(c, depth + 1)}</div>
+          (kids.length > 0 ? (
+            kids.map((c) => <div key={c.key}>{renderNode(c, depth + 1)}</div>)
+          ) : (
+            <div className="tree-empty-child" style={{ paddingLeft: `${depth * 14 + 22}px` }}>
+              暂无连接
+            </div>
           ))}
       </div>
     );
