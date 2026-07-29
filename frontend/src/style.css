@@ -510,6 +510,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .pane-head .ctx-db-btn { font-weight: var(--fw-regular); }
 
+/* Actions row inside pane headers — buttons with breathing room */
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
 /* ---- Unified button system (hierarchy: secondary vs primary) ---- */
 .pane-head button,
 .pane-actions button {
