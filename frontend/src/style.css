@@ -796,6 +796,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   color: var(--text-secondary);
   z-index: 1;
   border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .result-table th.pk { color: var(--warning-500); }
 .result-table tbody tr:nth-child(even) td { background: var(--bg-inset); }
