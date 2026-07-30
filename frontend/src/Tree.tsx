@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { ColumnInfo, ConnSummary, TreeModel } from "./types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { ScrollArea } from "./ScrollArea";
 
 /// Rows fetched per page when browsing a table.
 const PAGE_SIZE = 200;
@@ -814,7 +815,7 @@ export function Tree(props: TreeProps) {
   };
 
   return (
-    <div
+    <ScrollArea
       className="tree"
       onContextMenu={(e) => {
         if (!(e.target as HTMLElement).closest(".tree-row")) setMenu(null);
@@ -906,6 +907,6 @@ export function Tree(props: TreeProps) {
           onClose={() => setMenu(null)}
         />
       )}
-    </div>
+    </ScrollArea>
   );
 }
