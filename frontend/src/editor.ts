@@ -347,7 +347,6 @@ function parseFromTables(sql: string): Map<string, string> {
       tableOpts = tables.map(
         (t): Completion => ({
           label: t.name,
-          type: "variable",
           detail: t.is_view ? "view" : "table",
         })
       );
@@ -365,7 +364,6 @@ function parseFromTables(sql: string): Map<string, string> {
       options: tables.map(
         (t): Completion => ({
           label: t.name,
-          type: "variable",
           detail: t.is_view ? "view" : "table",
         })
       ),
