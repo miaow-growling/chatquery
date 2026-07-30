@@ -363,12 +363,14 @@ function parseFromTables(sql: string): Map<string, string> {
     if (inTablePos) {
       try {
         const tables = await api.searchTables(connId, db, prefix || null, 200);
-        tableOpts = tables.map(
-          (t): Completion => ({
-            label: t.name,
-            detail: t.is_view ? "view" : "table",
-          })
-        );
+        tableOpts = tables
+          .filter((t) => !lowerPrefix || t.name.toLowerCase().startsWith(lowerPrefix))
+          .map(
+            (t): Completion => ({
+              label: t.name,
+              detail: t.is_view ? "view" : "table",
+            })
+          );
       } catch {
         /* ignore — column suggestions still work */
       }
@@ -379,9 +381,12 @@ function parseFromTables(sql: string): Map<string, string> {
   // 3) No FROM yet — just suggest table names (keywords handled by lang-sql).
   try {
     const tables = await api.searchTables(connId, db, prefix || null, 200);
+    const filtered = tables.filter(
+      (t) => !lowerPrefix || t.name.toLowerCase().startsWith(lowerPrefix)
+    );
     return {
       from,
-      options: tables.map(
+      options: filtered.map(
         (t): Completion => ({
           label: t.name,
           detail: t.is_view ? "view" : "table",
