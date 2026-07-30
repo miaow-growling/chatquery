@@ -281,9 +281,23 @@ function parseFromTables(sql: string): Map<string, string> {
   const lowerPrefix = prefix.toLowerCase();
 
   const before = context.state.doc.sliceString(0, from);
-  // Restrict to the current statement so earlier statements' tables don't leak in.
-  const stmtText = before.slice(before.lastIndexOf(";") + 1);
-  const tablesMap = parseFromTables(stmtText);
+  // Scan the ENTIRE current statement (text before AND after the cursor) for
+  // FROM/JOIN clauses, so column completion fires in the SELECT list and WHERE
+  // clause too — not only after the FROM keyword. Previously we only scanned
+  // `before`, so typing a column left of the FROM (e.g. `SELECT col▍ FROM t`)
+  // found no tables and wrongly fell through to table-name suggestions.
+  const docText = context.state.doc.toString();
+  const stmtStart = docText.lastIndexOf(";", from - 1) + 1;
+  const semiAfter = docText.indexOf(";", from);
+  const stmtEnd = semiAfter === -1 ? docText.length : semiAfter;
+  const tablesMap = parseFromTables(docText.slice(stmtStart, stmtEnd));
+
+  // Are we typing in a table-name position (right after FROM / JOIN / a comma)?
+  // Used to decide whether table suggestions belong here. When composing a
+  // column name we must NOT dump unrelated tables whose names happen to share
+  // the column prefix.
+  const preWord = word ? before.slice(0, word.from) : before;
+  const inTablePos = /(\bFROM\b|\bJOIN\b|\,)\s*$/i.test(preWord);
 
   // 1) `alias.` / `table.` column completion — resolve the alias to the real table.
   const colMatch = before.match(/([A-Za-z0-9_`]+)\.\s*$/);
@@ -315,8 +329,9 @@ function parseFromTables(sql: string): Map<string, string> {
 
   // 2) Column context: FROM/JOIN present -> suggest columns of every referenced
   //    table (deduped), with the origin table shown as detail. Table names are
-  //    still offered too (e.g. when chaining another JOIN), and lang-sql's
-  //    keyword completion runs in parallel.
+  //    only offered when the cursor is in a table position (see `inTablePos`),
+  //    so composing a column never shows unrelated tables. lang-sql's keyword
+  //    completion runs in parallel.
   if (tablesMap.size > 0) {
     const fetches = Array.from(tablesMap.values()).map(async (t) => {
       let cols = colCache.get(t);
@@ -342,16 +357,21 @@ function parseFromTables(sql: string): Map<string, string> {
     }
 
     let tableOpts: Completion[] = [];
-    try {
-      const tables = await api.searchTables(connId, db, prefix || null, 200);
-      tableOpts = tables.map(
-        (t): Completion => ({
-          label: t.name,
-          detail: t.is_view ? "view" : "table",
-        })
-      );
-    } catch {
-      /* ignore — column suggestions still work */
+    // Only offer table names when the cursor is actually in a table position
+    // (right after FROM/JOIN/comma). When composing a column name we show
+    // columns only — never a pile of tables that merely share the prefix.
+    if (inTablePos) {
+      try {
+        const tables = await api.searchTables(connId, db, prefix || null, 200);
+        tableOpts = tables.map(
+          (t): Completion => ({
+            label: t.name,
+            detail: t.is_view ? "view" : "table",
+          })
+        );
+      } catch {
+        /* ignore — column suggestions still work */
+      }
     }
     return { from, options: [...colOpts, ...tableOpts], validFor: /^[\w`]*$/ };
   }
