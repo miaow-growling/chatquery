@@ -815,15 +815,13 @@ export function Tree(props: TreeProps) {
   };
 
   return (
-    <ScrollArea
+    <div
       className="tree"
       onContextMenu={(e) => {
         if (!(e.target as HTMLElement).closest(".tree-row")) setMenu(null);
       }}
     >
-      {roots.length === 0 && <div className="tree-empty">暂无连接，点右上角 ＋ 添加</div>}
-
-      {/* Connection import / export / template (#1, #2) */}
+      {/* Connection import / export / template — pinned above scroll */}
       <div className="tree-toolbar">
         {/* Encryption mode — custom dropdown (replaces raw <select>) */}
         <div className="tb-group" ref={cipherRef}>
@@ -889,16 +887,22 @@ export function Tree(props: TreeProps) {
           />
         </div>
       </div>
-      {cipher === "none" && (
-        <div className="tree-warn">
-          ⚠️ 明文导出会把连接密码以明文写入文件，请勿分享或提交到仓库。
-        </div>
-      )}
-      {treeMsg && <div className="tree-msg">{treeMsg}</div>}
 
-      {roots.map((r) => (
-        <div key={r.key}>{renderNode(r, 0)}</div>
-      ))}
+      {/* Scrollable tree content */}
+      <ScrollArea>
+        {roots.length === 0 && <div className="tree-empty">暂无连接，点右上角 ＋ 添加</div>}
+        {cipher === "none" && (
+          <div className="tree-warn">
+            ⚠️ 明文导出会把连接密码以明文写入文件，请勿分享或提交到仓库。
+          </div>
+        )}
+        {treeMsg && <div className="tree-msg">{treeMsg}</div>}
+
+        {roots.map((r) => (
+          <div key={r.key}>{renderNode(r, 0)}</div>
+        ))}
+      </ScrollArea>
+
       {menu && (
         <ContextMenu
           x={menu.x}
@@ -907,6 +911,6 @@ export function Tree(props: TreeProps) {
           onClose={() => setMenu(null)}
         />
       )}
-    </ScrollArea>
+    </div>
   );
 }

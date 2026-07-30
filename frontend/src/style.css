@@ -436,18 +436,17 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* =====================  TREE  ===================== */
 .tree {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   position: relative;
-  overflow: hidden;
   /* Subtle inner shadow for depth against vibrancy sidebar */
   box-shadow: inset -1px 0 0 var(--border);
 }
-.tree > .scroll-view { width: 100%; height: 100%; overflow: hidden; }
-.tree .scroll-content {
-  width: max-content;
-  min-width: 100%;
-  padding: var(--sp-2) var(--sp-2) var(--sp-4);
-  box-sizing: border-box;
+.tree > * {
+  /* ScrollArea (first child after toolbar) fills remaining space */
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 /* ===== Custom always-visible scrollbars (see ScrollArea.tsx) ===== */
@@ -1885,6 +1884,7 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   padding: var(--sp-2) var(--sp-3);
   background: var(--bg-inset);
   border-bottom: 1px solid var(--border);
+  flex: 0 0 auto; /* pinned above scroll, never shrinks */
 }
 .tree-toolbar .tb-group { position: relative; display: inline-flex; align-items: center; gap: var(--sp-1); }
 
