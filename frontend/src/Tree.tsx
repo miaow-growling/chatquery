@@ -309,7 +309,7 @@ function FolderView(props: {
   onMore: () => void;
   renderChild: (c: Node) => JSX.Element;
 }) {
-  const { kids, filter, shown, onFilter, onMore, renderChild } = props;
+  const { kids, depth, filter, shown, onFilter, onMore, renderChild } = props;
   const filtered = filter
     ? kids.filter(
         (c) =>
@@ -318,13 +318,16 @@ function FolderView(props: {
       )
     : kids;
   const visible = filtered.slice(0, shown);
+  // Align the filter/empty/more rows with the child table rows below them.
+  const indent = (depth + 1) * 16 + 6;
   return (
     <>
       <div
         className="tree-filter"
-        style={{ paddingLeft: "22px" }}
+        style={{ paddingLeft: `${indent}px` }}
         onClick={(e) => e.stopPropagation()}
       >
+        <span className="tree-filter-icon">🔍</span>
         <input
           className="tree-filter-input"
           placeholder="过滤表名…"
@@ -332,18 +335,28 @@ function FolderView(props: {
           onChange={(e) => onFilter(e.target.value)}
           onContextMenu={(e) => e.preventDefault()}
         />
+        {filter && (
+          <button
+            type="button"
+            className="tree-filter-clear"
+            onClick={() => onFilter("")}
+            title="清除过滤"
+          >
+            ×
+          </button>
+        )}
       </div>
       {visible.length > 0 ? (
         visible.map(renderChild)
       ) : (
-        <div className="tree-empty-child" style={{ paddingLeft: "22px" }}>
+        <div className="tree-empty-child" style={{ paddingLeft: `${indent}px` }}>
           无匹配表
         </div>
       )}
       {filtered.length > shown && (
         <div
           className="tree-more"
-          style={{ paddingLeft: "22px" }}
+          style={{ paddingLeft: `${indent}px` }}
           onClick={(e) => {
             e.stopPropagation();
             onMore();
