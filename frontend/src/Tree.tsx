@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { ColumnInfo, ConnSummary, TreeModel } from "./types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 
 /// Rows fetched per page when browsing a table.
 const PAGE_SIZE = 200;
+/// Max table nodes rendered at once in the tree. Above this we window (filter
+/// input + "show more") so an 8000-table database never mounts tens of
+/// thousands of DOM nodes at once.
+const TREE_PAGE = 200;
 
 // ---------------------------------------------------------------------------
 // Tree node model. Environment/group/connection nodes have static children
@@ -292,6 +296,66 @@ function badge(n: Node): { icon: string; cls: string } {
   }
 }
 
+/// Expanded "表"/"视图" folder: a filter box + windowed list. The folder's
+/// full child list may be 8000+ nodes; we never mount them all — only the
+/// filtered+windowed slice is rendered, so the sidebar stays responsive.
+function FolderView(props: {
+  node: Extract<Node, { kind: "folder" }>;
+  kids: Node[];
+  depth: number;
+  filter: string;
+  shown: number;
+  onFilter: (v: string) => void;
+  onMore: () => void;
+  renderChild: (c: Node) => JSX.Element;
+}) {
+  const { kids, filter, shown, onFilter, onMore, renderChild } = props;
+  const filtered = filter
+    ? kids.filter(
+        (c) =>
+          (c.kind === "table" || c.kind === "rediskey") &&
+          c.name.toLowerCase().includes(filter.toLowerCase())
+      )
+    : kids;
+  const visible = filtered.slice(0, shown);
+  return (
+    <>
+      <div
+        className="tree-filter"
+        style={{ paddingLeft: "22px" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <input
+          className="tree-filter-input"
+          placeholder="过滤表名…"
+          value={filter}
+          onChange={(e) => onFilter(e.target.value)}
+          onContextMenu={(e) => e.preventDefault()}
+        />
+      </div>
+      {visible.length > 0 ? (
+        visible.map(renderChild)
+      ) : (
+        <div className="tree-empty-child" style={{ paddingLeft: "22px" }}>
+          无匹配表
+        </div>
+      )}
+      {filtered.length > shown && (
+        <div
+          className="tree-more"
+          style={{ paddingLeft: "22px" }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onMore();
+          }}
+        >
+          显示更多（已显示 {shown} / 共 {filtered.length}）
+        </div>
+      )}
+    </>
+  );
+}
+
 interface TreeProps {
   tree: TreeModel;
   selectedConnId: string;
@@ -330,6 +394,88 @@ export function Tree(props: TreeProps) {
   const [cache, setCache] = useState<Record<string, Node[]>>({});
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
+  // Per-folder filter text + how many children are currently revealed (windowing).
+  const [folderFilter, setFolderFilter] = useState<Record<string, string>>({});
+  const [folderShown, setFolderShown] = useState<Record<string, number>>({});
+
+  // --- Connection import / export / template (#1, #2) ----------------------
+  const fileRef = useRef<HTMLInputElement>(null);
+  const cipherRef = useRef<HTMLDivElement>(null);
+  const [cipher, setCipher] = useState<"system-key" | "none">("system-key");
+  const [cipherOpen, setCipherOpen] = useState(false);
+  const [treeMsg, setTreeMsg] = useState<string>("");
+
+  // Close the custom cipher dropdown when clicking anywhere outside it.
+  useEffect(() => {
+    if (!cipherOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (cipherRef.current && !cipherRef.current.contains(e.target as HTMLElement)) {
+        setCipherOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [cipherOpen]);
+
+  // Trigger a browser download of `text` as `filename`.
+  const download = (filename: string, text: string) => {
+    const blob = new Blob([text], { type: "text/yaml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Export all connections. `cipher` decides whether passwords are encrypted
+  // under K (system-key) or written in plaintext (none — high risk).
+  const handleExport = useCallback(async () => {
+    setTreeMsg("导出中…");
+    try {
+      const yaml = await api.exportConnections(cipher);
+      const stamp = new Date().toISOString().slice(0, 10);
+      download(`chatquery-connections-${stamp}.yaml`, yaml);
+      setTreeMsg(cipher === "none" ? "已导出（明文，含密码！）" : "已导出（已加密）");
+    } catch (e) {
+      setTreeMsg("导出失败: " + String(e));
+    }
+  }, [cipher]);
+
+  // Import connections from a user-picked YAML file. After a successful import
+  // we refresh the tree so the new nodes appear.
+  const handleImportFile = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const f = e.target.files?.[0];
+      e.target.value = "";
+      if (!f) return;
+      setTreeMsg("导入中…");
+      try {
+        const text = await f.text();
+        const res = await api.importConnections(text);
+        let msg = `导入完成：新增 ${res.connections_added} 个连接、${res.containers_added} 个容器`;
+        if (res.passwords_needed.length)
+          msg += `；需补密码：${res.passwords_needed.join(", ")}`;
+        if (res.skipped.length) msg += `；跳过 ${res.skipped.length} 个`;
+        setTreeMsg(msg);
+        props.onRefreshConns();
+      } catch (err) {
+        setTreeMsg("导入失败: " + String(err));
+      }
+    },
+    [props]
+  );
+
+  // Download a blank, ready-to-edit template (plaintext cipher).
+  const handleTemplate = useCallback(async () => {
+    try {
+      const yaml = await api.exportTemplate();
+      download("chatquery-template.yaml", yaml);
+      setTreeMsg("模板已下载");
+    } catch (e) {
+      setTreeMsg("下载模板失败: " + String(e));
+    }
+  }, []);
 
   // Auto-expand the top-level database-type nodes (e.g. "MySQL") on first
   // render so the sidebar opens directly at the 环境 level instead of hiding
@@ -554,7 +700,7 @@ export function Tree(props: TreeProps) {
       node.kind === "dbtype" || node.kind === "env" || node.kind === "group"
         ? node.children
         : cache[node.key] ?? [];
-    const pad = { paddingLeft: `${depth * 14 + 8}px` };
+    const pad = { paddingLeft: `${depth * 16 + 6}px` };
     const cnt = counts[node.key];
 
     // Clicking the row selects the node (connection/database/key). It does NOT
@@ -607,10 +753,10 @@ export function Tree(props: TreeProps) {
           title={title}
         >
           <span
-            className={"tw" + (hasChildren ? "" : " leaf")}
+            className={"tw" + (hasChildren ? "" : " leaf") + (isOpen ? " open" : "")}
             onClick={onCaretClick}
           >
-            {hasChildren ? (isOpen ? "▾" : "▸") : ""}
+            {hasChildren ? "▸" : ""}
           </span>
           <span className={"badge " + b.cls}>{b.icon}</span>
           <span className="tree-label">
@@ -626,12 +772,29 @@ export function Tree(props: TreeProps) {
           {loading[node.key] && <span className="tree-loading">…</span>}
         </div>
         {isOpen &&
-          (kids.length > 0 ? (
+          (node.kind === "folder" ? (
+            <FolderView
+              node={node}
+              kids={kids}
+              depth={depth}
+              filter={folderFilter[node.key] ?? ""}
+              shown={folderShown[node.key] ?? TREE_PAGE}
+              onFilter={(v) => {
+                setFolderFilter((s) => ({ ...s, [node.key]: v }));
+                setFolderShown((s) => ({ ...s, [node.key]: TREE_PAGE }));
+              }}
+              onMore={() =>
+                setFolderShown((s) => ({
+                  ...s,
+                  [node.key]: (s[node.key] ?? TREE_PAGE) + TREE_PAGE,
+                }))
+              }
+              renderChild={(c) => <div key={c.key}>{renderNode(c, depth + 1)}</div>}
+            />
+          ) : kids.length > 0 ? (
             kids.map((c) => <div key={c.key}>{renderNode(c, depth + 1)}</div>)
           ) : (
-            <div className="tree-empty-child" style={{ paddingLeft: `${depth * 14 + 22}px` }}>
-              暂无连接
-            </div>
+            <div className="tree-empty-child">暂无连接</div>
           ))}
       </div>
     );
@@ -645,6 +808,80 @@ export function Tree(props: TreeProps) {
       }}
     >
       {roots.length === 0 && <div className="tree-empty">暂无连接，点右上角 ＋ 添加</div>}
+
+      {/* Connection import / export / template (#1, #2) */}
+      <div className="tree-toolbar">
+        {/* Encryption mode — custom dropdown (replaces raw <select>) */}
+        <div className="tb-group" ref={cipherRef}>
+          <span className="tb-label">加密</span>
+          <button
+            type="button"
+            className={"tb-select" + (cipherOpen ? " open" : "")}
+            onClick={() => setCipherOpen((v) => !v)}
+            title="选择导出加密方式"
+          >
+            <span className={"tb-dot " + (cipher === "system-key" ? "ok" : "warn")} />
+            <span className="tb-select-text">
+              {cipher === "system-key" ? "system-key" : "明文(含密码)"}
+            </span>
+            <span className="tb-caret">▾</span>
+          </button>
+          {cipherOpen && (
+            <div className="tb-menu" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                className={"tb-option" + (cipher === "system-key" ? " sel" : "")}
+                onClick={() => {
+                  setCipher("system-key");
+                  setCipherOpen(false);
+                }}
+              >
+                <span className="tb-opt-main">🔒 system-key</span>
+                <span className="tb-opt-sub">密码加密后导出</span>
+              </button>
+              <button
+                type="button"
+                className={"tb-option" + (cipher === "none" ? " sel" : "")}
+                onClick={() => {
+                  setCipher("none");
+                  setCipherOpen(false);
+                }}
+              >
+                <span className="tb-opt-main">⚠ 明文</span>
+                <span className="tb-opt-sub">密码以明文写入文件</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        <span className="tb-sep" />
+
+        <div className="tb-group tb-actions">
+          <button type="button" className="tb-btn" onClick={() => void handleExport()} title="导出连接为 YAML">
+            <span aria-hidden>⬇</span> 导出
+          </button>
+          <button type="button" className="tb-btn" onClick={() => fileRef.current?.click()} title="从 YAML 文件导入连接">
+            <span aria-hidden>⬆</span> 导入
+          </button>
+          <button type="button" className="tb-btn" onClick={() => void handleTemplate()} title="下载空白模板">
+            <span aria-hidden>📄</span> 模板
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".yaml,.yml"
+            style={{ display: "none" }}
+            onChange={(e) => void handleImportFile(e)}
+          />
+        </div>
+      </div>
+      {cipher === "none" && (
+        <div className="tree-warn">
+          ⚠️ 明文导出会把连接密码以明文写入文件，请勿分享或提交到仓库。
+        </div>
+      )}
+      {treeMsg && <div className="tree-msg">{treeMsg}</div>}
+
       {roots.map((r) => (
         <div key={r.key}>{renderNode(r, 0)}</div>
       ))}

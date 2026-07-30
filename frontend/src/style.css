@@ -513,6 +513,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .tree-row:hover:not(.active) {
   background: var(--brand-soft);
+  transform: translateX(2px);
 }
 .tree-row:hover:not(.active) .tw { color: var(--brand); }
 /* Finder-style active: solid fill + left accent stripe */
@@ -522,7 +523,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-left-color: rgb(255 255 255 / 0.55);
 }
 .tree-row.active .tw { color: rgb(255 255 255 / 0.85); }
-.tree-row.active .badge { color: #fff; opacity: 0.95; }
+.tree-row.active .badge { opacity: 1; filter: none; }
 .tree-row.active .tree-count {
   background: rgb(255 255 255 / 0.22);
   color: #fff;
@@ -546,6 +547,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .tw:hover { background: var(--bg-hover); color: var(--brand); }
 .tw.leaf { visibility: hidden; }
+.tw.open { transform: rotate(90deg); color: var(--brand); }
 
 /* Row label + inline chips */
 .tree-label {
@@ -588,19 +590,17 @@ button, input, select, textarea { font: inherit; color: inherit; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 17px;
-  height: 17px;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1;
   flex: 0 0 auto;
-  /* Slight tint so emoji blend less harshly */
-  filter: saturate(0.85) brightness(1.05);
+  /* Gentle blend so emoji sit naturally without harsh contrast */
+  filter: saturate(0.88) brightness(1.03);
 }
-.b-env, .b-group, .b-db, .b-folder, .b-table, .b-view { opacity: 0.88; }
-.b-col { color: var(--text-tertiary); font-size: 10px; }
-.b-key { opacity: 0.9; color: var(--warning-500); }
-.tree-row .badge.b-mysql { color: var(--mysql-500); filter: none; }
-.tree-row .badge.b-redis { color: var(--redis-500); filter: none; }
+.b-env, .b-group, .b-db, .b-folder, .b-table, .b-view { opacity: 0.9; }
+.b-col { font-size: 11px; }
+.b-key { color: var(--warning-500); }
+.tree-row .badge.b-mysql { filter: none; }
+.tree-row .badge.b-redis { filter: none; }
 
 /* PK / column-type chips inside tree */
 .pk {
@@ -1776,6 +1776,37 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .form-row > .dropdown-select {
   flex: 1;
   min-width: 0;
+}
+
+/* Text input + trailing file-picker button */
+.input-with-btn {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.input-with-btn > input {
+  flex: 1;
+  min-width: 0;
+}
+.field-file-btn {
+  flex: none;
+  width: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: 15px;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .12s ease;
+}
+.field-file-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+.field-file-btn:active {
+  transform: scale(.94);
 }
 .key-card { background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-3); margin-top: var(--sp-3); }
 .key-status { font-size: var(--fs-sm); padding: var(--sp-1) var(--sp-2); border-radius: var(--r-sm); margin-bottom: var(--sp-2); }
