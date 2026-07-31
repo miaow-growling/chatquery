@@ -68,6 +68,7 @@ fn main() {
             list_databases,
             list_redis_dbs,
             list_tables,
+            search_tables,
             list_redis_keys,
             list_columns,
             browse_table,
@@ -77,6 +78,12 @@ fn main() {
             delete_row,
             describe_table,
             list_relationships,
+            get_key_status,
+            set_encryption_key,
+            export_connections,
+            import_connections,
+            export_template,
+            explain_visual,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ChatQuery");

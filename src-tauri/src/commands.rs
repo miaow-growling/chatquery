@@ -1,7 +1,11 @@
+use chatquery::crypto;
 use chatquery::db::connection::{ConnectionConfig, DbType};
 use chatquery::db::container::ContainerKind;
+use chatquery::db::importexport::{
+    export_template as export_template_yaml, export_yaml, import_yaml, ImportResult,
+};
 use chatquery::db::mysql::{
-    ColumnInfo, ForeignKeyInfo, QueryResult, Schema, TableMeta, TableStructure,
+    ColumnInfo, ExplainVisual, ForeignKeyInfo, QueryResult, Schema, TableMeta, TableStructure,
 };
 use chatquery::llm::client::stream_chat;
 use chatquery::model::BackendMsg;
@@ -54,6 +58,28 @@ pub struct ConnInput {
     /// means ungrouped.
     #[serde(default)]
     pub group_id: Option<String>,
+    // --- SSL / TLS (#4) ---------------------------------------------------
+    #[serde(default)]
+    pub ssl_mode: String,
+    #[serde(default)]
+    pub ssl_ca: String,
+    #[serde(default)]
+    pub client_cert: String,
+    #[serde(default)]
+    pub client_key: String,
+    // --- SSH tunnel / bastion (#5) ----------------------------------------
+    #[serde(default)]
+    pub ssh_host: String,
+    #[serde(default)]
+    pub ssh_port: u16,
+    #[serde(default)]
+    pub ssh_user: String,
+    #[serde(default)]
+    pub ssh_auth_kind: String,
+    #[serde(default)]
+    pub ssh_password: String,
+    #[serde(default)]
+    pub ssh_private_key: String,
 }
 
 /// A logged or saved query returned to the UI. `name` is None for auto-logged
@@ -83,6 +109,16 @@ fn to_cfg(i: ConnInput) -> ConnectionConfig {
         password: i.password,
         database: i.database,
         group_id: i.group_id,
+        ssl_mode: i.ssl_mode,
+        ssl_ca: i.ssl_ca,
+        client_cert: i.client_cert,
+        client_key: i.client_key,
+        ssh_host: i.ssh_host,
+        ssh_port: i.ssh_port,
+        ssh_user: i.ssh_user,
+        ssh_auth_kind: i.ssh_auth_kind,
+        ssh_password: i.ssh_password,
+        ssh_private_key: i.ssh_private_key,
     }
 }
 
@@ -247,11 +283,34 @@ pub fn add_connection(state: State<AppState>, cfg: ConnInput) -> Result<(), Stri
 #[tauri::command]
 pub fn update_connection(state: State<AppState>, cfg: ConnInput) -> Result<(), String> {
     let mut merged = to_cfg(cfg);
-    // Empty password on edit means "keep the existing one" (we never send the
-    // real password back to the UI, so the form can't repopulate it).
-    if merged.password.is_empty() {
-        if let Some(existing) = state.store.lock().unwrap().list().iter().find(|c| c.id == merged.id) {
+    // Empty sensitive fields on edit mean "keep the existing ones" (we never
+    // send the real password/SSL keys back to the UI, so the form can't
+    // repopulate them — saving blank must not wipe stored config).
+    if let Some(existing) = state
+        .store
+        .lock()
+        .unwrap()
+        .list()
+        .iter()
+        .find(|c| c.id == merged.id)
+    {
+        if merged.password.is_empty() {
             merged.password = existing.password.clone();
+        }
+        if merged.ssl_ca.is_empty() {
+            merged.ssl_ca = existing.ssl_ca.clone();
+        }
+        if merged.client_cert.is_empty() {
+            merged.client_cert = existing.client_cert.clone();
+        }
+        if merged.client_key.is_empty() {
+            merged.client_key = existing.client_key.clone();
+        }
+        if merged.ssh_password.is_empty() {
+            merged.ssh_password = existing.ssh_password.clone();
+        }
+        if merged.ssh_private_key.is_empty() {
+            merged.ssh_private_key = existing.ssh_private_key.clone();
         }
     }
     state
@@ -685,6 +744,20 @@ pub async fn list_tables(
 }
 
 #[tauri::command]
+pub async fn search_tables(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: String,
+    like: Option<String>,
+    limit: usize,
+) -> Result<Vec<TableMeta>, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    chatquery::db::mysql::search_tables(&cfg, &database, like.as_deref(), limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn list_redis_keys(
     state: State<'_, AppState>,
     conn_id: String,
@@ -997,4 +1070,93 @@ pub async fn chat_turn(
 
     let _ = conn_id;
     Ok(())
+}
+
+// --- Encryption key management (#0) ----------------------------------------
+
+/// Non-secret view of the configurable connection key K. `configured` tells
+/// the UI whether the user has set a custom key (otherwise K degenerates to
+/// the built-in KEK and behaves exactly like the pre-#0 install).
+#[derive(Serialize)]
+pub struct KeyStatus {
+    pub configured: bool,
+}
+
+#[tauri::command]
+pub fn get_key_status() -> KeyStatus {
+    KeyStatus {
+        configured: crypto::key_configured(),
+    }
+}
+
+/// Configure or rotate the connection encryption key K (#0). The field is the
+/// user's secret passphrase; K is derived deterministically from it (HKDF) so
+/// the same passphrase on another machine yields the same K — that's the
+/// cross-machine portability story. All stored connections are re-encrypted
+/// atomically to the new K. An empty field resets K back to the default KEK.
+#[tauri::command]
+pub fn set_encryption_key(
+    state: State<AppState>,
+    field: String,
+) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .rotate_key(&field)
+        .map_err(|e| e.to_string())
+}
+
+// --- Connection import / export (#1, #2) -----------------------------------
+
+/// Export all connections (containers + configs) to a YAML string. `cipher`
+/// is `"system-key"` (passwords AES-GCM under K) or `"none"` (plaintext —
+/// high-risk, the UI must warn before allowing this).
+#[tauri::command]
+pub fn export_connections(
+    state: State<AppState>,
+    cipher: String,
+) -> Result<String, String> {
+    let store = state.store.lock().unwrap();
+    export_yaml(&store, &cipher).map_err(|e| e.to_string())
+}
+
+/// Import connections from a YAML string (v2 hierarchical or v1 flat). Returns
+/// a summary of what was added / skipped so the UI can show a toast.
+#[tauri::command]
+pub fn import_connections(
+    state: State<AppState>,
+    yaml: String,
+) -> Result<ImportResult, String> {
+    let mut store = state.store.lock().unwrap();
+    import_yaml(&mut store, &yaml).map_err(|e| e.to_string())
+}
+
+/// A ready-to-fill YAML template (plaintext cipher) for users to hand-edit and
+/// re-import. The UI typically offers this as a file download.
+#[tauri::command]
+pub fn export_template() -> String {
+    export_template_yaml()
+}
+
+// --- EXPLAIN visualisation (#6) --------------------------------------------
+
+/// Run EXPLAIN on a (SELECT) query and return a parsed execution-plan tree.
+/// The UI renders this as a plan tab. Non-SELECT or unsupported server version
+/// falls back to a legacy text plan (still returned, format = "legacy").
+#[tauri::command]
+pub async fn explain_visual(
+    state: State<'_, AppState>,
+    conn_id: String,
+    query: String,
+    db: String,
+) -> Result<ExplainVisual, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    if cfg.db_type != DbType::Mysql {
+        return Err("EXPLAIN 可视化仅支持 MySQL".to_string());
+    }
+    let db_ref: Option<&str> = if db.is_empty() { None } else { Some(db.as_str()) };
+    chatquery::db::mysql::explain_visual(&cfg, &query, db_ref)
+        .await
+        .map_err(|e| e.to_string())
 }
