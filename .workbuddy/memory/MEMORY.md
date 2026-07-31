@@ -4,6 +4,7 @@
 Tauri v2 + React + Vite + TypeScript 桌面 SQL 客户端；Rust library crate (sqlx MySQL)。
 - 前端 dev: vite :1420；后端: `cargo run --manifest-path src-tauri/Cargo.toml --no-default-features`。
 - 前端改动走 vite HMR，窗口内 `Cmd+R` 刷新即生效；Rust 改动需重启 cargo。
+- **Rust 编译验证正确命令（重要，踩过坑）**：验证 library 代码（即 Tauri desktop 实际编译配置）用 `cargo check --lib --no-default-features`。**不要**用 `cargo check --no-default-features`（不带 `--lib`）——它会一并编译 `src/main.rs`（TUI 二进制入口，无条件 `use ratatui`），而 `--no-default-features` 禁用了 tui feature，直接报 `unresolved crate ratatui/crossterm`。要验证完整 TUI bin 用 `cargo check`（default features 含 tui）。
 
 ## 桌面端对话框陷阱（重要，反复踩）
 Tauri v2 webview **不实现** `window.prompt` / `confirm` / `alert`，在桌面窗口里静默失效
