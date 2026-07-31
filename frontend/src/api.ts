@@ -5,7 +5,10 @@ import type {
   ColumnInfo,
   ConnInput,
   EditPayload,
+  ExplainVisual,
   ForeignKeyInfo,
+  ImportResult,
+  KeyStatus,
   LlmConfigDto,
   LlmConfigInput,
   QueryItem,
@@ -61,6 +64,21 @@ export const api = {
     invoke<number[]>("list_redis_dbs", { connId }),
   listTables: (connId: string, database: string) =>
     invoke<TableMeta[]>("list_tables", { connId, database }),
+  // Lazy, bounded table search for the editor autocomplete + tree folder
+  // filter. `like` is a name prefix; `limit` caps the result set so an
+  // 8000-table schema never freezes the UI.
+  searchTables: (
+    connId: string,
+    database: string,
+    like: string | null,
+    limit: number
+  ) =>
+    invoke<TableMeta[]>("search_tables", {
+      connId,
+      database,
+      like: like ?? null,
+      limit,
+    }),
   listRedisKeys: (connId: string, db: number, pattern: string, limit: number) =>
     invoke<string[]>("list_redis_keys", { connId, db, pattern, limit }),
   listColumns: (connId: string, database: string, table: string) =>
@@ -130,6 +148,19 @@ export const api = {
   // List all FK relationships in a database (ADR-021). Powers the ER view.
   listRelationships: (connId: string, database: string) =>
     invoke<ForeignKeyInfo[]>("list_relationships", { connId, database }),
+  // --- Encryption key management (#0) ---
+  getKeyStatus: () => invoke<KeyStatus>("get_key_status"),
+  setEncryptionKey: (field: string) =>
+    invoke("set_encryption_key", { field }),
+  // --- Connection import / export (#1, #2) ---
+  exportConnections: (cipher: "system-key" | "none") =>
+    invoke<string>("export_connections", { cipher }),
+  importConnections: (yaml: string) =>
+    invoke<ImportResult>("import_connections", { yaml }),
+  exportTemplate: () => invoke<string>("export_template"),
+  // --- EXPLAIN visualisation (#6) ---
+  explainVisual: (connId: string, query: string, db?: string | null) =>
+    invoke<ExplainVisual>("explain_visual", { connId, query, db: db ?? "" }),
 };
 
 export function onChatToken(cb: (t: string) => void): Promise<UnlistenFn> {

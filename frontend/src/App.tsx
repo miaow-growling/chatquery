@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -19,18 +20,21 @@ import type {
   ChatMessage,
   ConnInput,
   ConnSummary,
+  ExplainNode,
+  ExplainVisual,
   ForeignKeyInfo,
+  KeyStatus,
   LlmConfigDto,
   LlmConfigInput,
   QueryItem,
   QueryOutput,
-  Schema,
   StatusInfo,
   TableStructure,
   TreeModel,
   VendorPreset,
 } from "./types";
 import { createEditor, type EditorHandle } from "./editor";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Tree } from "./Tree";
 
 interface DropdownOption {
@@ -43,6 +47,47 @@ interface DropdownSelectProps {
   value: string;
   options: DropdownOption[];
   onChange: (value: string) => void;
+}
+
+/** 证书/密钥文件选择按钮：点开系统文件框，读取文本内容回填到对应字段。
+ *  跟在文本框后面，免去手动粘贴 PEM 或敲路径。 */
+function CertPickButton({
+  onPick,
+  accept,
+  title,
+}: {
+  onPick: (text: string) => void;
+  accept?: string;
+  title?: string;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  const handle = (e: ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = ""; // 允许重复选同一文件
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => onPick(String(r.result ?? ""));
+    r.readAsText(f);
+  };
+  return (
+    <>
+      <input
+        ref={ref}
+        type="file"
+        accept={accept}
+        style={{ display: "none" }}
+        onChange={handle}
+      />
+      <button
+        type="button"
+        className="field-file-btn"
+        title={title ?? "从文件选择"}
+        onClick={() => ref.current?.click()}
+      >
+        📁
+      </button>
+    </>
+  );
 }
 
 function DropdownSelect({ label, value, options, onChange }: DropdownSelectProps) {
@@ -380,6 +425,18 @@ const emptyForm = (): ConnInput => ({
   password: "",
   database: "",
   group_id: null,
+  // --- SSL / TLS (#4) ---
+  ssl_mode: "",
+  ssl_ca: "",
+  client_cert: "",
+  client_key: "",
+  // --- SSH tunnel / bastion (#5) ---
+  ssh_host: "",
+  ssh_port: 22,
+  ssh_user: "",
+  ssh_auth_kind: "password",
+  ssh_password: "",
+  ssh_private_key: "",
 });
 
 /// Build an error "result" the UI already knows how to render (redis variant
@@ -411,6 +468,7 @@ export function App() {
     editing: false,
     cfg: emptyForm(),
   });
+  const [formTab, setFormTab] = useState<"basic" | "ssl" | "ssh">("basic");
   const [addOpen, setAddOpen] = useState(false);
   const addWrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -446,6 +504,13 @@ export function App() {
   const [historyConn, setHistoryConn] = useState<string>("");
 
   const editorRef = useRef<EditorHandle | null>(null);
+  // Editor right-click menu (Navicat-style): where to show it + whether text
+  // is selected (drives cut/copy/delete/case/"run selection" enabled state).
+  const [editorMenu, setEditorMenu] = useState<{
+    x: number;
+    y: number;
+    hasSel: boolean;
+  } | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   // --- Inline cell editing (ADR-018) + INSERT/DELETE (ADR-019) ------------
@@ -474,6 +539,7 @@ export function App() {
     y: number;
     rows: number[];
     cell?: { ri: number; ci: number };
+    col?: number;
   } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const lastAnchorRef = useRef(0);
@@ -494,19 +560,33 @@ export function App() {
     return () => window.removeEventListener("mouseup", up);
   }, []);
 
-  // Defensive: Tauri webview sometimes shows its own context menu (Reload /
-  // Inspect) even when React's onContextMenu tries to preventDefault. Stop it
-  // at the document level for anything inside the result table so our custom
-  // menu is the only one that can appear.
+  // Defensive: Tauri's WKWebView shows its own context menu (Reload / Inspect),
+  // and on macOS a native "Paste" bubble pops up on right-click over editable
+  // areas. `contextmenu` preventDefault suppresses the menu, but that "Paste"
+  // bubble is triggered by the OS on the right-button *mousedown* — before the
+  // contextmenu event our custom menu depends on — so we also swallow the
+  // default there. Both run in the capture phase so they fire before any
+  // native handling. This guarantees our custom menus are the only thing that
+  // appear over the editor and the result table.
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.closest(".result-table")) {
+    const inScope = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      return !!el?.closest?.(".result-table") || !!el?.closest?.(".editor");
+    };
+    const onMouseDown = (e: MouseEvent) => {
+      if ((e.button === 2 || e.ctrlKey) && inScope(e.target)) {
         e.preventDefault();
       }
     };
-    document.addEventListener("contextmenu", handler);
-    return () => document.removeEventListener("contextmenu", handler);
+    const onCtx = (e: MouseEvent) => {
+      if (inScope(e.target)) e.preventDefault();
+    };
+    document.addEventListener("mousedown", onMouseDown, true);
+    document.addEventListener("contextmenu", onCtx, true);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown, true);
+      document.removeEventListener("contextmenu", onCtx, true);
+    };
   }, []);
 
   // --- Table structure view (ADR-020) --------------------------------------
@@ -526,7 +606,18 @@ export function App() {
   // "data" (grid) | "structure" (columns/indexes/DDL) | "relation" (FK map).
   // Structure/relation data live in the *_View states above; this just picks
   // which one the body renders.
-  const [resultTab, setResultTab] = useState<"data" | "structure" | "relation">("data");
+  const [resultTab, setResultTab] =
+    useState<"data" | "structure" | "relation" | "explain">("data");
+  // EXPLAIN execution-plan visualisation (#6), populated by `explainQuery`.
+  const [explainView, setExplainView] = useState<ExplainVisual | null>(null);
+
+  // --- Result grid filter / sort / search (#3) ---
+  // All operate on the in-memory current page only (no server round-trip).
+  const [gridSearch, setGridSearch] = useState("");
+  const [gridCase, setGridCase] = useState(false);
+  const [gridSort, setGridSort] = useState<{ col: number; dir: "asc" | "desc" } | null>(null);
+  // Per-column filter: op ∈ contains|equals|nequals|empty|notempty|range.
+  const [colFilters, setColFilters] = useState<Record<number, { op: string; val: string; val2?: string }>>({});
 
   // --- Bottom status bar / console (Phase 18) -----------------------------
   // Last operation feedback: timing, affected/returned rows, errors. Replaces
@@ -553,6 +644,12 @@ export function App() {
 
   // --- LLM vendor/key/model settings (Phase 19) --------------------------
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Settings is a left-nav module switcher: each module opens its own config
+  // page on the right. Keeping this as explicit buttons (not a <select>
+  // dropdown) makes the module list scannable and easy to extend.
+  const [settingsTab, setSettingsTab] = useState<"model" | "key" | "general">(
+    "model"
+  );
   const [presets, setPresets] = useState<VendorPreset[]>([]);
   const [llmCfg, setLlmCfg] = useState<LlmConfigDto | null>(null);
   const [cfgForm, setCfgForm] = useState<LlmConfigInput>({
@@ -563,16 +660,37 @@ export function App() {
   });
   const [cfgMsg, setCfgMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // --- Connection encryption key K (#0) ---
+  const [keyStatus, setKeyStatus] = useState<KeyStatus>({ configured: false });
+  const [keyField, setKeyField] = useState("");
+  const [keyMsg, setKeyMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // Configure or rotate the connection key K. An empty field resets K back to
+  // the default KEK (behaves like a pre-#0 install).
+  const saveKey = async () => {
+    setKeyMsg(null);
+    try {
+      await api.setEncryptionKey(keyField);
+      setKeyStatus(await api.getKeyStatus());
+      setKeyField("");
+      setKeyMsg({ ok: true, text: "密钥已保存，所有连接已重加密" });
+    } catch (e) {
+      setKeyMsg({ ok: false, text: String(e) });
+    }
+  };
+
   // Load vendor presets + current config when the settings dialog opens.
   const openSettings = useCallback(async () => {
     setCfgMsg(null);
     try {
-      const [ps, cfg] = await Promise.all([
+      const [ps, cfg, ks] = await Promise.all([
         api.getVendorPresets(),
         api.getLlmConfig(),
+        api.getKeyStatus(),
       ]);
       setPresets(ps);
       setLlmCfg(cfg);
+      setKeyStatus(ks);
       setCfgForm({
         vendor: cfg.vendor || "openai",
         base_url: cfg.base_url,
@@ -582,6 +700,7 @@ export function App() {
     } catch (e) {
       setCfgMsg({ ok: false, text: String(e) });
     }
+    setSettingsTab("model");
     setSettingsOpen(true);
   }, []);
 
@@ -882,7 +1001,98 @@ export function App() {
       selRows.size > 0 ? Array.from(selRows).sort((a, b) => a - b) : [];
     const x = Math.min(e.clientX, window.innerWidth - 220);
     const y = Math.min(e.clientY, window.innerHeight - 130);
-    setCtxMenu({ x, y, rows });
+    setCtxMenu({ x, y, rows, col: ci });
+  };
+
+  // --- Column filter actions (#3) -----------------------------------------
+  const opLabel = (op: string) =>
+    ({
+      contains: "包含",
+      equals: "等于",
+      nequals: "不等于",
+      empty: "为空",
+      notempty: "非空",
+      range: "数值范围",
+    } as Record<string, string>)[op] ?? op;
+
+  // Open a prompt (or two for a range) and store the filter for column `ci`.
+  const filterColByPrompt = async (ci: number, op: string) => {
+    setCtxMenu(null);
+    if (op === "empty" || op === "notempty") {
+      setColFilters((f) => ({ ...f, [ci]: { op, val: "" } }));
+      return;
+    }
+    if (op === "range") {
+      const min = await promptAsync("数值范围 - 最小值（留空表示不限）");
+      if (min === null) return;
+      const max = await promptAsync("数值范围 - 最大值（留空表示不限）");
+      if (max === null) return;
+      if (min.trim() === "" && max.trim() === "") return;
+      setColFilters((f) => ({ ...f, [ci]: { op, val: min.trim(), val2: max.trim() } }));
+      return;
+    }
+    const val = await promptAsync(`筛选（${opLabel(op)}）输入匹配值`);
+    if (val === null) return;
+    setColFilters((f) => ({ ...f, [ci]: { op, val } }));
+  };
+
+  const clearColFilter = (ci: number) => {
+    setColFilters((f) => {
+      const n = { ...f };
+      delete n[ci];
+      return n;
+    });
+  };
+
+  // Whether a single cell value matches a column filter.
+  const matchesColFilter = (
+    op: string,
+    val: string,
+    cell: string,
+    val2?: string
+  ): boolean => {
+    const c = gridCase ? cell : cell.toLowerCase();
+    const v = gridCase ? val : val.toLowerCase();
+    switch (op) {
+      case "contains":
+        return c.includes(v);
+      case "equals":
+        return c === v;
+      case "nequals":
+        return c !== v;
+      case "empty":
+        return cell === "" || cell === "NULL";
+      case "notempty":
+        return !(cell === "" || cell === "NULL");
+      case "range": {
+        const n = Number(cell);
+        if (Number.isNaN(n)) return false;
+        const lo = val === "" ? -Infinity : Number(val);
+        const hi = val2 === "" || val2 === undefined ? Infinity : Number(val2);
+        return n >= lo && n <= hi;
+      }
+      default:
+        return true;
+    }
+  };
+
+  // Whether a row passes ALL active column filters + the global search.
+  const rowMatches = (row: string[]): boolean => {
+    for (const [ci, f] of Object.entries(colFilters)) {
+      const ciN = Number(ci);
+      if (ciN >= row.length) continue;
+      if (!matchesColFilter(f.op, f.val ?? "", row[ciN], f.val2)) return false;
+    }
+    const q = gridSearch.trim();
+    if (q) {
+      const needle = gridCase ? q : q.toLowerCase();
+      const hit = row.some((cell) => {
+        const c = gridCase ? cell : cell.toLowerCase();
+        return c.includes(needle);
+      });
+      if (!hit) return false;
+    }
+    return true;
   };
 
   // Serialize a single column to a JSON array, applying the same NULL / bool /
@@ -968,15 +1178,14 @@ export function App() {
     async (id: string, db?: string | null) => {
       const conn = findConn(id);
       if (!conn || conn.db_type !== "mysql") {
-        editorRef.current?.setSchema({ tables: [] });
+        editorRef.current?.setSchemaContext(null, null);
         return;
       }
-      try {
-        const schema: Schema = await api.getSchema(id, db);
-        editorRef.current?.setSchema(schema);
-      } catch (e) {
-        console.error("load schema failed", e);
-      }
+      // No eager full-schema fetch. Completion is fetched lazily by name
+      // prefix (bounded) as the user types — see editor.ts schemaCompleter.
+      // This is what stopped an 8000-table database from freezing the UI the
+      // moment it was selected.
+      editorRef.current?.setSchemaContext(id, db ?? null);
     },
     [findConn]
   );
@@ -1032,7 +1241,7 @@ export function App() {
     return { kind: "ok", text: `✓ ${ms}ms · 执行完成` };
   };
 
-  const runQuery = useCallback(async () => {
+  const runQuery = useCallback(async (forceFull = false) => {
     const t = active;
     if (!t?.connId) {
       setRunInfo({ kind: "warn", text: "请先选择连接 / 数据库" });
@@ -1041,7 +1250,7 @@ export function App() {
     const editor = editorRef.current;
     if (!editor) return;
     const sel = editor.getSelection().trim();
-    const q = sel || editor.getDoc();
+    const q = forceFull ? editor.getDoc() : sel || editor.getDoc();
     if (!q.trim()) return;
     clearEditState();
     setResultTab("data");
@@ -1097,10 +1306,35 @@ export function App() {
 
   // Keep a live ref so the editor's run-key (registered once) always calls the
   // latest `runQuery` closure with the current selected connection.
-  const runQueryRef = useRef<() => void>(() => {});
+  const runQueryRef = useRef<(forceFull?: boolean) => void>(() => {});
   useEffect(() => {
     runQueryRef.current = runQuery;
   }, [runQuery]);
+
+  /// Build the SQL-editor right-click menu (Navicat-style). `hasSel` reflects
+  /// whether text is selected and gates the selection-only commands.
+  const buildEditorMenu = (hasSel: boolean): MenuItem[] => {
+    const ed = editorRef.current;
+    return [
+      { type: "item", label: "撤销", onClick: () => ed?.undo() },
+      { type: "item", label: "重做", onClick: () => ed?.redo() },
+      { type: "sep" },
+      { type: "item", label: "剪切", disabled: !hasSel, onClick: () => ed?.cut() },
+      { type: "item", label: "复制", disabled: !hasSel, onClick: () => ed?.copy() },
+      { type: "item", label: "粘贴", onClick: () => void ed?.paste() },
+      { type: "item", label: "删除", disabled: !hasSel, onClick: () => ed?.deleteSelection() },
+      { type: "sep" },
+      { type: "item", label: "全选", onClick: () => ed?.selectAll() },
+      { type: "sep" },
+      { type: "item", label: "格式化 SQL", onClick: () => ed?.formatSql() },
+      { type: "item", label: "注释 / 取消注释", onClick: () => ed?.toggleComment() },
+      { type: "item", label: "转换为大写", disabled: !hasSel, onClick: () => ed?.changeCase(true) },
+      { type: "item", label: "转换为小写", disabled: !hasSel, onClick: () => ed?.changeCase(false) },
+      { type: "sep" },
+      { type: "item", label: "运行已选择", disabled: !hasSel, onClick: () => runQueryRef.current() },
+      { type: "item", label: "运行全部", onClick: () => runQueryRef.current(true) },
+    ];
+  };
 
   const explainQuery = useCallback(async () => {
     const t = active;
@@ -1114,22 +1348,27 @@ export function App() {
     const q = sel || editor.getDoc();
     if (!q.trim()) return;
     clearEditState();
-    setResultTab("data");
+    setExplainView(null);
+    setResultTab("explain");
     setRunInfo(null);
     setRunning(true);
     const t0 = performance.now();
     try {
-      const r = await api.explainQuery(t.connId, q, t.db);
+      const v = await api.explainVisual(t.connId, q, t.db);
       const ms = Math.round(performance.now() - t0);
-      setActiveTab((tab) => ({ ...tab, result: r, browseCtx: null }));
-      setRunInfo(runStatFor(r, ms));
+      setExplainView(v);
+      // Keep the raw plan also available as the textual result for reference.
+      if (v.format === "legacy") {
+        setActiveTab((tab) => ({
+          ...tab,
+          result: { kind: "redis", command: "EXPLAIN", lines: (v.raw ?? "").split("\n"), note: "EXPLAIN（legacy 文本）", truncated: false },
+          browseCtx: null,
+        }));
+      }
+      setRunInfo({ kind: "ok", text: `✓ ${ms}ms · 执行计划已生成（${v.format}）` });
     } catch (e) {
       const ms = Math.round(performance.now() - t0);
-      setActiveTab((tab) => ({
-        ...tab,
-        result: errOut(String(e)),
-        browseCtx: null,
-      }));
+      setExplainView(null);
       setRunInfo({ kind: "err", text: `✗ ${ms}ms · ${String(e)}` });
     } finally {
       setRunning(false);
@@ -1493,7 +1732,38 @@ export function App() {
     );
     if (cols.length === 0)
       return <div className="empty">无结果集</div>;
+
+    // --- #3: filter / search / sort on the in-memory page only ----------
+    // `viewRows` carries the ORIGINAL row index so edits/deletes still map to
+    // the real row even after sorting/filtering.
+    let viewRows: { origRi: number; row: string[] }[] = rows.map((row, ri) => ({
+      origRi: ri,
+      row,
+    }));
+    if (Object.keys(colFilters).length > 0 || gridSearch.trim()) {
+      viewRows = viewRows.filter(({ row }) => rowMatches(row));
+    }
+    if (gridSort) {
+      const ci = gridSort.col;
+      const dir = gridSort.dir === "asc" ? 1 : -1;
+      viewRows = [...viewRows].sort((a, b) => {
+        const av = a.row[ci] ?? "";
+        const bv = b.row[ci] ?? "";
+        const an = Number(av);
+        const bn = Number(bv);
+        if (!Number.isNaN(an) && !Number.isNaN(bn) && av !== "" && bv !== "") {
+          return (an - bn) * dir;
+        }
+        const ad = Date.parse(av);
+        const bd = Date.parse(bv);
+        if (!Number.isNaN(ad) && !Number.isNaN(bd) && av !== "" && bv !== "") {
+          return (ad - bd) * dir;
+        }
+        return av.localeCompare(bv) * dir;
+      });
+    }
     return (
+      <>
       <table className={"result-table" + (dragging ? " selecting" : "")}>
         <thead>
           <tr>
@@ -1503,24 +1773,37 @@ export function App() {
               <th
                 key={i}
                 className={
-                  (pkSet.has(c) ? "pk " : "") + (selCol === i ? "col-selected " : "")
+                  (pkSet.has(c) ? "pk " : "") +
+                  (selCol === i ? "col-selected " : "") +
+                  (gridSort?.col === i ? "col-sorted " : "") +
+                  (colFilters[i] ? "col-filtered " : "")
                 }
                 onClick={() => {
                   setSelCol(i);
                   setSelRows(new Set());
                   setSelCell(null);
+                  // Cycle: none → asc → desc → none (#3 sort).
+                  setGridSort((s) =>
+                    s?.col === i
+                      ? s.dir === "asc"
+                        ? { col: i, dir: "desc" }
+                        : null
+                      : { col: i, dir: "asc" }
+                  );
                 }}
                 onContextMenu={(e) => onColCtx(i, e)}
-                title="左键选中整列 · 右键复制列"
+                title="左键点击排序(升/降/取消) · 右键列筛选/复制"
               >
                 {c}
                 {pkSet.has(c) ? " 🔑" : ""}
+                {gridSort?.col === i ? (gridSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                {colFilters[i] ? <span className="filter-dot" title="已筛选">⚲</span> : ""}
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, ri) => {
+          {viewRows.map(({ origRi: ri, row }) => {
             const isDeleted = deletes.has(ri);
             return (
               <tr
@@ -1638,6 +1921,12 @@ export function App() {
           ))}
         </tbody>
       </table>
+      <div className="grid-status">
+        显示 {viewRows.length} / 共 {rows.length} 行
+        {Object.keys(colFilters).length > 0 && " · 已按列筛选"}
+        {gridSort && " · 已排序"}
+      </div>
+      </>
     );
   };
 
@@ -1763,6 +2052,84 @@ export function App() {
             ))}
           </tbody>
         </table>
+      </div>
+    );
+  };
+
+  // Render the EXPLAIN execution-plan tree (#6): a nested tree of table accesses
+  // coloured by scan type, plus a flame-style horizontal bar per node by cost.
+  const renderExplain = (v: ExplainVisual) => {
+    // Colour a node by its access type (ALL / index / range / ref / const ...).
+    const scanClass = (t: string) => {
+      switch (t) {
+        case "ALL":
+          return "scan-all";
+        case "index":
+          return "scan-index";
+        case "range":
+        case "index_merge":
+          return "scan-range";
+        case "ref":
+        case "ref_or_null":
+        case "unique_subquery":
+        case "index_subquery":
+          return "scan-ref";
+        case "eq_ref":
+          return "scan-eqref";
+        case "const":
+        case "system":
+          return "scan-const";
+        default:
+          return "scan-other";
+      }
+    };
+    // Maximum cost across the whole tree, to scale the flame bars.
+    const maxCost = (() => {
+      let m = 0;
+      const walk = (ns: ExplainNode[]) => {
+        for (const n of ns) {
+          if (n.cost > m) m = n.cost;
+          walk(n.children);
+        }
+      };
+      walk(v.nodes);
+      return m || 1;
+    })();
+    const renderNode = (n: ExplainNode, depth: number): JSX.Element => (
+      <div key={n.name + depth + (n.key || "")} className="explain-node">
+        <div className="explain-row">
+          <span className={"explain-scan " + scanClass(n.access_type)}>
+            {n.access_type || "—"}
+          </span>
+          <span className="explain-name">{n.name}</span>
+          {n.key && <span className="explain-key">key={n.key}</span>}
+          <span className="explain-meta">rows={n.rows}</span>
+          <span className="explain-meta">cost={Number(n.cost).toFixed(2)}</span>
+          {n.extra && <span className="explain-extra">{n.extra}</span>}
+          {/* Flame bar: width proportional to this node's cost. */}
+          <span className="explain-flame">
+            <span
+              className={"explain-flame-bar " + scanClass(n.access_type)}
+              style={{ width: `${Math.max(2, (n.cost / maxCost) * 100)}%` }}
+            />
+          </span>
+        </div>
+        {n.children.length > 0 && (
+          <div className="explain-children">
+            {n.children.map((c) => renderNode(c, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+    return (
+      <div className="explain-view">
+        {v.nodes.length === 0 && (
+          <div className="empty">解析到的执行计划为空（可能是非 SELECT 语句）</div>
+        )}
+        {v.nodes.map((n) => renderNode(n, 0))}
+        {v.format === "legacy" && v.raw && (
+          <pre className="explain-raw">{v.raw}</pre>
+        )}
       </div>
     );
   };
@@ -2013,13 +2380,15 @@ export function App() {
 
   const openAddSeed = (seed: Partial<ConnInput>) => {
     setAddOpen(false);
+    setFormTab("basic");
     setForm({ open: true, editing: false, cfg: { ...emptyForm(), ...seed } });
   };
 
   const openEditFor = (id: string) => {
     const c = findConn(id);
     if (!c) return;
-    setForm({ open: true, editing: true, cfg: { ...c, password: "" } });
+    setFormTab("basic");
+    setForm({ open: true, editing: true, cfg: { ...emptyForm(), ...c, password: "" } });
   };
   const saveForm = async () => {
     try {
@@ -2263,12 +2632,24 @@ export function App() {
               <button onClick={explainQuery} disabled={!active?.connId}>
                 执行计划
               </button>
-              <button className="primary" onClick={runQuery}>
+              <button className="primary" onClick={() => void runQuery()}>
                 执行
               </button>
             </div>
           </div>
-          <div id="editor" className="editor" />
+          <div
+            id="editor"
+            className="editor"
+            onContextMenu={(e) => {
+              e.preventDefault();
+              const sel = editorRef.current?.getSelection().trim() ?? "";
+              setEditorMenu({
+                x: e.clientX,
+                y: e.clientY,
+                hasSel: sel.length > 0,
+              });
+            }}
+          />
         </div>
         <div className="result-pane">
           <div className="pane-head">
@@ -2296,6 +2677,13 @@ export function App() {
               >
                 表关系
               </button>
+              <button
+                className={"rtab" + (resultTab === "explain" ? " active" : "")}
+                disabled={!explainView}
+                onClick={() => setResultTab("explain")}
+              >
+                执行计划
+              </button>
             </div>
             <div className="pane-actions">
               {resultTab === "data" ? (
@@ -2312,6 +2700,35 @@ export function App() {
                   {editable && !hasEdits && (
                     <span className="hint">双击单元格可编辑</span>
                   )}
+                  {/* #3: grid search + per-column filters */}
+                  <span className="grid-search">
+                    <input
+                      placeholder="搜索当前页…"
+                      value={gridSearch}
+                      onChange={(e) => setGridSearch(e.target.value)}
+                    />
+                    <label className="case-toggle" title="区分大小写">
+                      <input
+                        type="checkbox"
+                        checked={gridCase}
+                        onChange={(e) => setGridCase(e.target.checked)}
+                      />
+                      Aa
+                    </label>
+                    {(Object.keys(colFilters).length > 0 || gridSearch.trim()) && (
+                      <button
+                        className="clear-filter"
+                        onClick={() => {
+                          setColFilters({});
+                          setGridSearch("");
+                          setGridSort(null);
+                        }}
+                        title="清除全部筛选/排序/搜索"
+                      >
+                        清除
+                      </button>
+                    )}
+                  </span>
                   {result && result.kind === "table" && Array.isArray(result.columns) && result.columns.length > 0 && (
                     <button onClick={() => exportCsv(result, browseCtx)}>导出 CSV</button>
                   )}
@@ -2340,6 +2757,12 @@ export function App() {
                 renderRelationships()
               ) : (
                 <div className="empty">加载表关系…</div>
+              )
+            ) : resultTab === "explain" ? (
+              explainView ? (
+                renderExplain(explainView)
+              ) : (
+                <div className="empty">点击「执行计划」按钮生成可视化</div>
               )
             ) : (
               renderData()
@@ -2416,104 +2839,308 @@ export function App() {
 
       {form.open && (
         <div className="modal-mask">
-          <div className="modal">
+          <div className="modal conn-modal">
             <h3>{form.editing ? "编辑连接" : "新增连接"}</h3>
-            <label>
-              名称
-              <input
-                value={form.cfg.name}
-                onChange={(e) =>
-                  setForm({ ...form, cfg: { ...form.cfg, name: e.target.value } })
-                }
-              />
-            </label>
-            <DropdownSelect
-              label="类型"
-              value={form.cfg.db_type}
-              options={[
-                { value: "mysql", label: "mysql" },
-                { value: "redis", label: "redis" },
-              ]}
-              onChange={(v) => {
-                const port = v === "redis" ? 6379 : 3306;
-                setForm({ ...form, cfg: { ...form.cfg, db_type: v, port } });
-              }}
-            />
-            <label>
-              主机
-              <input
-                value={form.cfg.host}
-                onChange={(e) =>
-                  setForm({ ...form, cfg: { ...form.cfg, host: e.target.value } })
-                }
-              />
-            </label>
-            <label>
-              端口
-              <input
-                type="number"
-                value={form.cfg.port}
-                onChange={(e) =>
-                  setForm({
-                    ...form,
-                    cfg: { ...form.cfg, port: Number(e.target.value) },
-                  })
-                }
-              />
-            </label>
-            <label>
-              用户
-              <input
-                value={form.cfg.user}
-                onChange={(e) =>
-                  setForm({ ...form, cfg: { ...form.cfg, user: e.target.value } })
-                }
-              />
-            </label>
-            <label>
-              密码
-              <input
-                type="password"
-                value={form.cfg.password}
-                placeholder={form.editing ? "(留空保持不变)" : ""}
-                onChange={(e) =>
-                  setForm({ ...form, cfg: { ...form.cfg, password: e.target.value } })
-                }
-              />
-            </label>
-            <label>
-              数据库
-              <input
-                value={form.cfg.database}
-                onChange={(e) =>
-                  setForm({
-                    ...form,
-                    cfg: { ...form.cfg, database: e.target.value },
-                  })
-                }
-              />
-            </label>
-            <DropdownSelect
-              label="分组"
-              value={form.cfg.group_id ?? ""}
-              options={[
-                { value: "", label: "（不分组）" },
-                ...tree.environments
-                  .filter((e) => e.id !== "__ungrouped")
-                  .flatMap((e) =>
-                    e.groups.map((g) => ({
-                      value: g.id,
-                      label: `${e.name} / ${g.name || "(未命名)"}`,
-                    }))
-                  ),
-              ]}
-              onChange={(v) =>
-                setForm({
-                  ...form,
-                  cfg: { ...form.cfg, group_id: v || null },
-                })
-              }
-            />
+
+            {/* Tab navigation: 基础 / SSL / SSH (#4, #5) */}
+            <div className="conn-tabs">
+              <button
+                type="button"
+                className={"conn-tab" + (formTab === "basic" ? " active" : "")}
+                onClick={() => setFormTab("basic")}
+              >
+                🔌 基础
+              </button>
+              <button
+                type="button"
+                className={"conn-tab" + (formTab === "ssl" ? " active" : "")}
+                onClick={() => setFormTab("ssl")}
+              >
+                🔒 SSL / TLS
+              </button>
+              <button
+                type="button"
+                className={"conn-tab" + (formTab === "ssh" ? " active" : "")}
+                onClick={() => setFormTab("ssh")}
+              >
+                🖥 SSH 隧道
+              </button>
+            </div>
+
+            <div className="conn-tab-body">
+              {formTab === "basic" && (
+                <>
+                  <label>
+                    名称
+                    <input
+                      value={form.cfg.name}
+                      onChange={(e) =>
+                        setForm({ ...form, cfg: { ...form.cfg, name: e.target.value } })
+                      }
+                    />
+                  </label>
+                  <DropdownSelect
+                    label="类型"
+                    value={form.cfg.db_type}
+                    options={[
+                      { value: "mysql", label: "mysql" },
+                      { value: "redis", label: "redis" },
+                    ]}
+                    onChange={(v) => {
+                      const port = v === "redis" ? 6379 : 3306;
+                      setForm({ ...form, cfg: { ...form.cfg, db_type: v, port } });
+                    }}
+                  />
+                  <div className="form-row">
+                    <label>
+                      主机
+                      <input
+                        value={form.cfg.host}
+                        onChange={(e) =>
+                          setForm({ ...form, cfg: { ...form.cfg, host: e.target.value } })
+                        }
+                      />
+                    </label>
+                    <label>
+                      端口
+                      <input
+                        type="number"
+                        value={form.cfg.port}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            cfg: { ...form.cfg, port: Number(e.target.value) },
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                  <div className="form-row">
+                    <label>
+                      用户
+                      <input
+                        value={form.cfg.user}
+                        onChange={(e) =>
+                          setForm({ ...form, cfg: { ...form.cfg, user: e.target.value } })
+                        }
+                      />
+                    </label>
+                    <label>
+                      密码
+                      <input
+                        type="password"
+                        value={form.cfg.password}
+                        placeholder={form.editing ? "(留空保持不变)" : ""}
+                        onChange={(e) =>
+                          setForm({ ...form, cfg: { ...form.cfg, password: e.target.value } })
+                        }
+                      />
+                    </label>
+                  </div>
+                  <div className="form-row">
+                    <label>
+                      数据库
+                      <input
+                        value={form.cfg.database}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            cfg: { ...form.cfg, database: e.target.value },
+                          })
+                        }
+                      />
+                    </label>
+                    <DropdownSelect
+                      label="分组"
+                      value={form.cfg.group_id ?? ""}
+                      options={[
+                        { value: "", label: "（不分组）" },
+                        ...tree.environments
+                          .filter((e) => e.id !== "__ungrouped")
+                          .flatMap((e) =>
+                            e.groups.map((g) => ({
+                              value: g.id,
+                              label: `${e.name} / ${g.name || "(未命名)"}`,
+                            }))
+                          ),
+                      ]}
+                      onChange={(v) =>
+                        setForm({
+                          ...form,
+                          cfg: { ...form.cfg, group_id: v || null },
+                        })
+                      }
+                    />
+                  </div>
+                </>
+              )}
+
+              {formTab === "ssl" && (
+                <div className="form-section in-tab">
+                  <div className="form-section-title">SSL / TLS 加密</div>
+                  <DropdownSelect
+                    label="模式"
+                    value={form.cfg.ssl_mode}
+                    options={[
+                      { value: "", label: "（不使用）" },
+                      { value: "preferred", label: "preferred" },
+                      { value: "required", label: "required" },
+                      { value: "verify_ca", label: "verify_ca" },
+                      { value: "verify_identity", label: "verify_identity" },
+                    ]}
+                    onChange={(v) =>
+                      setForm({ ...form, cfg: { ...form.cfg, ssl_mode: v } })
+                    }
+                  />
+                  <div className="form-row">
+                    <label>
+                      CA 证书
+                      <div className="input-with-btn">
+                        <input
+                          value={form.cfg.ssl_ca}
+                          placeholder="PEM 文本或路径，可选"
+                          onChange={(e) =>
+                            setForm({ ...form, cfg: { ...form.cfg, ssl_ca: e.target.value } })
+                          }
+                        />
+                        <CertPickButton
+                          accept=".pem,.crt,.cer,.ca,.key,.txt"
+                          onPick={(t) =>
+                            setForm({ ...form, cfg: { ...form.cfg, ssl_ca: t } })
+                          }
+                        />
+                      </div>
+                    </label>
+                    <label>
+                      客户端证书
+                      <div className="input-with-btn">
+                        <input
+                          value={form.cfg.client_cert}
+                          placeholder="PEM 文本或路径，可选"
+                          onChange={(e) =>
+                            setForm({ ...form, cfg: { ...form.cfg, client_cert: e.target.value } })
+                          }
+                        />
+                        <CertPickButton
+                          accept=".pem,.crt,.cer,.ca,.key,.txt"
+                          onPick={(t) =>
+                            setForm({ ...form, cfg: { ...form.cfg, client_cert: t } })
+                          }
+                        />
+                      </div>
+                    </label>
+                  </div>
+                  <label>
+                    客户端私钥
+                    <div className="input-with-btn">
+                      <input
+                        value={form.cfg.client_key}
+                        placeholder="PEM 文本或路径，可选"
+                        onChange={(e) =>
+                          setForm({ ...form, cfg: { ...form.cfg, client_key: e.target.value } })
+                        }
+                      />
+                      <CertPickButton
+                        accept=".pem,.key,.txt"
+                        onPick={(t) =>
+                          setForm({ ...form, cfg: { ...form.cfg, client_key: t } })
+                        }
+                      />
+                    </div>
+                  </label>
+                </div>
+              )}
+
+              {formTab === "ssh" && (
+                <div className="form-section in-tab">
+                  <div className="form-section-title">SSH 隧道（跳板机，可选）</div>
+                  <div className="form-row">
+                    <label>
+                      跳板机主机
+                      <input
+                        value={form.cfg.ssh_host}
+                        placeholder="留空表示直连"
+                        onChange={(e) =>
+                          setForm({ ...form, cfg: { ...form.cfg, ssh_host: e.target.value } })
+                        }
+                      />
+                    </label>
+                    <label>
+                      跳板机端口
+                      <input
+                        type="number"
+                        value={form.cfg.ssh_port}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            cfg: { ...form.cfg, ssh_port: Number(e.target.value) },
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                  <label>
+                    跳板机用户
+                    <input
+                      value={form.cfg.ssh_user}
+                      onChange={(e) =>
+                        setForm({ ...form, cfg: { ...form.cfg, ssh_user: e.target.value } })
+                      }
+                    />
+                  </label>
+                  <DropdownSelect
+                    label="认证方式"
+                    value={form.cfg.ssh_auth_kind}
+                    options={[
+                      { value: "password", label: "密码" },
+                      { value: "private_key", label: "私钥" },
+                    ]}
+                    onChange={(v) =>
+                      setForm({ ...form, cfg: { ...form.cfg, ssh_auth_kind: v } })
+                    }
+                  />
+                  {form.cfg.ssh_auth_kind === "password" ? (
+                    <label>
+                      跳板机密码
+                      <input
+                        type="password"
+                        value={form.cfg.ssh_password}
+                        placeholder="可选"
+                        onChange={(e) =>
+                          setForm({ ...form, cfg: { ...form.cfg, ssh_password: e.target.value } })
+                        }
+                      />
+                    </label>
+                  ) : (
+                    <label>
+                      私钥（PEM 文本或文件路径）
+                      <div className="input-with-btn">
+                        <input
+                          value={form.cfg.ssh_private_key}
+                          placeholder="可选"
+                          onChange={(e) =>
+                            setForm({
+                              ...form,
+                              cfg: { ...form.cfg, ssh_private_key: e.target.value },
+                            })
+                          }
+                        />
+                        <CertPickButton
+                          accept=".pem,.key,.txt,id_rsa,id_ed25519"
+                          onPick={(t) =>
+                            setForm({
+                              ...form,
+                              cfg: { ...form.cfg, ssh_private_key: t },
+                            })
+                          }
+                        />
+                      </div>
+                    </label>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="modal-actions">
               <button onClick={testForm}>测试连接</button>
               <span className="spacer" />
@@ -2610,75 +3237,155 @@ export function App() {
 
       {settingsOpen && (
         <div className="modal-mask" onClick={() => setSettingsOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>LLM 模型设置</h3>
-            <DropdownSelect
-              label="模型厂商"
-              value={cfgForm.vendor}
-              options={presets.map((p) => ({
-                value: p.id,
-                label: p.label,
-                tag: p.provider === "anthropic" ? "Anthropic" : undefined,
-              }))}
-              onChange={onVendorChange}
-            />
-            <label>
-              API Base URL
-              <input
-                value={cfgForm.base_url}
-                placeholder="https://api.openai.com/v1"
-                onChange={(e) =>
-                  setCfgForm({ ...cfgForm, base_url: e.target.value })
-                }
-              />
-            </label>
-            <label>
-              模型名称
-              <input
-                value={cfgForm.model}
-                placeholder="gpt-4o-mini"
-                onChange={(e) => setCfgForm({ ...cfgForm, model: e.target.value })}
-              />
-            </label>
-            <label>
-              API Key
-              <input
-                type="password"
-                value={cfgForm.api_key}
-                placeholder={llmCfg?.enabled ? "已保存（留空保持不变）" : "输入密钥"}
-                onChange={(e) =>
-                  setCfgForm({ ...cfgForm, api_key: e.target.value })
-                }
-              />
-            </label>
-            <label className="cfg-check">
-              <input
-                type="checkbox"
-                checked={aiCompleteOn}
-                onChange={(e) => {
-                  const v = e.target.checked;
-                  setAiCompleteOn(v);
-                  localStorage.setItem("cq_ai_complete", v ? "1" : "0");
-                }}
-              />
-              <span>
-                AI 内联补全（Tab 接受灰色建议）
-                <small>
-                  输入停顿后由 LLM 续写 SQL；需先配置模型。默认关闭，以免产生延迟与费用。
-                </small>
-              </span>
-            </label>
-            {cfgMsg && (
-              <div className={"cfg-msg " + (cfgMsg.ok ? "ok" : "err")}>
-                {cfgMsg.text}
-              </div>
-            )}
-            <div className="modal-actions">
-              <button onClick={() => setSettingsOpen(false)}>取消</button>
-              <button className="primary" onClick={() => void saveSettings()}>
-                保存
+          <div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="settings-nav">
+              <div className="settings-nav-title">设置</div>
+              <button
+                className={"nav-item" + (settingsTab === "model" ? " active" : "")}
+                onClick={() => setSettingsTab("model")}
+              >
+                模型设置
+              </button>
+              <button
+                className={"nav-item" + (settingsTab === "key" ? " active" : "")}
+                onClick={() => setSettingsTab("key")}
+              >
+                连接加密
+              </button>
+              <button
+                className={"nav-item" + (settingsTab === "general" ? " active" : "")}
+                onClick={() => setSettingsTab("general")}
+              >
+                通用
               </button>
             </div>
+
+            <div className="settings-content">
+              {/* --- 模块一：模型设置（LLM） --- */}
+              {settingsTab === "model" && (
+                <div className="settings-page">
+                  <h3>模型设置</h3>
+                  <DropdownSelect
+                    label="模型厂商"
+                    value={cfgForm.vendor}
+                    options={presets.map((p) => ({
+                      value: p.id,
+                      label: p.label,
+                      tag: p.provider === "anthropic" ? "Anthropic" : undefined,
+                    }))}
+                    onChange={onVendorChange}
+                  />
+                  <label>
+                    API Base URL
+                    <input
+                      value={cfgForm.base_url}
+                      placeholder="https://api.openai.com/v1"
+                      onChange={(e) =>
+                        setCfgForm({ ...cfgForm, base_url: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    模型名称
+                    <input
+                      value={cfgForm.model}
+                      placeholder="gpt-4o-mini"
+                      onChange={(e) =>
+                        setCfgForm({ ...cfgForm, model: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    API Key
+                    <input
+                      type="password"
+                      value={cfgForm.api_key}
+                      placeholder={llmCfg?.enabled ? "已保存（留空保持不变）" : "输入密钥"}
+                      onChange={(e) =>
+                        setCfgForm({ ...cfgForm, api_key: e.target.value })
+                      }
+                    />
+                  </label>
+                  {cfgMsg && (
+                    <div className={"cfg-msg " + (cfgMsg.ok ? "ok" : "err")}>
+                      {cfgMsg.text}
+                    </div>
+                  )}
+                  <div className="modal-actions">
+                    <button className="primary" onClick={() => void saveSettings()}>
+                      保存
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* --- 模块二：连接加密密钥 (#0) --- */}
+              {settingsTab === "key" && (
+                <div className="settings-page">
+                  <h3>连接加密密钥</h3>
+                  <div className={"key-status " + (keyStatus.configured ? "on" : "off")}>
+                    当前状态：{keyStatus.configured ? "已配置自定义密钥" : "使用默认密钥（换机器/换人无法解密导出文件）"}
+                  </div>
+                  {!keyStatus.configured && (
+                    <div className="key-warn">
+                      ⚠️ 尚未配置自定义密钥。导入/导出用的 system-key 加密将退化为默认密钥，
+                      换机器后无法解密。建议在此设置一个自定义密钥（导出与导入两端使用相同密钥即可互通）。
+                    </div>
+                  )}
+                  <label>
+                    密钥口令（用于派生 AES 密钥；留空则重置回默认）
+                    <input
+                      type="password"
+                      value={keyField}
+                      placeholder="设置一个易记的口令"
+                      onChange={(e) => setKeyField(e.target.value)}
+                    />
+                  </label>
+                  <div className="modal-actions">
+                    <button className="primary" onClick={() => void saveKey()}>
+                      保存密钥并重加密
+                    </button>
+                  </div>
+                  {keyMsg && (
+                    <div className={"cfg-msg " + (keyMsg.ok ? "ok" : "err")}>
+                      {keyMsg.text}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* --- 模块三：通用偏好 --- */}
+              {settingsTab === "general" && (
+                <div className="settings-page">
+                  <h3>通用</h3>
+                  <label className="cfg-check">
+                    <input
+                      type="checkbox"
+                      checked={aiCompleteOn}
+                      onChange={(e) => {
+                        const v = e.target.checked;
+                        setAiCompleteOn(v);
+                        localStorage.setItem("cq_ai_complete", v ? "1" : "0");
+                      }}
+                    />
+                    <span>
+                      AI 内联补全（Tab 接受灰色建议）
+                      <small>
+                        输入停顿后由 LLM 续写 SQL；需先配置模型。默认关闭，以免产生延迟与费用。
+                      </small>
+                    </span>
+                  </label>
+                </div>
+              )}
+            </div>
+
+            <button
+              className="settings-close"
+              onClick={() => setSettingsOpen(false)}
+              title="关闭"
+            >
+              ×
+            </button>
           </div>
         </div>
       )}
@@ -2721,6 +3428,38 @@ export function App() {
                 <div className="ctx-sep" />
               </>
             )}
+            {ctxMenu.col != null && (
+              <>
+                <div className="ctx-title">
+                  列筛选：
+                  {result?.kind === "table" ? result.columns[ctxMenu.col] : ""}
+                </div>
+                <button onClick={() => void filterColByPrompt(ctxMenu.col!, "contains")}>
+                  包含…
+                </button>
+                <button onClick={() => void filterColByPrompt(ctxMenu.col!, "equals")}>
+                  等于…
+                </button>
+                <button onClick={() => void filterColByPrompt(ctxMenu.col!, "nequals")}>
+                  不等于…
+                </button>
+                <button onClick={() => void filterColByPrompt(ctxMenu.col!, "range")}>
+                  数值范围…
+                </button>
+                <button onClick={() => void filterColByPrompt(ctxMenu.col!, "empty")}>
+                  为空
+                </button>
+                <button onClick={() => void filterColByPrompt(ctxMenu.col!, "notempty")}>
+                  非空
+                </button>
+                {colFilters[ctxMenu.col] && (
+                  <button onClick={() => clearColFilter(ctxMenu.col!)}>
+                    清除该列筛选
+                  </button>
+                )}
+                <div className="ctx-sep" />
+              </>
+            )}
             {ctxMenu.rows.length > 0 ? (
               <>
             <div className="ctx-title">复制选中 {ctxMenu.rows.length} 行</div>
@@ -2745,6 +3484,15 @@ export function App() {
             ) : null}
           </div>
         </>
+      )}
+
+      {editorMenu && (
+        <ContextMenu
+          x={editorMenu.x}
+          y={editorMenu.y}
+          onClose={() => setEditorMenu(null)}
+          items={buildEditorMenu(editorMenu.hasSel)}
+        />
       )}
 
       {dbPickerOpen && (

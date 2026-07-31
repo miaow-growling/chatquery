@@ -23,49 +23,71 @@ interface Props {
  * overflow. Closes on any outside left-click, Escape, or window resize — but
  * deliberately NOT on a second right-click (that just replaces the menu via
  * the row's own onContextMenu).
+ *
+ * Menu items are rendered as <div role="menuitem"> instead of <button> to
+ * prevent WebKit from associating them with native editable-area actions
+ * (e.g. showing a "Paste" tooltip over the editor's context menu).
  */
 export function ContextMenu({ x, y, items, onClose }: Props) {
   useEffect(() => {
-    const onDocClick = () => onClose();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     const onResize = () => onClose();
-    window.addEventListener("click", onDocClick);
     window.addEventListener("keydown", onKey);
     window.addEventListener("resize", onResize);
     return () => {
-      window.removeEventListener("click", onDocClick);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", onResize);
     };
   }, [onClose]);
 
   return createPortal(
-    <div
-      className="ctx-menu"
-      style={{ position: "fixed", left: x, top: y }}
-      onContextMenu={(e) => e.preventDefault()}
-    >
-      {items.map((it, i) =>
-        it.type === "sep" ? (
-          <div key={i} className="ctx-sep" />
-        ) : (
-          <button
-            key={i}
-            className={"ctx-item" + (it.danger ? " danger" : "")}
-            disabled={it.disabled}
-            onClick={() => {
-              if (it.disabled) return;
-              onClose();
-              it.onClick();
-            }}
-          >
-            {it.label}
-          </button>
-        )
-      )}
-    </div>,
+    <>
+      <div
+        className="ctx-backdrop"
+        onMouseDown={() => onClose()}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onClose();
+        }}
+      />
+      <div
+        className="ctx-menu"
+        style={{ position: "fixed", left: x, top: y }}
+        onContextMenu={(e) => e.preventDefault()}
+        role="menu"
+      >
+        {items.map((it, i) =>
+          it.type === "sep" ? (
+            <div key={i} className="ctx-sep" role="separator" />
+          ) : (
+            <div
+              key={i}
+              className={
+                "ctx-item" +
+                (it.danger ? " danger" : "") +
+                (it.disabled ? " disabled" : "")
+              }
+              role="menuitem"
+              tabIndex={-1}
+              aria-disabled={it.disabled}
+              onMouseDown={(e) => {
+                // Keep focus in the editor and suppress any native tooltip.
+                e.preventDefault();
+              }}
+              onClick={() => {
+                if (it.disabled) return;
+                onClose();
+                it.onClick();
+              }}
+            >
+              {it.label}
+            </div>
+          )
+        )}
+      </div>
+    </>,
     document.body
   );
 }

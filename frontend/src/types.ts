@@ -22,6 +22,18 @@ export interface ConnInput {
   password: string;
   database: string;
   group_id: string | null;
+  // --- SSL / TLS (#4) ---
+  ssl_mode: string;
+  ssl_ca: string;
+  client_cert: string;
+  client_key: string;
+  // --- SSH tunnel / bastion (#5) ---
+  ssh_host: string;
+  ssh_port: number;
+  ssh_user: string;
+  ssh_auth_kind: string;
+  ssh_password: string;
+  ssh_private_key: string;
 }
 
 /// Left-tree model (ADR-016): environments → groups → connections. Empty
@@ -188,4 +200,54 @@ export interface ForeignKeyInfo {
   column_name: string;
   referenced_table: string;
   referenced_column: string;
+}
+
+/// Non-secret view of the configurable connection key K (#0).
+export interface KeyStatus {
+  /// true = the user has configured a custom key (otherwise K degenerates to
+  /// the built-in KEK and behaves exactly like a pre-#0 install).
+  configured: boolean;
+}
+
+/// Outcome of an import, surfaced to the UI for a summary toast (#1, #2).
+export interface ImportResult {
+  /// Connections successfully added (ids regenerated, passwords re-encrypted).
+  connections_added: number;
+  /// Environments + groups created to host the imported connections.
+  containers_added: number;
+  /// Names of connections whose (decrypted) password is empty — the user must
+  /// fill these in before they can connect.
+  passwords_needed: string[];
+  /// Names skipped because a required field (name/host/user) was empty.
+  skipped: string[];
+  /// Non-fatal notices (e.g. a placeholder value was detected).
+  warnings: string[];
+}
+
+/// One node of the EXPLAIN execution-plan tree (#6).
+export interface ExplainNode {
+  /// Table name; subquery nodes are "SUBQUERY" / "DERIVED" etc.
+  name: string;
+  /// Access type: ALL / index / range / ref / eq_ref / const / system.
+  access_type: string;
+  /// Estimated rows scanned.
+  rows: number;
+  /// Node cost (cost_info.query_cost).
+  cost: number;
+  /// Index actually used (key).
+  key: string;
+  /// Candidate indexes (possible_keys).
+  possible_keys: string[];
+  /// Extra info (attached_condition etc.).
+  extra: string;
+  /// Nested accesses (JOIN / subquery).
+  children: ExplainNode[];
+}
+
+/// EXPLAIN visualisation result (#6). `format` = "json" (parsed tree) or
+/// "legacy" (text plan, when JSON parsing failed / unsupported version).
+export interface ExplainVisual {
+  format: string;
+  nodes: ExplainNode[];
+  raw: string | null;
 }
