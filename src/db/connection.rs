@@ -14,6 +14,36 @@ pub struct ConnectionConfig {
     /// Persisted encrypted at rest (ADR-004); only ever held in plaintext in memory.
     pub password: String,
     pub database: String,
+    // --- SSL / TLS (#4) ---------------------------------------------------
+    /// disabled | preferred | required | verify_ca | verify_identity.
+    #[serde(default)]
+    pub ssl_mode: String,
+    /// CA certificate PEM (path or inline). Used when ssl_mode needs a CA.
+    #[serde(default)]
+    pub ssl_ca: String,
+    /// Client certificate PEM for mutual TLS (optional).
+    #[serde(default)]
+    pub client_cert: String,
+    /// Client private key PEM for mutual TLS (optional). Encrypted at rest.
+    #[serde(default)]
+    pub client_key: String,
+    // --- SSH tunnel / bastion (#5) ----------------------------------------
+    /// SSH jump host. Empty = no tunnel (connect directly).
+    #[serde(default)]
+    pub ssh_host: String,
+    #[serde(default)]
+    pub ssh_port: u16,
+    #[serde(default)]
+    pub ssh_user: String,
+    /// password | key | agent.
+    #[serde(default)]
+    pub ssh_auth_kind: String,
+    /// SSH password (encrypted at rest). Only for auth_kind = password.
+    #[serde(default)]
+    pub ssh_password: String,
+    /// SSH private key (encrypted at rest). Only for auth_kind = key.
+    #[serde(default)]
+    pub ssh_private_key: String,
     /// First-class grouping reference (ADR-016). The connection belongs to the
     /// group whose id is stored here; the group's parent environment is found
     /// by walking the container tree. `None` means ungrouped (rendered under a
@@ -86,6 +116,16 @@ impl ConnectionStore {
                 user: lc.user,
                 password: lc.password,
                 database: lc.database,
+                ssl_mode: String::new(),
+                ssl_ca: String::new(),
+                client_cert: String::new(),
+                client_key: String::new(),
+                ssh_host: String::new(),
+                ssh_port: 22,
+                ssh_user: String::new(),
+                ssh_auth_kind: String::new(),
+                ssh_password: String::new(),
+                ssh_private_key: String::new(),
                 group_id: Some(group_id),
             });
         }
@@ -148,6 +188,12 @@ impl ConnectionStore {
         self.storage.delete_connection(id)?;
         self.connections.retain(|c| c.id != id);
         Ok(())
+    }
+
+    /// Configure or rotate the connection encryption key K (#0). Delegates to
+    /// the inner `Storage`, which re-encrypts every record atomically.
+    pub fn rotate_key(&mut self, field: &str) -> Result<()> {
+        self.storage.rotate_key(field)
     }
 
     // --- Query history / saved snippets ----------------------------------
@@ -214,6 +260,30 @@ impl ConnectionStore {
             ord: 0,
         });
         Ok(id)
+    }
+
+    /// Find an environment by (name, db_type), creating it if missing. Used by
+    /// import so connections merge into existing containers instead of
+    /// duplicating them.
+    pub fn ensure_env(&mut self, name: &str, db_type: Option<DbType>) -> Result<String> {
+        if let Some(c) = self.containers.iter().find(|c| {
+            c.kind == ContainerKind::Env && c.name == name && c.db_type == db_type
+        }) {
+            return Ok(c.id.clone());
+        }
+        self.create_env(name, db_type)
+    }
+
+    /// Find a group by (env, name), creating it if missing.
+    pub fn ensure_group(&mut self, env_id: &str, name: &str) -> Result<String> {
+        if let Some(c) = self.containers.iter().find(|c| {
+            c.kind == ContainerKind::Group
+                && c.parent.as_deref() == Some(env_id)
+                && c.name == name
+        }) {
+            return Ok(c.id.clone());
+        }
+        self.create_group(env_id, name)
     }
 
     pub fn rename_container(&mut self, id: &str, name: &str) -> Result<()> {

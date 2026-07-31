@@ -448,6 +448,16 @@ mod tests {
             user: String::new(),
             password: String::new(),
             database: String::new(),
+            ssl_mode: String::new(),
+            ssl_ca: String::new(),
+            client_cert: String::new(),
+            client_key: String::new(),
+            ssh_host: String::new(),
+            ssh_port: 22,
+            ssh_user: String::new(),
+            ssh_auth_kind: String::new(),
+            ssh_password: String::new(),
+            ssh_private_key: String::new(),
             group_id: None,
         }
     }

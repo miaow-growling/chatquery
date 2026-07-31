@@ -74,7 +74,10 @@ impl Storage {
                 created INTEGER NOT NULL
             );",
         )?;
-        let key = crypto::load_key()?;
+        // #0: connections are encrypted with K (the configurable key), which
+        // degenerates to the KEK when no user key is set — so a fresh install
+        // behaves exactly as before. See crypto::load_encryption_key.
+        let key = crypto::load_encryption_key()?;
         Ok(Self { conn, key })
     }
 
@@ -87,8 +90,22 @@ impl Storage {
             let data = row?;
             let (json, is_legacy) = match crypto::decrypt(&data, &self.key) {
                 Ok(json) => (json, false),
-                // Legacy plaintext record (pre-encryption) — load as-is for now.
-                Err(_) => (data, true),
+                // Fall back to the KEK: records encrypted before the K model
+                // (or a freshly configured K equal to the KEK). If even that
+                // fails, the store was opened with the wrong key — say so
+                // clearly instead of silently dropping the row.
+                Err(_) => match crypto::load_key()
+                    .ok()
+                    .and_then(|kek| crypto::decrypt(&data, &kek).ok())
+                {
+                    Some(json) => (json, true),
+                    None => {
+                        return Err(AppError::Msg(
+                            "无法解密连接数据：密钥不匹配。若换了机器/密钥，请在系统配置填入导出时使用的密钥后重试"
+                                .into(),
+                        ))
+                    }
+                },
             };
             let cfg: ConnectionConfig =
                 serde_json::from_str(&json).map_err(|e| AppError::Msg(e.to_string()))?;
@@ -118,6 +135,48 @@ impl Storage {
     pub fn delete_connection(&self, id: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM connections WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Re-encrypt every connection record from `old` to `new` inside a single
+    /// SQLite transaction. Used when the user configures or rotates the
+    /// configurable key K (#0). Old records remain decryptable by `old` until
+    /// the transaction commits, so a crash mid-way leaves a consistent (if
+    /// half-migrated) store that the next open can still finish reading.
+    pub fn reencrypt_all(&mut self, old: &[u8; 32], new: &[u8; 32]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let mut items: Vec<(String, String)> = Vec::new();
+        {
+            let mut stmt = tx.prepare("SELECT id, data FROM connections")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                items.push(row?);
+            }
+        } // stmt/rows dropped — tx is free for writes
+        for (id, data) in items {
+            let json = crypto::decrypt(&data, old)?;
+            let enc = crypto::encrypt(&json, new)?;
+            tx.execute(
+                "UPDATE connections SET data = ?2 WHERE id = ?1",
+                params![id, enc],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Configure or rotate the connection key to K derived from `field` (#0).
+    /// Writes keycfg.json, then re-encrypts all stored connections to the new
+    /// K. If the derived K equals the current key (already configured with the
+    /// same field), we just ensure keycfg exists and skip the re-encryption.
+    pub fn rotate_key(&mut self, field: &str) -> Result<()> {
+        let old = self.key;
+        let new = crypto::save_key_config(field)?;
+        if old == new {
+            return Ok(());
+        }
+        self.reencrypt_all(&old, &new)?;
+        self.key = new;
         Ok(())
     }
 
@@ -199,11 +258,19 @@ impl Storage {
         let mut out = Vec::new();
         while let Some(row) = rows.next() {
             let data = row?;
-            // Legacy records are plaintext; current records are encrypted. The
-            // migration runs on the decrypted JSON regardless of source.
+            // Legacy records may be plaintext or KEK-encrypted; current records
+            // are encrypted with K. Try K, then KEK (pre-migration). If neither
+            // opens the blob, the store was opened with the wrong key.
             let json = match crypto::decrypt(&data, &self.key) {
                 Ok(json) => json,
-                Err(_) => data,
+                Err(_) => crypto::load_key()
+                    .ok()
+                    .and_then(|kek| crypto::decrypt(&data, &kek).ok())
+                    .ok_or_else(|| {
+                        AppError::Msg(
+                            "无法解密连接数据：密钥不匹配。请在系统配置填入正确的加密密钥".into(),
+                        )
+                    })?,
             };
             let legacy: LegacyConnection =
                 serde_json::from_str(&json).map_err(|e| AppError::Msg(e.to_string()))?;

@@ -2,11 +2,16 @@ use crate::db::connection::ConnectionConfig;
 use crate::error::{AppError, Result};
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
-use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
+use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlSslMode};
 use sqlx::types::chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use regex::Regex;
 use sqlx::{Column, Row, ValueRef};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 /// Max rows kept in memory per query result (ADR-006: bounded results).
 pub const PAGE_LIMIT: usize = 200;
@@ -62,14 +67,14 @@ pub async fn query(
             count += 1;
         } else {
             // 已达上限：标记截断即可，但**继续排空**剩余结果集。
-            // 一旦 break，MySQL 连接会停在 streaming 脏状态，pool.close()
-            // 必须等未读流被排空/重置，慢库或高延迟网络上会卡住（表现为
-            // 前端“执行超时”）。读够后继续丢弃超出行直至 EOF 才最干净。
+            // 一旦 break，MySQL 连接会停在 streaming 脏状态；因为池现在是长生命周期
+            // 缓存（不再 close），脏连接会被复用导致下次查询出错，所以更必须排空——
+            // 慢库/高延迟网络上若不排空会卡住（表现为前端“执行超时”）。读够后继续
+            // 丢弃超出行直至 EOF 才最干净。
             truncated = true;
         }
     }
 
-    pool.close().await;
     Ok(QueryResult {
         columns,
         rows,
@@ -152,7 +157,6 @@ pub async fn query_paged(
         }
         rows.push(decode_row(&row).await);
     }
-    pool.close().await;
     Ok(QueryResult {
         columns,
         rows,
@@ -313,27 +317,330 @@ fn csv_field(v: &str) -> String {
     }
 }
 
-/// Open a bounded MySQL pool (max 2 connections) for a single query/schema call.
-/// Pools are short-lived and closed right after use (ADR-006: don't hold
-/// connections we aren't actively using — keeps sockets and memory bounded).
-async fn connect_pool(cfg: &ConnectionConfig) -> Result<MySqlPool> {
-    let db = if cfg.database.is_empty() { "mysql" } else { &cfg.database };
-    connect_pool_db(cfg, db).await
+/// 连接池缓存层（根治短生命周期池的 EOF 与连接抖动问题）。
+///
+/// 设计权衡（用户要求限制内存）：
+/// - 按物理连接（host/port/user/password，再分目标 database）缓存**长生命周期**池，
+///   健康检查（test_before_acquire / max_lifetime）才真正稳定生效，绝不再拿到 server 已静默关闭的连接。
+/// - **内存上限靠三层锁死**：① 每池 `max_connections` 封顶（单连接并发连接数）；
+///   ② `idle_timeout` 让空闲连接在 30s 后归零（`min_connections(0)` 不保活），缓存只留几 KB 元数据；
+///   ③ 全局 LRU 上限 `MAX_CACHED_POOLS`，超出淘汰最久未用的池并 close。
+/// - 缓存 key 含 password：改密码 → key 变 → 自动换新池；删除连接 → 旧池被 LRU 淘汰，无需显式 invalidate。
+const MAX_CONN_PER_POOL: u32 = 4;
+/// 全局缓存连接池实例上限。每个实例本身只占 Arc 元数据（几 KB），真正的 TCP 连接在
+/// idle_timeout 后回收，所以 64 个上限内存完全可控（典型场景活跃连接 < 20）。
+const MAX_CACHED_POOLS: usize = 64;
+
+struct PoolCache {
+    pools: std::collections::HashMap<String, MySqlPool>,
+    /// LRU 顺序：front = 最久未用，back = 最近使用。
+    order: std::collections::VecDeque<String>,
 }
 
-/// Like `connect_pool` but targets an explicit database — used by the schema
-/// tree (browse any database, not just the connection's default).
-async fn connect_pool_db(cfg: &ConnectionConfig, database: &str) -> Result<MySqlPool> {
+static POOL_CACHE: std::sync::OnceLock<std::sync::Mutex<PoolCache>> = std::sync::OnceLock::new();
+
+fn pool_cache() -> &'static std::sync::Mutex<PoolCache> {
+    POOL_CACHE.get_or_init(|| {
+        std::sync::Mutex::new(PoolCache {
+            pools: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+        })
+    })
+}
+
+/// 连接身份 key：同一物理库（host/port/user/password + 目标 database）视为一个池。
+/// 不含 id/group（同物理库多配置共享池无害）；password 变化 → key 变 → 自动换新池。
+/// 含 ssh_host：直连与经不同跳板机的隧道不能共用同一池。
+fn pool_key(cfg: &ConnectionConfig, database: &str) -> String {
     let db = if database.is_empty() { "mysql" } else { database };
-    let url = format!(
-        "mysql://{}:{}@{}:{}/{}?charset=utf8mb4",
-        cfg.user, cfg.password, cfg.host, cfg.port, db
-    );
+    format!(
+        "{}:{}:{}:{}:{}:{}",
+        cfg.host, cfg.port, cfg.user, cfg.password, db, cfg.ssh_host
+    )
+}
+
+/// 实际建立连接（不含缓存）。参数统一收敛在此。
+///
+/// 支持两种进阶连接形态（均向后兼容旧明文数据，字段为空即退化为直连）：
+/// - SSL/TLS：通过 `MySqlConnectOptions::ssl_*` 程序化构建，CA/证书可为文件路径
+///   或内联 PEM 文本（`#4`）。
+/// - SSH 隧道：当 `ssh_host` 非空时，先在本机起一条 `ssh -L` 本地转发，再连
+///   127.0.0.1:本地端口（`#5` MVP）。隧道进程随连接池缓存长期存活，LRU 淘汰池时
+///   一并 kill。
+async fn connect_raw(cfg: &ConnectionConfig, database: &str) -> Result<MySqlPool> {
+    let db = if database.is_empty() { "mysql" } else { database };
+
+    // SSH 隧道：把逻辑目标 (cfg.host:cfg.port) 替换为本地转发端口。
+    let (host, port) = if !cfg.ssh_host.is_empty() {
+        let key = pool_key(cfg, database);
+        let local_port = ensure_ssh_tunnel(&key, cfg)?;
+        ("127.0.0.1".to_string(), local_port)
+    } else {
+        (cfg.host.clone(), cfg.port)
+    };
+
+    let mut opts = MySqlConnectOptions::new()
+        .host(&host)
+        .port(port)
+        .username(&cfg.user)
+        .password(&cfg.password)
+        .database(db)
+        .charset("utf8mb4");
+
+    // SSL/TLS（#4）：ssl_mode 为空时退化为 MySQL 默认（Preferred，即“能加密就加密”）。
+    if !cfg.ssl_mode.is_empty() {
+        opts = opts.ssl_mode(parse_ssl_mode(&cfg.ssl_mode));
+        if !cfg.ssl_ca.is_empty() {
+            if Path::new(&cfg.ssl_ca).exists() {
+                opts = opts.ssl_ca(Path::new(&cfg.ssl_ca));
+            } else {
+                opts = opts.ssl_ca_from_pem(cfg.ssl_ca.as_bytes().to_vec());
+            }
+        }
+        if !cfg.client_cert.is_empty() {
+            if Path::new(&cfg.client_cert).exists() {
+                opts = opts.ssl_client_cert(Path::new(&cfg.client_cert));
+            } else {
+                opts = opts.ssl_client_cert_from_pem(cfg.client_cert.as_bytes().to_vec());
+            }
+        }
+        if !cfg.client_key.is_empty() {
+            if Path::new(&cfg.client_key).exists() {
+                opts = opts.ssl_client_key(Path::new(&cfg.client_key));
+            } else {
+                opts = opts.ssl_client_key_from_pem(cfg.client_key.as_bytes().to_vec());
+            }
+        }
+    }
+
     MySqlPoolOptions::new()
-        .max_connections(2)
-        .connect(&url)
+        .max_connections(MAX_CONN_PER_POOL)
+        .min_connections(0)
+        // 主动在 server 的 wait_timeout 之前回收连接，避免拿到已被 server 静默
+        // 关闭的空闲连接去跑查询（典型症状：got 0 bytes at EOF）。
+        .max_lifetime(Some(std::time::Duration::from_secs(1800)))
+        .idle_timeout(Some(std::time::Duration::from_secs(30)))
+        // 每次从池里取出连接前先 ping 一下，死连接会被丢弃并重连，绝不让 EOF 漏到查询层。
+        .test_before_acquire(true)
+        .after_connect(|conn, _info| {
+            Box::pin(async move {
+                // 抬高本会话的超时，尽量让服务端不要比客户端更早回收连接。
+                // 受服务端 wait_timeout 上限约束；客户端仍靠上面的 max_lifetime 主动回收。
+                sqlx::query("SET SESSION wait_timeout = 28800")
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect_with(opts)
         .await
         .map_err(AppError::Sqlx)
+}
+
+/// 将字符串形式的 ssl_mode 映射到 sqlx 枚举；无法识别或为空时回退到
+/// `Preferred`（与 MySQL 客户端默认行为一致：能加密就加密，不能则直连）。
+fn parse_ssl_mode(s: &str) -> MySqlSslMode {
+    match s.to_ascii_lowercase().as_str() {
+        "disabled" => MySqlSslMode::Disabled,
+        "required" => MySqlSslMode::Required,
+        "verify_ca" => MySqlSslMode::VerifyCa,
+        "verify_identity" => MySqlSslMode::VerifyIdentity,
+        _ => MySqlSslMode::Preferred,
+    }
+}
+
+// --- SSH 隧道（#5 MVP） ----------------------------------------------------
+// 全局隧道表：key = 与连接池相同的 pool_key。父进程随应用生命周期存在；
+// 缓存池被 LRU 淘汰时一并 kill 子进程，避免残留 ssh -L 占用端口。
+struct SshTunnel {
+    child: Child,
+    local_port: u16,
+}
+static SSH_TUNNELS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, SshTunnel>>> =
+    OnceLock::new();
+
+fn ssh_tunnels() -> &'static std::sync::Mutex<std::collections::HashMap<String, SshTunnel>> {
+    SSH_TUNNELS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 解析 SSH 私钥来源：
+/// - 已是存在的文件路径 → 直接复用（ssh -i 只认路径）；
+/// - 否则当作 PEM 文本，写入临时文件（权限 0600）后用其路径。
+/// 这样前端「文件选择器读内容填框」与「手动填路径」两种用法都兼容。
+fn resolve_ssh_key(key: &str) -> Option<PathBuf> {
+    if key.is_empty() {
+        return None;
+    }
+    let p = Path::new(key);
+    if p.exists() && p.is_file() {
+        return Some(p.to_path_buf());
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = std::env::temp_dir().join(format!("cq_ssh_key_{stamp}.pem"));
+    if std::fs::write(&tmp, key.as_bytes()).is_ok() {
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        return Some(tmp);
+    }
+    None
+}
+
+/// 确保到目标 MySQL 的 SSH 本地转发已建立，返回本地监听端口。
+/// 已存在且记录中的隧道直接复用；否则分配空闲本地端口、拉起 `ssh -L`。
+fn ensure_ssh_tunnel(key: &str, cfg: &ConnectionConfig) -> Result<u16> {
+    // 复用已存在的隧道（MVP 不校验进程是否已死，复用失败由 connect 报错暴露）。
+    {
+        let g = ssh_tunnels().lock().unwrap();
+        if let Some(t) = g.get(key) {
+            return Ok(t.local_port);
+        }
+    }
+
+    // 分配一个空闲本地端口（bind 到 :0 后立刻释放，端口短暂空窗可接受）。
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| AppError::Msg(format!("分配 SSH 隧道本地端口失败: {e}")))?;
+    let local_port = listener
+        .local_addr()
+        .map_err(|e| AppError::Msg(format!("分配 SSH 隧道本地端口失败: {e}")))?
+        .port();
+    drop(listener);
+
+    let ssh_port = if cfg.ssh_port == 0 { 22 } else { cfg.ssh_port };
+    let mut args: Vec<String> = vec![
+        "-N".to_string(),
+        "-o".to_string(),
+        "StrictHostKeyChecking=no".to_string(),
+        "-o".to_string(),
+        "ExitOnForwardFailure=yes".to_string(),
+        "-L".to_string(),
+        format!("{local_port}:{}:{}", cfg.host, cfg.port),
+        "-p".to_string(),
+        ssh_port.to_string(),
+    ];
+    match cfg.ssh_auth_kind.as_str() {
+        "key" => {
+            if let Some(kp) = resolve_ssh_key(&cfg.ssh_private_key) {
+                args.push("-i".to_string());
+                args.push(kp.to_string_lossy().to_string());
+            }
+        }
+        // 密码认证：ssh 无法非交互读密码，MVP 依赖 sshpass；缺失则明确报错。
+        "password" => {
+            args.push("-o".to_string());
+            args.push("PreferredAuthentications=password".to_string());
+            args.push("-o".to_string());
+            args.push("PubkeyAuthentication=no".to_string());
+        }
+        _ => {} // agent / 默认：交给 SSH_AUTH_SOCK
+    }
+    args.push(format!("{}@{}", cfg.ssh_user, cfg.ssh_host));
+
+    let child = if cfg.ssh_auth_kind == "password" && !cfg.ssh_password.is_empty() {
+        // 用 sshpass 透传密码（注意：密码会出现在进程参数中，仅适合本地桌面工具）。
+        let mut c = Command::new("sshpass");
+        c.arg("-p").arg(&cfg.ssh_password).arg("ssh").args(&args);
+        c.spawn()
+            .map_err(|e| AppError::Msg(format!("无法启动 sshpass/ssh（请确认已安装 sshpass）: {e}")))?
+    } else {
+        let mut c = Command::new("ssh");
+        c.args(&args);
+        c.spawn()
+            .map_err(|e| AppError::Msg(format!("无法启动 ssh（请确认已安装 ssh 客户端）: {e}")))?
+    };
+
+    // 轮询本地端口直到转发就绪（有界等待，最长 3s），避免 ssh 尚未 bind 就连接。
+    wait_for_local_port(local_port, Duration::from_secs(3))?;
+
+    ssh_tunnels().lock().unwrap().insert(
+        key.to_string(),
+        SshTunnel { child, local_port },
+    );
+    Ok(local_port)
+}
+
+/// 有界等待本地端口进入监听状态；超时视为隧道建立失败。
+fn wait_for_local_port(port: u16, timeout: Duration) -> Result<()> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let deadline = Instant::now() + timeout;
+    loop {
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(AppError::Msg(format!(
+        "SSH 隧道本地端口 {port} 在超时内未就绪，请检查跳板机配置"
+    )))
+}
+
+/// 从缓存取池：命中则更新 LRU 顺序并返回（clone 只是 Arc，零拷贝）；
+/// 未命中则在锁外建连、再插入并 LRU 淘汰最久未用的池（解锁后才 close，避免持锁 await）。
+async fn get_pool(cfg: &ConnectionConfig, database: &str) -> Result<MySqlPool> {
+    let key = pool_key(cfg, database);
+    // 先查（不持锁 await）
+    let cached = {
+        let mut g = pool_cache().lock().unwrap();
+        if g.pools.contains_key(&key) {
+            let cloned = g.pools.get(&key).unwrap().clone();
+            if let Some(pos) = g.order.iter().position(|k| k == &key) {
+                g.order.remove(pos);
+            }
+            g.order.push_back(key.clone());
+            Some(cloned)
+        } else {
+            None
+        }
+    };
+    if let Some(pool) = cached {
+        return Ok(pool);
+    }
+    // 未命中：锁外建连接（避免持锁 await）
+    let pool = connect_raw(cfg, database).await?;
+    let mut to_close: Option<MySqlPool> = None;
+    {
+        let mut g = pool_cache().lock().unwrap();
+        // double-check：可能并发已插入
+        if g.pools.contains_key(&key) {
+            let cloned = g.pools.get(&key).unwrap().clone();
+            if let Some(pos) = g.order.iter().position(|k| k == &key) {
+                g.order.remove(pos);
+            }
+            g.order.push_back(key.clone());
+            // 已有则用已有的，新建的丢弃（drop 即可，不 close 缓存池）
+            return Ok(cloned);
+        }
+        g.pools.insert(key.clone(), pool.clone());
+        g.order.push_back(key);
+        if g.pools.len() > MAX_CACHED_POOLS {
+            if let Some(old_key) = g.order.pop_front() {
+                to_close = g.pools.remove(&old_key);
+                // 连接池被淘汰时一并 kill 其 SSH 隧道（若存在），避免残留进程占用端口。
+                if let Some(mut t) = ssh_tunnels().lock().unwrap().remove(&old_key) {
+                    let _ = t.child.kill();
+                }
+            }
+        }
+    } // 锁在此作用域结束自动释放
+    if let Some(old) = to_close {
+        old.close().await;
+    }
+    Ok(pool)
+}
+
+/// 默认库连接池（缓存）。
+async fn connect_pool(cfg: &ConnectionConfig) -> Result<MySqlPool> {
+    let db = if cfg.database.is_empty() { "mysql" } else { &cfg.database };
+    get_pool(cfg, db).await
+}
+
+/// 指定库连接池（缓存），用于 schema 浏览任意 database。
+async fn connect_pool_db(cfg: &ConnectionConfig, database: &str) -> Result<MySqlPool> {
+    get_pool(cfg, database).await
 }
 
 /// Lazily fetch the schema (tables + columns) of a database, used to power SQL
@@ -358,7 +665,7 @@ pub async fn schema(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Sc
                 CAST(DATA_TYPE AS CHAR) AS DATA_TYPE, CAST(COLUMN_KEY AS CHAR) AS COLUMN_KEY, \
                 CAST(IS_NULLABLE AS CHAR) AS IS_NULLABLE, CAST(COLUMN_DEFAULT AS CHAR) AS COLUMN_DEFAULT \
          FROM INFORMATION_SCHEMA.COLUMNS \
-         WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION",
+         WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 1000",
     )
     .bind(&db)
     .fetch_all(&pool)
@@ -395,7 +702,6 @@ pub async fn schema(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Sc
             }],
         });
     }
-    pool.close().await;
     Ok(Schema { tables })
 }
 
@@ -403,7 +709,6 @@ pub async fn schema(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Sc
 pub async fn test(cfg: &ConnectionConfig) -> Result<()> {
     let pool = connect_pool(cfg).await?;
     sqlx::query("SELECT 1").execute(&pool).await.map_err(AppError::Sqlx)?;
-    pool.close().await;
     Ok(())
 }
 
@@ -456,7 +761,6 @@ pub async fn list_databases(cfg: &ConnectionConfig) -> Result<Vec<String>> {
     for row in rows {
         out.push(row.try_get("SCHEMA_NAME").map_err(AppError::Sqlx)?);
     }
-    pool.close().await;
     Ok(out)
 }
 
@@ -484,7 +788,55 @@ pub async fn list_tables(cfg: &ConnectionConfig, database: &str) -> Result<Vec<T
             is_view: ttype.eq_ignore_ascii_case("VIEW"),
         });
     }
-    pool.close().await;
+    Ok(out)
+}
+
+/// Search tables in a database by name prefix, bounded by `limit`. Powers the
+/// editor's lazy autocomplete and the tree's folder filter — it never returns
+/// the full 8000-table set, so the UI stays responsive on large schemas
+/// (the old `list_tables` pulled every table, which froze the tree at scale).
+pub async fn search_tables(
+    cfg: &ConnectionConfig,
+    database: &str,
+    like: Option<&str>,
+    limit: usize,
+) -> Result<Vec<TableMeta>> {
+    let pool = connect_pool_db(cfg, database).await?;
+    let mut sql = String::from(
+        "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE \
+         FROM INFORMATION_SCHEMA.TABLES \
+         WHERE TABLE_SCHEMA = ?",
+    );
+    let mut binds: Vec<String> = Vec::new();
+    if let Some(like) = like {
+        if !like.is_empty() {
+            // Prefix match; escape LIKE wildcards in the user's input so a
+            // literal `%` / `_` is matched literally, not as a wildcard.
+            sql.push_str(" AND TABLE_NAME LIKE ? ESCAPE '\\\\'");
+            let pat = format!(
+                "{}%",
+                like.replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
+            binds.push(pat);
+        }
+    }
+    sql.push_str(&format!(" ORDER BY TABLE_NAME LIMIT {}", limit));
+    let mut q = sqlx::query(&sql).bind(database);
+    for b in &binds {
+        q = q.bind(b.clone());
+    }
+    let rows = q.fetch_all(&pool).await.map_err(AppError::Sqlx)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
+        let ttype: String = row.try_get("TABLE_TYPE").map_err(AppError::Sqlx)?;
+        out.push(TableMeta {
+            name,
+            is_view: ttype.eq_ignore_ascii_case("VIEW"),
+        });
+    }
     Ok(out)
 }
 
@@ -520,7 +872,6 @@ pub async fn list_columns(
             default,
         });
     }
-    pool.close().await;
     Ok(out)
 }
 
@@ -587,7 +938,6 @@ pub async fn browse(
         }
         rows.push(decode_row(&row).await);
     }
-    pool.close().await;
     Ok(QueryResult {
         columns,
         rows,
@@ -645,7 +995,6 @@ pub async fn apply_edit(
     }
     q.execute(&mut *tx).await.map_err(AppError::Sqlx)?;
     tx.commit().await.map_err(AppError::Sqlx)?;
-    pool.close().await;
     Ok(())
 }
 
@@ -682,7 +1031,6 @@ pub async fn insert_row(
     }
     q.execute(&mut *tx).await.map_err(AppError::Sqlx)?;
     tx.commit().await.map_err(AppError::Sqlx)?;
-    pool.close().await;
     Ok(())
 }
 
@@ -719,7 +1067,6 @@ pub async fn delete_row(
     }
     q.execute(&mut *tx).await.map_err(AppError::Sqlx)?;
     tx.commit().await.map_err(AppError::Sqlx)?;
-    pool.close().await;
     Ok(())
 }
 
@@ -838,7 +1185,6 @@ pub async fn describe_table(
         .try_get::<String, _>(1)
         .map_err(AppError::Sqlx)?;
 
-    pool.close().await;
     Ok(TableStructure {
         columns,
         indexes,
@@ -906,7 +1252,6 @@ pub async fn list_relationships(
             referenced_column,
         });
     }
-    pool.close().await;
     Ok(out)
 }
 
@@ -923,6 +1268,259 @@ fn quote_ident(s: &str) -> String {
 /// it can be unit-tested without a live database.
 fn qualified_table(database: &str, table: &str) -> String {
     format!("{}.{}", quote_ident(database), quote_ident(table))
+}
+
+// --- EXPLAIN 执行计划可视化（#6） -------------------------------------------
+//
+// MySQL 8.0.18+ 支持 `EXPLAIN FORMAT=JSON`，返回一棵已经结构化的执行计划树
+// （query_block → table / nested_loop / materialized_from_subquery）。我们递归
+// 解析为 `ExplainNode` 树，前端渲染成「节点 = 表/索引、颜色 = 扫描类型」的树视图
+// 与按 cost 横向排布的火焰图。老版本（或返回字符串）时回退到经典表格 EXPLAIN，
+// 原样返回文本给前端展示。
+
+/// 执行计划树的一个节点：对应一张被访问的表（或其上的嵌套子查询）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplainNode {
+    /// 表名；子查询节点为 "SUBQUERY" / "DERIVED" 等。
+    pub name: String,
+    /// 访问类型：ALL / index / range / ref / eq_ref / const / system。
+    pub access_type: String,
+    /// 预计扫描行数（rows_examined_per_scan）。
+    pub rows: u64,
+    /// 该节点代价（cost_info.query_cost）。
+    pub cost: f64,
+    /// 实际使用的索引（key）。
+    pub key: String,
+    /// 候选索引列表（possible_keys）。
+    pub possible_keys: Vec<String>,
+    /// 附加信息（attached_condition 等）。
+    pub extra: String,
+    /// 嵌套访问（JOIN / 子查询）。
+    pub children: Vec<ExplainNode>,
+}
+
+/// EXPLAIN 可视化结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplainVisual {
+    /// "json" = 已解析为树；"legacy" = 解析失败，仅原样文本。
+    pub format: String,
+    /// JSON 模式下的解析树（可能为多个根，通常一个）。
+    pub nodes: Vec<ExplainNode>,
+    /// 原始文本（JSON 模式为美化后的 JSON；legacy 为表格文本），前端可同时展示。
+    pub raw: Option<String>,
+}
+
+/// 执行一条 SELECT 的 EXPLAIN 并可视化为树。非 SELECT 或解析失败时回退 legacy。
+pub async fn explain_visual(
+    cfg: &ConnectionConfig,
+    query: &str,
+    database: Option<&str>,
+) -> Result<ExplainVisual> {
+    let pool = match database {
+        Some(db) if !db.is_empty() => connect_pool_db(cfg, db).await?,
+        _ => connect_pool(cfg).await?,
+    };
+
+    // 去掉用户可能已写的 EXPLAIN / FORMAT=JSON 前缀，统一用 JSON 形态。
+    let inner = strip_explain_prefix(query);
+    if !is_select_query(&inner) {
+        return legacy_explain(&pool, &inner).await;
+    }
+
+    let json_sql = format!("EXPLAIN FORMAT=JSON {}", inner);
+    let row = sqlx::query(&json_sql)
+        .fetch_optional(&pool)
+        .await
+        .map_err(AppError::Sqlx)?;
+
+    match row {
+        Some(r) => {
+            // FORMAT=JSON 返回单列 "EXPLAIN"（MySQL 8）或 "QUERY PLAN"（MariaDB）。
+            let text: String = match r
+                .try_get::<Option<String>, _>(0)
+                .ok()
+                .flatten()
+            {
+                Some(t) => t,
+                None => r
+                    .try_get::<String, _>(0)
+                    .unwrap_or_else(|_| "{}".to_string()),
+            };
+            match parse_explain_json(&text) {
+                Some(nodes) => Ok(ExplainVisual {
+                    format: "json".into(),
+                    nodes,
+                    raw: Some(text),
+                }),
+                None => Ok(legacy_explain(&pool, &inner).await?),
+            }
+        }
+        // 该 MySQL 版本不支持 FORMAT=JSON → 回退经典表格。
+        None => Ok(legacy_explain(&pool, &inner).await?),
+    }
+}
+
+/// 去掉 SQL 开头可能的 `EXPLAIN`、`EXPLAIN FORMAT=JSON` / `FORMAT=JSON` 前缀，
+/// 仅保留真正的语句主体。
+fn strip_explain_prefix(sql: &str) -> String {
+    let re = regex::Regex::new(r"(?i)^\s*EXPLAIN\s+(FORMAT\s*=\s*JSON\s+)?").unwrap();
+    let s = re.replace(sql, "").to_string();
+    let re2 = regex::Regex::new(r"(?i)^\s*FORMAT\s*=\s*JSON\s+").unwrap();
+    re2.replace(&s, "").to_string()
+}
+
+async fn legacy_explain(pool: &MySqlPool, inner: &str) -> Result<ExplainVisual> {
+    let sql = format!("EXPLAIN {}", inner);
+    let rows: Vec<sqlx::mysql::MySqlRow> = sqlx::query(&sql)
+        .fetch_all(pool)
+        .await
+        .map_err(AppError::Sqlx)?;
+    let mut out = String::new();
+    if let Some(first) = rows.first() {
+        let cols: Vec<String> = first
+            .columns()
+            .iter()
+            .map(|c: &sqlx::mysql::MySqlColumn| c.name().to_string())
+            .collect();
+        out.push_str(&cols.join("\t"));
+        out.push('\n');
+    }
+    for row in &rows {
+        let mut vals = Vec::new();
+        for c in row.columns() {
+            let v: String = row
+                .try_get::<Option<String>, _>(c.ordinal())
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "NULL".to_string());
+            vals.push(v);
+        }
+        out.push_str(&vals.join("\t"));
+        out.push('\n');
+    }
+    Ok(ExplainVisual {
+        format: "legacy".into(),
+        nodes: vec![],
+        raw: Some(out),
+    })
+}
+
+/// 解析 `EXPLAIN FORMAT=JSON` 的输出文本为节点树。
+fn parse_explain_json(text: &str) -> Option<Vec<ExplainNode>> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let qb = v.get("query_block")?;
+    Some(vec![parse_query_block(qb)])
+}
+
+/// 解析一个 query_block：若直接含 `table` 则它就是根节点；否则聚合
+/// `nested_loop` 与子查询为 children。
+fn parse_query_block(qb: &serde_json::Value) -> ExplainNode {
+    if let Some(t) = qb.get("table") {
+        return parse_table(t);
+    }
+    let mut children = Vec::new();
+    if let Some(nl) = qb.get("nested_loop").and_then(|x| x.as_array()) {
+        for item in nl {
+            if let Some(tt) = item.get("table") {
+                children.push(parse_table(tt));
+            } else if let Some(sub) = item.get("materialized_from_subquery") {
+                if let Some(iq) = sub.get("query_block") {
+                    children.push(parse_query_block(iq));
+                }
+            }
+        }
+    }
+    if let Some(sub) = qb.get("materialized_from_subquery") {
+        if let Some(iq) = sub.get("query_block") {
+            children.push(parse_query_block(iq));
+        }
+    }
+    if let Some(sub) = qb.get("query_expression") {
+        if let Some(iq) = sub.get("query_block") {
+            children.push(parse_query_block(iq));
+        }
+    }
+    ExplainNode {
+        name: "QUERY BLOCK".into(),
+        access_type: String::new(),
+        rows: 0,
+        cost: qb
+            .get("cost_info")
+            .and_then(|c| c.get("query_cost"))
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0),
+        key: String::new(),
+        possible_keys: vec![],
+        extra: String::new(),
+        children,
+    }
+}
+
+fn parse_table(t: &serde_json::Value) -> ExplainNode {
+    let name = t
+        .get("table_name")
+        .and_then(|x| x.as_str())
+        .unwrap_or("?")
+        .to_string();
+    let access_type = t
+        .get("access_type")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let rows = t
+        .get("rows_examined_per_scan")
+        .and_then(|x| x.as_u64())
+        .or_else(|| t.get("rows_produced_per_join").and_then(|x| x.as_u64()))
+        .unwrap_or(0);
+    let cost = t
+        .get("cost_info")
+        .and_then(|c| c.get("query_cost"))
+        .and_then(|x| x.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let key = t.get("key").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let possible_keys = t
+        .get("possible_keys")
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let extra = t
+        .get("attached_condition")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let mut children = Vec::new();
+    if let Some(nl) = t.get("nested_loop").and_then(|x| x.as_array()) {
+        for item in nl {
+            if let Some(tt) = item.get("table") {
+                children.push(parse_table(tt));
+            } else if let Some(sub) = item.get("materialized_from_subquery") {
+                if let Some(iq) = sub.get("query_block") {
+                    children.push(parse_query_block(iq));
+                }
+            }
+        }
+    }
+    if let Some(sub) = t.get("materialized_from_subquery") {
+        if let Some(iq) = sub.get("query_block") {
+            children.push(parse_query_block(iq));
+        }
+    }
+    ExplainNode {
+        name,
+        access_type,
+        rows,
+        cost,
+        key,
+        possible_keys,
+        extra,
+        children,
+    }
 }
 
 #[cfg(test)]
