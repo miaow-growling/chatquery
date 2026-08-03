@@ -42,6 +42,29 @@ import type {
 import { createEditor, type EditorHandle } from "./editor";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Tree } from "./Tree";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+/** 渲染 AI 消息内容为 Markdown：标题/加粗/列表/代码块/表格/链接等。
+ *  用 react-markdown + remark-gfm，默认不 dangerouslySetInnerHTML，XSS 安全。 */
+function MarkdownMessage({ content }: { content: string }) {
+  return (
+    <div className="md">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noreferrer">
+              {children}
+            </a>
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 interface DropdownOption {
   value: string;
@@ -2893,7 +2916,9 @@ export function App() {
                   <>
                     <div className="msg-bubble">
                       <div className="msg-role">{roleLabel(m.role)}</div>
-                      <div className="msg-body">{m.content || "…"}</div>
+                      <div className="msg-body">
+                        <MarkdownMessage content={m.content || "…"} />
+                      </div>
                     </div>
                   </>
                 )}
