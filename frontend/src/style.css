@@ -1312,8 +1312,8 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 }
 
 .msg.assistant .msg-body {
-  background: #2c2c2e;
-  border: 1px solid #38383a;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 14px 14px 14px 4px;
   padding: 10px 14px;
   color: var(--text-primary);
@@ -1344,7 +1344,7 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .chat-plan {
   align-self: stretch;
   max-width: 100%;
-  background: #2c2c2e;
+  background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-left: 3px solid var(--brand);
   border-radius: 10px;
