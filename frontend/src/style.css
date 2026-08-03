@@ -1202,6 +1202,8 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .status-db { color: var(--brand); }
 
 /* =====================  CHAT (iMessage-style bubbles)  ===================== */
+/* =====================  CHAT PANEL  ===================== */
+/* Modern conversation UI — avatars, soft bubbles, clear hierarchy */
 .chat {
   background: var(--bg-surface);
   border-left: 1px solid var(--border);
@@ -1209,87 +1211,208 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   flex-direction: column;
   min-width: 0;
 }
+
+/* Chat header — icon + title + status + collapse */
+.chat .pane-head {
+  padding: 10px 14px;
+  min-height: auto;
+}
+.chat .pane-head > span:first-child {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
 .chat-status {
   font-size: var(--fs-2xs);
   font-weight: var(--fw-regular);
   color: var(--text-tertiary);
 }
+
+/* Message list — generous spacing for breathing room */
 .chat-log {
   flex: 1;
   overflow-y: auto;
-  padding: var(--sp-4);
+  padding: 16px 14px;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
+  gap: 14px;
 }
+
+/* ---- Message base ---- */
 .msg {
-  border-radius: var(--r-lg);
-  padding: var(--sp-2) var(--sp-3);
-  max-width: 86%;
+  max-width: 88%;
   align-self: flex-start;
 }
-.msg-role { font-size: var(--fs-2xs); color: var(--text-tertiary); margin-bottom: 2px; }
-.msg-body { white-space: pre-wrap; word-break: break-word; font-size: var(--fs-sm); line-height: var(--lh-snug); }
+.msg-role {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+  letter-spacing: 0.01em;
+}
+.msg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+/* ---- User message — brand bubble, right-aligned ---- */
 .msg.user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  align-self: flex-end;
+}
+.msg.user > .msg-role {
+  display: none; /* hide role label on user msgs */
+}
+.msg.user .msg-body {
   background: var(--brand);
   color: #ffffff;
-  align-self: flex-end;
-  border-bottom-right-radius: var(--r-sm);
+  padding: 10px 15px;
+  border-radius: 16px 16px 4px 16px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.18);
+  text-shadow: none;
 }
-.msg.user .msg-role { color: rgb(255 255 255 / 0.7); }
+
+/* ---- AI / Assistant message — avatar + bordered bubble ---- */
 .msg.assistant {
-  background: var(--bg-subtle);
-  border: none;
+  display: flex;
+  gap: 8px;
   align-self: flex-start;
-  border-bottom-left-radius: var(--r-sm);
+  max-width: 92%;
 }
+
+/* AI avatar badge */
+.msg.assistant::before {
+  content: 'AI';
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--brand-soft);
+  border: 1px solid var(--brand-border);
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 2px;
+  line-height: 1;
+}
+
+.msg.assistant .msg-role {
+  /* hidden when inside bubble */
+  display: block;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-bottom: 3px;
+}
+
+.msg.assistant .msg-body {
+  background: #2c2c2e;
+  border: 1px solid #38383a;
+  border-radius: 14px 14px 14px 4px;
+  padding: 10px 14px;
+  color: var(--text-primary);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+}
+
+/* Bubble wrapper for assistant messages (contains role + body) */
+.msg-bubble {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* ---- Tool call message ---- */
 .msg.tool {
   background: var(--info-soft);
+  border: 1px solid rgb(100 210 255 / 0.18);
   color: var(--info-500);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   align-self: stretch;
   max-width: 100%;
+  border-radius: 10px;
+  padding: 8px 12px;
+  line-height: 1.55;
 }
+/* ---- Plan card (ADR-AI-5): orchestrator steps, visually separated ---- */
+.chat-plan {
+  align-self: stretch;
+  max-width: 100%;
+  background: #2c2c2e;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--brand);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+.chat-plan-head {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--brand);
+  margin-bottom: 5px;
+}
+.chat-plan-steps {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+.chat-plan-steps li::marker { color: var(--text-tertiary); }
+
+/* ---- Input area ---- */
 .chat-input {
   display: flex;
-  gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
+  gap: 8px;
+  padding: 12px 14px;
   border-top: 1px solid var(--border);
   align-items: flex-end;
 }
 .chat-input textarea {
   flex: 1;
   resize: none;
-  height: 52px;
+  height: 40px;
   max-height: 140px;
-  background: var(--bg-canvas);
+  background: var(--bg-inset);
   color: var(--text-primary);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
-  padding: var(--sp-2) var(--sp-3);
+  border-radius: 12px;
+  padding: 10px 14px;
   font-family: var(--font-ui);
-  font-size: var(--fs-sm);
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.45;
   outline: none;
   transition: border-color var(--t-fast), box-shadow var(--t-fast);
 }
 .chat-input textarea:focus { border-color: var(--border-focus); box-shadow: var(--focus-ring); }
 .chat-input button {
-  height: 36px;
+  height: 38px;
   padding: 0 16px;
   background: var(--brand);
   color: var(--text-on-brand);
   border: none;
-  border-radius: var(--r-md);
+  border-radius: 10px;
   cursor: pointer;
-  font-weight: var(--fw-semibold);
-  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+  font-size: 13px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.15);
   transition: background var(--t-fast), box-shadow var(--t-fast), transform var(--t-fast);
 }
-.chat-input button:hover:not(:disabled) { background: var(--brand-hover); box-shadow: var(--shadow-md); }
+.chat-input button:hover:not(:disabled) { background: var(--brand-hover); box-shadow: 0 2px 6px rgb(0 0 0 / 0.2); }
 .chat-input button:active:not(:disabled) { transform: translateY(1px); }
 .chat-input button:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Stop button — replaces 发送 while a turn is streaming. */
+.chat-input button.danger { background: var(--danger-500); color: #fff; }
+.chat-input button.danger:hover:not(:disabled) { background: var(--danger-500); filter: brightness(1.08); }
 
 /* Collapsed chat rail */
 .chat-rail {
@@ -1441,6 +1564,57 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .modal-actions .primary:hover:not(:disabled) { background: var(--brand-hover); color: #fff; border-color: transparent; box-shadow: 0 4px 16px rgb(0 122 255 / .35); }
 .modal.wide { width: 640px; max-width: 94vw; display: flex; flex-direction: column; }
 .modal-msg { margin: 0; color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.6; word-break: break-word; }
+
+/* Destructive confirm action — the "执行" button on an AI write request must
+   not look like a routine primary action. */
+.modal-actions .primary.danger {
+  background: var(--danger-500);
+  box-shadow: 0 2px 8px rgb(255 69 58 / .28);
+}
+.modal-actions .primary.danger:hover:not(:disabled) {
+  background: var(--danger-500);
+  filter: brightness(1.08);
+  box-shadow: 0 4px 16px rgb(255 69 58 / .38);
+}
+
+/* ---- AI write confirmation modal (ADR-AI-1 / ADR-AI-4) ---- */
+.modal.ai-confirm { width: 520px; }
+.ai-confirm-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.ai-confirm-meta b { color: var(--text-primary); font-weight: var(--fw-semibold); }
+.ai-confirm-more {
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
+}
+.ai-confirm-sql {
+  margin: 0;
+  padding: var(--sp-3);
+  max-height: 220px;
+  overflow: auto;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ai-confirm-warn {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--danger-500);
+}
 
 /* Vendor dropdown (LLM settings) */
 .vendor-select { position: relative; }

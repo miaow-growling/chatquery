@@ -10,14 +10,20 @@ import {
 import { ErrorBoundary } from "./ErrorBoundary";
 import {
   api,
+  cancelTurn,
   chatTurn,
+  onChatConfirm,
   onChatDone,
   onChatError,
+  onChatPlan,
   onChatToken,
   onChatTool,
+  resolveConfirm,
 } from "./api";
 import type {
+  ChatItem,
   ChatMessage,
+  ConfirmRequest,
   ConnInput,
   ConnSummary,
   ExplainNode,
@@ -461,8 +467,16 @@ export function App() {
     llm_enabled: false,
     mask_enabled: true,
   });
-  const [chat, setChat] = useState<ChatMessage[]>([]);
+  const [chat, setChat] = useState<ChatItem[]>([]);
   const [streaming, setStreaming] = useState(false);
+  /// Id of the in-flight turn — the handle for cancelling it. Kept in a ref
+  /// (not state) because the event listeners are registered once on mount and
+  /// would otherwise close over a stale value.
+  const turnIdRef = useRef<string | null>(null);
+  /// Pending write confirmations. A single ReAct round can emit several tool
+  /// calls in parallel, so this is a queue: we show the head and answer them
+  /// one at a time rather than stacking modals.
+  const [confirmQueue, setConfirmQueue] = useState<ConfirmRequest[]>([]);
   const [form, setForm] = useState<ConnForm>({
     open: false,
     editing: false,
@@ -2278,16 +2292,57 @@ export function App() {
     const input = document.getElementById("chat-input") as HTMLTextAreaElement;
     const text = input.value;
     if (!text.trim() || streaming) return;
-    const next: ChatMessage[] = [...chat, { role: "user", content: text }];
+    const next: ChatItem[] = [...chat, { role: "user", content: text }];
     setChat(next);
     input.value = "";
     setStreaming(true);
     setChat((prev) => [...prev, { role: "assistant", content: "" }]);
     try {
-      await chatTurn(selId, next);
+      // The chat log is a human transcript, not the model's context. Plan
+      // cards and tool breadcrumbs are display-only: `plan` has no Rust
+      // `ChatRole`, and a `tool` message without its originating
+      // `tool_call_id` makes the OpenAI API reject the whole request. The
+      // model already saw the real tool results inside its own turn, so only
+      // user/assistant text is replayed. Empty assistant placeholders (the
+      // streaming bubble) are dropped too.
+      const history = next.filter(
+        (m): m is ChatMessage =>
+          m.role === "user" ||
+          (m.role === "assistant" && m.content.trim() !== ""),
+      );
+      turnIdRef.current = await chatTurn(selId, history);
     } catch (e) {
       setStreaming(false);
+      turnIdRef.current = null;
       setChat((prev) => [...prev, { role: "tool", content: "错误: " + String(e) }]);
+    }
+  };
+
+  /// Stop the running turn. Best-effort: the backend flips a flag, the agent
+  /// abandons its stream at the next chunk, and `chat-done` still arrives —
+  /// so we don't clear `streaming` here.
+  const stopChat = async () => {
+    const id = turnIdRef.current;
+    if (!id) return;
+    try {
+      await cancelTurn(id);
+    } catch {
+      // Already finished — nothing to stop.
+    }
+  };
+
+  /// Answer the head of the confirmation queue.
+  const answerConfirm = async (approved: boolean) => {
+    const req = confirmQueue[0];
+    if (!req) return;
+    setConfirmQueue((prev) => prev.slice(1));
+    try {
+      await resolveConfirm(req.turn_id, req.id, approved);
+    } catch (e) {
+      setChat((prev) => [
+        ...prev,
+        { role: "tool", content: "确认失败: " + String(e) },
+      ]);
     }
   };
 
@@ -2488,9 +2543,26 @@ export function App() {
     onChatTool((t) => {
       setChat((prev) => [...prev, { role: "tool", content: t }]);
     }).then((u) => unsubs.push(u));
-    onChatDone(() => setStreaming(false)).then((u) => unsubs.push(u));
+    // The plan arrives as its own card, then a fresh assistant bubble takes
+    // over so the worker output doesn't get appended onto the plan.
+    onChatPlan((steps) => {
+      setChat((prev) => [
+        ...prev,
+        { role: "plan", content: "", steps },
+        { role: "assistant", content: "" },
+      ]);
+    }).then((u) => unsubs.push(u));
+    onChatConfirm((req) => {
+      setConfirmQueue((prev) => [...prev, req]);
+    }).then((u) => unsubs.push(u));
+    onChatDone(() => {
+      setStreaming(false);
+      turnIdRef.current = null;
+      setConfirmQueue([]);
+    }).then((u) => unsubs.push(u));
     onChatError((t) => {
       setStreaming(false);
+      turnIdRef.current = null;
       setChat((prev) => [...prev, { role: "tool", content: "错误: " + t }]);
     }).then((u) => unsubs.push(u));
     return () => unsubs.forEach((u) => u());
@@ -2803,12 +2875,31 @@ export function App() {
           </button>
         </div>
         <div className="chat-log">
-          {chat.map((m, i) => (
-            <div key={i} className={"msg " + m.role}>
-              <div className="msg-role">{roleLabel(m.role)}</div>
-              <div className="msg-body">{m.content || "…"}</div>
-            </div>
-          ))}
+          {chat.map((m, i) =>
+            m.role === "plan" ? (
+              <div key={i} className="chat-plan">
+                <div className="chat-plan-head">执行计划</div>
+                <ol className="chat-plan-steps">
+                  {m.steps.map((s, j) => (
+                    <li key={j}>{s}</li>
+                  ))}
+                </ol>
+              </div>
+            ) : (
+              <div key={i} className={"msg " + m.role}>
+                {m.role === "user" ? (
+                  <div className="msg-body">{m.content || "…"}</div>
+                ) : (
+                  <>
+                    <div className="msg-bubble">
+                      <div className="msg-role">{roleLabel(m.role)}</div>
+                      <div className="msg-body">{m.content || "…"}</div>
+                    </div>
+                  </>
+                )}
+              </div>
+            ),
+          )}
           <div ref={chatEndRef} />
         </div>
         <div className="chat-input">
@@ -2817,9 +2908,15 @@ export function App() {
             placeholder="问点什么，例如：统计 users 表行数"
             disabled={streaming}
           />
-          <button onClick={sendChat} disabled={streaming || !status.llm_enabled}>
-            发送
-          </button>
+          {streaming ? (
+            <button className="danger" onClick={stopChat} title="停止本轮">
+              停止
+            </button>
+          ) : (
+            <button onClick={sendChat} disabled={!status.llm_enabled}>
+              发送
+            </button>
+          )}
         </div>
         </section>
       ) : (
@@ -3575,6 +3672,36 @@ export function App() {
                 }}
               >
                 确定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI write confirmation (ADR-AI-1 / ADR-AI-4). The turn is blocked on
+          this answer, so there is no mask-click / Escape dismissal — an
+          accidental click must not silently reject a pending write. */}
+      {confirmQueue.length > 0 && (
+        <div className="modal-mask">
+          <div className="modal ai-confirm" onMouseDown={(e) => e.stopPropagation()}>
+            <h3>AI 请求执行写操作</h3>
+            <p className="modal-msg">{confirmQueue[0].reason}</p>
+            <div className="ai-confirm-meta">
+              连接：<b>{confirmQueue[0].connection}</b>
+              {confirmQueue.length > 1 && (
+                <span className="ai-confirm-more">
+                  还有 {confirmQueue.length - 1} 条待确认
+                </span>
+              )}
+            </div>
+            <pre className="ai-confirm-sql">{confirmQueue[0].sql}</pre>
+            <p className="ai-confirm-warn">
+              执行后无法自动撤销，请确认语句的 WHERE 条件与影响范围。
+            </p>
+            <div className="modal-actions">
+              <button onClick={() => answerConfirm(false)}>拒绝</button>
+              <button className="primary danger" onClick={() => answerConfirm(true)}>
+                执行
               </button>
             </div>
           </div>
