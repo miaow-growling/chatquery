@@ -1210,6 +1210,8 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;       /* allow flex children to shrink below content size */
+  overflow: hidden;     /* establish scroll context for chat-log */
 }
 
 /* Chat header — icon + title + status + collapse */
@@ -1232,12 +1234,21 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 /* Message list — generous spacing for breathing room */
 .chat-log {
   flex: 1;
+  min-height: 0;        /* critical: allows flex child to scroll */
   overflow-y: auto;
   padding: 16px 14px;
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
+/* Subtle scrollbar for chat log (macOS overlay-style) */
+.chat-log::-webkit-scrollbar { width: 6px; }
+.chat-log::-webkit-scrollbar-track { background: transparent; }
+.chat-log::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+.chat-log::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
 /* ---- Message base ---- */
 .msg {
@@ -1380,23 +1391,38 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .chat-input textarea {
   flex: 1;
   resize: none;
-  height: 40px;
-  max-height: 140px;
+  height: 56px;
+  max-height: 160px;
   background: var(--bg-inset);
   color: var(--text-primary);
   border: 1px solid var(--border-strong);
   border-radius: 12px;
-  padding: 10px 14px;
+  padding: 12px 14px;
   font-family: var(--font-ui);
   font-size: 13px;
   line-height: 1.45;
   outline: none;
   transition: border-color var(--t-fast), box-shadow var(--t-fast);
+  /* Hide scrollbar until hover/scroll */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.chat-input textarea:hover { scrollbar-color: var(--scrollbar-thumb) transparent; }
+.chat-input textarea::-webkit-scrollbar { width: 6px; }
+.chat-input textarea::-webkit-scrollbar-track { background: transparent; }
+.chat-input textarea::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background var(--t-fast);
+}
+.chat-input textarea:hover::-webkit-scrollbar-thumb,
+.chat-input textarea:focus::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
 }
 .chat-input textarea:focus { border-color: var(--border-focus); box-shadow: var(--focus-ring); }
 .chat-input button {
-  height: 38px;
-  padding: 0 16px;
+  height: 40px;
+  padding: 0 18px;
   background: var(--brand);
   color: var(--text-on-brand);
   border: none;
