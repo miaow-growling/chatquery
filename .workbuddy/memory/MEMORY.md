@@ -30,6 +30,20 @@ COLUMN_DEFAULT、EXTRA、SCHEMA_NAME、CONSTRAINT_NAME、REFERENCED_* 等）在 
 - 诱因 B：滚动容器(`overflow:auto`)内的 **`position: sticky` 跨轴单元格（尤其 top+left 双向 sticky，如结果表行号列）** 与页面大量 `backdrop-filter`(毛玻璃)层叠加 → WebKit 合成器崩溃。sticky-top 表头通常安全；**sticky-left 一律不用**。
 - 规则：结果表格内不要 sticky-left；需要固定首列用 JS 虚拟滚动/独立固定层。凡是 sticky 的格子背景必须**不透明**，否则透出底层内容（之前"选中列头透明"就是这个）。
 
+## 前后端事件桥接陷阱（2026-08-04 踩）
+`src-tauri/src/commands.rs` 的 `BackendMsg` → Tauri emit 桥接 match **有 `_ => {}` 兜底**。
+新增 `BackendMsg` 变体时编译器不会报错（穷尽性被兜底满足），事件被**静默吞掉**，
+表现为"后端明明发了前端收不到"。新增变体必须同时改三处：`model.rs` 定义、
+`commands.rs` 桥接 arm、`src/main.rs` TUI match arm。
+
+## 测试并行污染陷阱（2026-08-04 踩）
+`std::env::set_var` 是**进程级**，Rust 测试默认多线程并行 → 两个测试各自
+`set_var("XDG_CONFIG_HOME", 自己的临时目录)` 互相覆盖，`Storage::open()` 打开错误的库，
+表现为**随机 flaky**（单独跑必过、全量跑偶挂）。修法见 `src/db/importexport.rs`：
+模块级 `static ENV_LOCK: Mutex<()>` + `fn env_lock()` 在测试开头拿守卫（守卫须活到测试结束）。
+**锁的获取要与 `temp_store()` 分离**——Mutex 非重入，同测试内建第二个 store 会死锁。
+验证 flaky 修复必须连跑多次（`for i in 1 2 3 4 5; do cargo test ...`），单次通过不算数。
+
 ## 架构要点
 - 连接树的环境/组是一等实体（ADR-016），可创建空容器；命令 `create_environment` / `create_group`（已注册于 commands.rs）。
 - **环境绑定单一数据库类型（ADR-022）**：用户确认"新建环境时选 MySQL/Redis"，环境 `Container` 带 `db_type: Option<DbType>`，树按环境自身 `db_type` 归类（空环境也有家，不再放顶层）。新建环境弹窗用 `promptEnvType`（App.tsx 的 envType dialog 变体 + `.seg` 分段选择）。`__ungrouped` 合成环境仍按连接类型拆分。
