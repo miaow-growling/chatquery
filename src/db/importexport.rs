@@ -474,6 +474,24 @@ mod tests {
         p
     }
 
+    /// `Storage::open()` resolves its path from `XDG_CONFIG_HOME`, a
+    /// *process-wide* variable — but Rust runs tests on parallel threads. Two
+    /// tests each pointing it at their own temp dir will clobber each other and
+    /// silently open the wrong database. Serialise them.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take the env lock at the top of any test that calls `temp_store`. The
+    /// guard MUST stay alive for the whole test body — dropping it early
+    /// re-opens the race. Kept separate from `temp_store` so a single test can
+    /// build several stores; the mutex is not reentrant and locking per-store
+    /// would deadlock on the second call.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        // Recover from poisoning: one failed test shouldn't cascade into
+        // failures elsewhere that mask the real cause.
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Caller must already hold `env_lock()`.
     fn temp_store() -> ConnectionStore {
         let dir = unique_temp();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
@@ -495,6 +513,7 @@ mod tests {
 
     #[test]
     fn export_import_roundtrip_none_cipher() {
+        let _env = env_lock();
         let mut store = temp_store();
         let cfg = ConnectionConfig {
             id: gen_id("c"),
@@ -537,6 +556,7 @@ mod tests {
     fn system_key_cipher_encrypts_password() {
         // With no key configured, K == KEK. Export under system-key must still
         // produce ciphertext (not the literal password) in the YAML.
+        let _env = env_lock();
         let store = temp_store();
         let cfg = ConnectionConfig {
             id: gen_id("c"),

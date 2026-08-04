@@ -167,6 +167,7 @@ async fn run_app(
                     app.push_chat_tool(format!("需确认（TUI 暂不支持，已拒绝）: {}", req.sql));
                 }
                 BackendMsg::ChatDone => app.commit_chat_stream(),
+                BackendMsg::ChatUsage(_u) => {}
                 BackendMsg::ConnHealth(id, ok) => {
                     use chatquery::tui::app::ConnStatus;
                     app.conn_status.insert(id, if ok { ConnStatus::Connected } else { ConnStatus::Failed });

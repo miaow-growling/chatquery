@@ -5,13 +5,14 @@ use crate::error::Result;
 use crate::llm::client::{stream_chat, ToolCall};
 use crate::llm::control::TurnControl;
 use crate::llm::KbLoader;
+use crate::llm::{AuditEvent, AuditSink};
 use crate::llm::memory::SessionMemory;
 use crate::llm::planner::{needs_planning, plan_task};
 use crate::llm::policy::{check_statement, PolicyDecision};
 use crate::llm::tools::{build_registry, ToolContext, ToolRegistry};
 use crate::llm::worker::{classify_step, WorkerKind};
 use crate::mcp::host::McpHostManager;
-use crate::model::{BackendMsg, ChatMessage, ChatRole, ConfirmRequest, ToolCallBrief};
+use crate::model::{BackendMsg, ChatMessage, ChatRole, ConfirmRequest, TokenUsage, ToolCallBrief};
 use futures::future::join_all;
 use serde_json::Value;
 use std::sync::Arc;
@@ -23,11 +24,28 @@ const MAX_TOOL_ITERS: usize = 5;
 /// How long a write confirmation waits for the user before it self-refuses.
 const CONFIRM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Upper bound on a single turn's wall-clock time (ADR-AI-4 决策2). A stuck
+/// stream or runaway worker drops the future instead of wedging the turn.
+const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// A single agent: owns its tool registry, working memory, and (in the
 /// multi-agent topology) a `role`. The chat uses one `Agent` for a simple
 /// task; a complex task is handled by an Orchestrator that spawns Explorer /
 /// Executor workers — each a fresh `Agent` with its own context window and a
 /// role-scoped system prompt.
+
+/// Accumulate token usage across streaming calls; `None` means the provider
+/// didn't report usage for that call, so the running total is left unchanged.
+fn add_usage(a: TokenUsage, b: Option<TokenUsage>) -> TokenUsage {
+    match b {
+        Some(b) => TokenUsage {
+            prompt_tokens: a.prompt_tokens + b.prompt_tokens,
+            completion_tokens: a.completion_tokens + b.completion_tokens,
+            total_tokens: a.total_tokens + b.total_tokens,
+        },
+        None => a,
+    }
+}
 pub struct Agent {
     cfg: LlmConfig,
     conns: Vec<ConnectionConfig>,
@@ -42,6 +60,10 @@ pub struct Agent {
     /// Injected knowledge-base loader (ADR-AI-6). Lets the agent read docs
     /// bound to the active connection/db without depending on the store.
     kb: KbLoader,
+    /// Audit sink for write-operation guardrail events (ADR-AI-1 决策3).
+    audit: AuditSink,
+    /// Cumulative token usage for the turn (ADR-AI-4 决策3).
+    usage: TokenUsage,
 }
 
 impl Agent {
@@ -53,6 +75,7 @@ impl Agent {
         conn_id: &str,
         ctl: TurnControl,
         kb: KbLoader,
+        audit: AuditSink,
     ) -> Self {
         let registry = build_registry(mcp.as_deref()).await;
         let memory = SessionMemory::new(Some(conn_id.to_string()), None);
@@ -65,6 +88,8 @@ impl Agent {
             role: WorkerKind::Orchestrator,
             ctl,
             kb,
+            audit,
+            usage: TokenUsage::default(),
         }
     }
 
@@ -80,6 +105,7 @@ impl Agent {
         conn_id: &str,
         ctl: TurnControl,
         kb: KbLoader,
+        audit: AuditSink,
     ) -> Self {
         let registry = build_registry(mcp.as_deref()).await;
         let memory = SessionMemory::new(Some(conn_id.to_string()), None);
@@ -92,6 +118,8 @@ impl Agent {
             role,
             ctl,
             kb,
+            audit,
+            usage: TokenUsage::default(),
         }
     }
 
@@ -158,6 +186,7 @@ impl Agent {
                 &conn_id,
                 self.ctl.clone(),
                 self.kb.clone(),
+                self.audit.clone(),
             )
             .await;
             let wsys = build_worker_system(role, &self.conns, &self.memory, &plan, idx + 1, step, &shared_context, &self.kb).await;
@@ -182,7 +211,10 @@ impl Agent {
             return Ok(());
         }
         // Orchestrator 综合所有 Worker 的结果，给用户一个面向结论的回答。
-        self.synthesize(&last_user, &plan, &shared_context, tx).await
+        if let Some(u) = self.synthesize(&last_user, &plan, &shared_context, tx).await? {
+            self.usage = add_usage(self.usage, Some(u));
+        }
+        Ok(())
     }
 
     /// Generic ReAct loop. Given messages that already include the system
@@ -224,6 +256,7 @@ impl Agent {
                 _ = ctl.cancelled() => break,
                 r = stream_chat(&self.cfg, &messages, &schemas, &mut on_delta) => r?,
             };
+            self.usage = add_usage(self.usage, choice.usage);
 
             if choice.tool_calls.is_empty() {
                 if !choice.content.trim().is_empty() {
@@ -266,6 +299,7 @@ impl Agent {
                     &ctx,
                     &self.conns,
                     &ctl,
+                    &self.audit,
                     tx,
                 ));
             }
@@ -294,7 +328,7 @@ impl Agent {
         plan: &[String],
         shared_context: &str,
         tx: &UnboundedSender<BackendMsg>,
-    ) -> Result<()> {
+    ) -> Result<Option<TokenUsage>> {
         let _ = tx.send(BackendMsg::ChatToken("\n📊 综合结论：\n".to_string()));
         let mut p = String::new();
         p.push_str("你是 Orchestrator。多个 Worker 已经按计划完成了任务，下面是它们各自产出的结果。\n");
@@ -312,13 +346,13 @@ impl Agent {
         let mut on_delta = |d: &str| {
             let _ = tx.send(BackendMsg::ChatToken(d.to_string()));
         };
-        tokio::select! {
+        let choice = tokio::select! {
             biased;
-            _ = self.ctl.cancelled() => return Ok(()),
-            r = stream_chat(&self.cfg, &messages, &[], &mut on_delta) => { r?; }
-        }
+            _ = self.ctl.cancelled() => return Ok(None),
+            r = stream_chat(&self.cfg, &messages, &[], &mut on_delta) => r?,
+        };
         let _ = tx.send(BackendMsg::ChatToken("\n".to_string()));
-        Ok(())
+        Ok(choice.usage)
     }
 }
 
@@ -336,16 +370,28 @@ pub async fn run_turn(
     tx: &UnboundedSender<BackendMsg>,
     ctl: TurnControl,
     kb: KbLoader,
+    audit: AuditSink,
 ) -> Result<()> {
-    let mut agent = Agent::build(cfg.clone(), conns, mcp, conn_id, ctl.clone(), kb).await;
-    let out = agent.run(history, tx).await;
-    if ctl.is_cancelled() {
-        let _ = tx.send(BackendMsg::ChatToken("\n⏹ 已取消。\n".to_string()));
-        // A cancelled turn is not a failure — swallow whatever the aborted
-        // stream reported so the UI shows "cancelled", not "error".
-        return Ok(());
+    let mut agent = Agent::build(cfg.clone(), conns, mcp, conn_id, ctl.clone(), kb, audit).await;
+    // ADR-AI-4 决策2: bound a single turn's wall-clock time so a stuck stream
+    // or runaway worker can't wedge the turn (and its registry slot) forever.
+    let result = tokio::time::timeout(TURN_TIMEOUT, agent.run(history, tx)).await;
+    match result {
+        Ok(out) => {
+            out?;
+            let _ = tx.send(BackendMsg::ChatUsage(agent.usage));
+            if ctl.is_cancelled() {
+                let _ = tx.send(BackendMsg::ChatToken("\n⏹ 已取消。\n".to_string()));
+            }
+        }
+        Err(_) => {
+            ctl.cancel();
+            let _ = tx.send(BackendMsg::ChatToken(
+                "\n⏱ 单轮已超出时间上限，已停止。\n".to_string(),
+            ));
+        }
     }
-    out
+    Ok(())
 }
 
 /// Connection / active-db context block. Shared by the Orchestrator prompt and
@@ -508,6 +554,7 @@ async fn exec_with_policy(
     ctx: &ToolContext<'_>,
     conns: &[ConnectionConfig],
     ctl: &TurnControl,
+    audit: &AuditSink,
     tx: &UnboundedSender<BackendMsg>,
 ) -> (String, String) {
     if tc.name == "execute_query" {
@@ -519,9 +566,23 @@ async fn exec_with_policy(
         let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
         if let Some(cfg) = conns.iter().find(|c| c.name == conn_name) {
             if cfg.db_type == DbType::Mysql {
+                // Build a reusable audit emitter so every guardrail decision
+                // (deny / approve / reject / expire) lands in the same store.
+                let conn_id = cfg.id.clone();
+                let db = args.get("db").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let emit = |decision: &'static str| {
+                    audit(&AuditEvent {
+                        conn_id: conn_id.clone(),
+                        conn_name: conn_name.to_string(),
+                        db: db.clone(),
+                        sql: query.to_string(),
+                        decision,
+                    });
+                };
                 match check_statement(query) {
                     PolicyDecision::Allow => {}
                     PolicyDecision::Deny(reason) => {
+                        emit("deny");
                         return ("已拦截".into(), format!("AI 护栏拒绝执行：{}", reason));
                     }
                     PolicyDecision::ConfirmRequired(reason) => {
@@ -544,11 +605,13 @@ async fn exec_with_policy(
                         let answer = tokio::time::timeout(CONFIRM_TIMEOUT, rx).await;
                         match answer.unwrap_or(Ok(false)) {
                             Ok(true) => {
+                                emit("write-approved");
                                 let _ = tx.send(BackendMsg::ChatTool(
                                     "写操作已获用户确认，正在执行".to_string(),
                                 ));
                             }
                             Ok(false) => {
+                                emit("write-rejected");
                                 return (
                                     "用户拒绝".into(),
                                     "用户拒绝执行这条写操作。不要重试，也不要改写后再次尝试；\
@@ -557,6 +620,7 @@ async fn exec_with_policy(
                                 );
                             }
                             Err(_) => {
+                                emit("write-expired");
                                 return (
                                     "确认失效".into(),
                                     "确认请求未获响应（会话已结束、被取消或超时），语句未执行。".into(),

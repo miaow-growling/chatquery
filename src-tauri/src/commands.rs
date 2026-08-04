@@ -1177,6 +1177,20 @@ pub async fn chat_turn(
         }
     });
 
+    // Audit sink (ADR-AI-1 决策3): persist write-guardrail decisions to the
+    // store. Mirrors `kb_loader` — the `Arc` keeps it 'static for the future.
+    // A TUI turn passes a no-op sink.
+    let store_audit = Arc::clone(&state.store);
+    let audit: chatquery::llm::AuditSink = Arc::new(move |e: &chatquery::llm::AuditEvent| {
+        let _ = store_audit.lock().unwrap().add_audit(
+            &e.conn_id,
+            &e.conn_name,
+            e.db.as_deref(),
+            &e.sql,
+            e.decision,
+        );
+    });
+
     let turn_id = next_turn_id();
     let ctl = TurnControl::new(turn_id.clone());
     state
@@ -1199,8 +1213,9 @@ pub async fn chat_turn(
             &messages,
             &conn_id,
             &tx,
-            ctl.clone(),
-            kb_loader,
+                ctl.clone(),
+                kb_loader,
+                audit,
         )
         .await;
         if let Err(e) = r {
@@ -1228,6 +1243,9 @@ pub async fn chat_turn(
                 BackendMsg::ChatConfirm(req) => {
                     let _ = app.emit("chat-confirm", req);
                 }
+                BackendMsg::ChatUsage(u) => {
+                    let _ = app.emit("chat-usage", u);
+                }
                 BackendMsg::ChatDone => {
                     let _ = app.emit("chat-done", ());
                 }
@@ -1247,6 +1265,19 @@ pub async fn chat_turn(
     });
 
     Ok(turn_id)
+}
+
+/// Read the write-guardrail audit trail (ADR-AI-1 决策3). Returns
+/// (conn_name, db, sql, decision, ts) rows, newest first.
+#[tauri::command]
+pub async fn list_audit_logs(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<(String, Option<String>, String, String, i64)>, String> {
+    let store = state.store.lock().unwrap();
+    store
+        .list_audits(limit.unwrap_or(100))
+        .map_err(|e| e.to_string())
 }
 
 /// Stop an in-flight LLM turn (ADR-AI-4). Best-effort and idempotent: an

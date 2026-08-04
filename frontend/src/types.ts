@@ -159,6 +159,19 @@ export type ChatItem =
   | ChatMessage
   | { role: "plan"; content: string; steps: string[] };
 
+/// Token accounting for one finished turn (ADR-AI-4 决策3). Arrives on the
+/// `chat-usage` event just before `chat-done`. Providers that don't report
+/// usage simply never emit it, so treat every field as best-effort.
+export interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+/// One row of the write-guardrail audit trail (ADR-AI-1 决策3), newest first:
+/// [连接名, 库, SQL, 判定, 时间戳(秒)].
+export type AuditRow = [string, string | null, string, string, number];
+
 /// A write statement the AI guardrail paused, awaiting the user's verdict
 /// (ADR-AI-1 / ADR-AI-4). Answer via `resolveConfirm(turn_id, id, approved)`.
 export interface ConfirmRequest {

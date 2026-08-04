@@ -28,6 +28,14 @@ pub struct ConfirmRequest {
     pub reason: String,
 }
 
+/// Token accounting for a single LLM turn (ADR-AI-4 决策3: cost observability).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct TokenUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
 /// Messages sent from the async backend to the TUI event loop.
 #[derive(Debug)]
 pub enum BackendMsg {
@@ -47,6 +55,8 @@ pub enum BackendMsg {
     ChatConfirm(ConfirmRequest),
     /// The LLM turn finished; commit any streamed assistant text.
     ChatDone,
+    /// Cumulative token usage for the turn, emitted before `ChatDone`.
+    ChatUsage(TokenUsage),
     /// Connection health update (id, ok?).
     ConnHealth(String, bool),
 }

@@ -1,7 +1,7 @@
 use crate::config::LlmProvider;
 use crate::config::LlmConfig;
 use crate::error::{AppError, Result};
-use crate::model::{role_str, ChatMessage};
+use crate::model::{role_str, ChatMessage, TokenUsage};
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -17,6 +17,9 @@ pub struct ToolCall {
 pub struct ChatChoice {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
+    /// Token usage if the provider reported it (OpenAI `usage` chunk, Anthropic
+    /// `message_start`+`message_delta`). `None` when the endpoint didn't report.
+    pub usage: Option<TokenUsage>,
 }
 
 /// Stream one chat-completion call, dispatching on the configured protocol.
@@ -38,6 +41,39 @@ pub async fn stream_chat(
         LlmProvider::Anthropic => {
             stream_chat_anthropic(cfg, messages, tools, on_delta).await
         }
+    }
+}
+
+/// Extract token usage from an OpenAI streaming `usage` chunk. OpenAI emits a
+/// final chunk whose `choices` is empty and `usage` carries the totals; we take
+/// the last one seen (later chunks override earlier).
+fn extract_openai_usage(v: &Value) -> Option<TokenUsage> {
+    let u = v.get("usage")?.as_object()?;
+    let p = u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+    let c = u.get("completion_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+    let t = u.get("total_tokens").and_then(|x| x.as_u64()).unwrap_or((p + c) as u64) as u32;
+    Some(TokenUsage {
+        prompt_tokens: p,
+        completion_tokens: c,
+        total_tokens: t,
+    })
+}
+
+/// Fold Anthropic token usage from a single SSE event into the running totals.
+/// `input_tokens` lives in `message_start`; `output_tokens` in `message_delta`.
+fn extract_anthropic_usage(v: &Value, input: &mut u32, output: &mut u32) {
+    match v.get("type").and_then(|t| t.as_str()) {
+        Some("message_start") => {
+            if let Some(u) = v.get("message").and_then(|m| m.get("usage")) {
+                *input = u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+            }
+        }
+        Some("message_delta") => {
+            if let Some(u) = v.get("delta").and_then(|d| d.get("usage")) {
+                *output = u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+            }
+        }
+        _ => {}
     }
 }
 
@@ -97,6 +133,7 @@ async fn stream_chat_openai(
     let mut sse_buf = String::new();
     let mut data_lines: Vec<String> = Vec::new();
     let mut content = String::new();
+    let mut usage: Option<TokenUsage> = None;
     let mut tool_acc: HashMap<usize, (String, String, String)> = HashMap::new();
 
     while let Some(chunk) = stream.next().await {
@@ -106,6 +143,9 @@ async fn stream_chat_openai(
 
         for data in data_lines.drain(..) {
             if let Ok(v) = serde_json::from_str::<Value>(&data) {
+                if let Some(u) = extract_openai_usage(&v) {
+                    usage = Some(u);
+                }
                 if let Some(ch) = v
                     .get("choices")
                     .and_then(|c| c.as_array())
@@ -168,7 +208,7 @@ async fn stream_chat_openai(
         })
         .collect();
 
-    Ok(ChatChoice { content, tool_calls })
+    Ok(ChatChoice { content, tool_calls, usage })
 }
 
 /// Anthropic Messages API streaming chat completion (SSE).
@@ -292,6 +332,10 @@ async fn stream_chat_anthropic(
     let mut content = String::new();
     // index → (id, name, accumulated partial_json) for in-progress tool blocks.
     let mut tool_blocks: HashMap<usize, (String, String, String)> = HashMap::new();
+    // Token usage split across events: input_tokens in `message_start`,
+    // output_tokens in `message_delta`.
+    let mut input_tokens: u32 = 0;
+    let mut output_tokens: u32 = 0;
     // Finalized tool calls, moved here on `content_block_stop`.
     let mut tool_calls: Vec<ToolCall> = Vec::new();
 
@@ -303,6 +347,7 @@ async fn stream_chat_anthropic(
         for data in data_lines.drain(..) {
             if let Ok(v) = serde_json::from_str::<Value>(&data) {
                 let etype = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                extract_anthropic_usage(&v, &mut input_tokens, &mut output_tokens);
                 match etype {
                     "content_block_start" => {
                         if v.get("content_block")
@@ -380,7 +425,16 @@ async fn stream_chat_anthropic(
         }
     }
 
-    Ok(ChatChoice { content, tool_calls })
+    let usage = if input_tokens > 0 || output_tokens > 0 {
+        Some(TokenUsage {
+            prompt_tokens: input_tokens,
+            completion_tokens: output_tokens,
+            total_tokens: input_tokens + output_tokens,
+        })
+    } else {
+        None
+    };
+    Ok(ChatChoice { content, tool_calls, usage })
 }
 
 /// Append `new_data` to `buffer`, extract any *complete* `data:` SSE lines,
@@ -404,6 +458,40 @@ pub fn parse_sse(buffer: &mut String, new_data: &str, out: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_openai_usage() {
+        let v: Value = serde_json::from_str(
+            r#"{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#,
+        )
+        .unwrap();
+        let u = extract_openai_usage(&v).unwrap();
+        assert_eq!(u.prompt_tokens, 10);
+        assert_eq!(u.completion_tokens, 5);
+        assert_eq!(u.total_tokens, 15);
+    }
+
+    #[test]
+    fn openai_usage_absent_is_none() {
+        let v: Value = serde_json::from_str(r#"{"choices":[]}"#).unwrap();
+        assert!(extract_openai_usage(&v).is_none());
+    }
+
+    #[test]
+    fn extracts_anthropic_usage() {
+        let start: Value =
+            serde_json::from_str(r#"{"type":"message_start","message":{"usage":{"input_tokens":7}}}"#)
+                .unwrap();
+        let delta: Value =
+            serde_json::from_str(r#"{"type":"message_delta","delta":{"usage":{"output_tokens":3}}}"#)
+                .unwrap();
+        let mut i = 0u32;
+        let mut o = 0u32;
+        extract_anthropic_usage(&start, &mut i, &mut o);
+        assert_eq!(i, 7);
+        extract_anthropic_usage(&delta, &mut i, &mut o);
+        assert_eq!(o, 3);
+    }
 
     #[test]
     fn parse_sse_extracts_data_lines() {

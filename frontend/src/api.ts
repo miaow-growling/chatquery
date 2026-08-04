@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AuditRow,
   ChatMessage,
   ColumnInfo,
   ConfirmRequest,
@@ -20,6 +21,7 @@ import type {
   StatusInfo,
   TableMeta,
   TableStructure,
+  TokenUsage,
   TreeModel,
   VendorPreset,
 } from "./types";
@@ -173,6 +175,9 @@ export const api = {
   deleteKbDoc: (id: string) => invoke("delete_kb_doc", { id }),
   setKbBindings: (kbId: string, bindings: KbBindingInput[]) =>
     invoke("set_kb_bindings", { kbId, bindings }),
+  // --- Write-guardrail audit trail (ADR-AI-1 决策3) ---
+  listAuditLogs: (limit?: number) =>
+    invoke<AuditRow[]>("list_audit_logs", { limit: limit ?? null }),
 };
 
 export function onChatToken(cb: (t: string) => void): Promise<UnlistenFn> {
@@ -190,6 +195,11 @@ export function onChatError(cb: (t: string) => void): Promise<UnlistenFn> {
 /// The orchestrator's plan, as structured steps (rendered as its own card).
 export function onChatPlan(cb: (steps: string[]) => void): Promise<UnlistenFn> {
   return listen<string[]>("chat-plan", (e) => cb(e.payload));
+}
+/// Token cost of the turn that just ended. Emitted before `chat-done`, and
+/// only by providers that report usage — absence means "unknown", not zero.
+export function onChatUsage(cb: (u: TokenUsage) => void): Promise<UnlistenFn> {
+  return listen<TokenUsage>("chat-usage", (e) => cb(e.payload));
 }
 /// A write statement the guardrail paused; the turn is blocked until answered.
 export function onChatConfirm(

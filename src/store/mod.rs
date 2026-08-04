@@ -449,6 +449,49 @@ impl Storage {
         }
         Ok(out)
     }
+
+    /// Record a write-guardrail decision (ADR-AI-1 决策3: audit trail). A
+    /// `None` db means the statement targeted the whole connection.
+    pub fn add_audit(
+        &self,
+        conn_id: &str,
+        conn_name: &str,
+        db: Option<&str>,
+        sql: &str,
+        decision: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO audit_log (id, ts, conn_id, conn_name, db, sql, decision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![gen_id("aud"), now_secs(), conn_id, conn_name, db, sql, decision],
+        )?;
+        Ok(())
+    }
+
+    /// Most-recent-first audit entries, capped at `limit`. Tuple fields:
+    /// (conn_name, db, sql, decision, ts). `db` is `None` for whole-connection.
+    pub fn list_audits(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<(String, Option<String>, String, String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT conn_name, db, sql, decision, ts FROM audit_log ORDER BY ts DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
 }
 
 fn now_secs() -> i64 {
@@ -512,6 +555,17 @@ fn init_schema(conn: &Connection) -> Result<()> {
             PRIMARY KEY (kb_id, conn_id, database)
         );",
     )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS audit_log (
+            id        TEXT PRIMARY KEY,
+            ts        INTEGER NOT NULL,
+            conn_id   TEXT NOT NULL,
+            conn_name TEXT NOT NULL,
+            db        TEXT,
+            sql       TEXT NOT NULL,
+            decision  TEXT NOT NULL
+        );",
+    )?;
     Ok(())
 }
 
@@ -535,7 +589,7 @@ mod tests {
 
     #[test]
     fn kb_crud_and_update() {
-        let mut s = mem_store();
+        let s = mem_store();
         let id1 = s.add_kb_doc("订单说明", "内容A").unwrap();
         let _id2 = s.add_kb_doc("用户说明", "内容B").unwrap();
         assert_eq!(s.list_kb_docs().unwrap().len(), 2);
@@ -619,6 +673,25 @@ mod tests {
         let bs = s.get_kb_bindings(&f).unwrap();
         assert_eq!(bs.len(), 1);
         assert_eq!(bs[0].conn_id, "connB");
+    }
+
+    /// Audit trail persists each guardrail decision and round-trips via list.
+    #[test]
+    fn audit_roundtrip() {
+        let s = mem_store();
+        s.add_audit("c1", "demo", Some("mydb"), "DELETE FROM t", "write-approved")
+            .unwrap();
+        s.add_audit("c1", "demo", None, "DROP TABLE t", "deny").unwrap();
+        let rows = s.list_audits(10).unwrap();
+        assert_eq!(rows.len(), 2);
+        // Both decisions recorded (don't assert order — ts is second-granular).
+        let decisions: Vec<&str> = rows.iter().map(|r| r.3.as_str()).collect();
+        assert!(decisions.contains(&"deny"));
+        assert!(decisions.contains(&"write-approved"));
+        // db binding captured: one whole-connection (None), one specific db.
+        let dbs: Vec<Option<String>> = rows.iter().map(|r| r.1.clone()).collect();
+        assert!(dbs.contains(&None));
+        assert!(dbs.contains(&Some("mydb".to_string())));
     }
 }
 

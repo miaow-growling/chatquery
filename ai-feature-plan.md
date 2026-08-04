@@ -232,17 +232,19 @@ N7 内联增强   ★       X7 应用修改
 
 ### 5.1 当前进度与知识库后续（截至 2026-08-04）
 
-**已落地（Agent 地基闭环 + 知识库均完成）**
+**已落地（Agent 地基闭环 + 知识库 + 可观测三件套均完成）**
 - Agent A 地基：ToolRegistry（枚举分发，替原字符串 `exec_tool`）、Agent/会话循环、SessionMemory（N2 上下文注入）、policy N1 护栏（Allow / ConfirmRequired / Deny）。
 - Agent B 规划：`needs_planning` 启发式 + `plan_task` 无工具规划。
 - Agent C 多智能体：worker 拆分 Orchestrator / Explorer / Executor + `synthesize` 综合；串行委派、共享 `TurnControl` 可整树取消。
 - 交互控制面（ADR-AI-4）：可取消 turn、写确认 UI、计划卡片。
-- 知识库 ADR-AI-6：数据层 + 命令层 + 前端设置面板 + AI 双通道注入（被动 `context_block` + 主动 `SearchKnowledge`）；**已补单测**（store 5 + tools 6，总计 34 passed / 0 failed）。
+- 知识库 ADR-AI-6：数据层 + 命令层 + 前端设置面板 + AI 双通道注入（被动 `context_block` + 主动 `SearchKnowledge`）。
+- **写操作审计日志（ADR-AI-1 决策3）** ✅：`audit_log` 表 + `AuditSink` 闭包注入（llm crate 不耦合 store，与 `KbLoader` 同构；TUI 传 no-op）。四类判定留痕——`write-approved` / `write-rejected` / `write-expired` / `deny`。前端 Chat 面板 🛡 按钮打开审计弹窗（最近 200 条，新的在前）。**只读查询不记录**（噪音大于价值）。
+- **单 turn 总超时（ADR-AI-4 决策2）** ✅：`TURN_TIMEOUT = 300s` 包裹整个 turn future，超时即 `ctl.cancel()` 并补发提示 + `ChatDone`，前端流式状态不会卡死。
+- **token 用量统计（ADR-AI-4 决策3）** ✅：跨 provider 差异抽成纯函数——OpenAI 走末尾 `usage` chunk（需 `stream_options.include_usage`），Anthropic 需累加 `message_start.input_tokens` + `message_delta.output_tokens`。`Agent.usage` 跨 worker/synthesize 累加，`chat-usage` 事件在 `chat-done` 前送达前端，输入框上方显示"本轮 + 会话累计"。未上报用量的 provider 显示"未上报"而非伪造 0。
+- **单测**：`cargo test --lib --no-default-features` **38 passed / 0 failed**（原 34 + usage 解析 3 + 审计 roundtrip 1）。
 
-**Now 阶段（地基补齐，建议先做）**
-- **KB 端到端自测**：真连接上 上传→绑库→发查询，确认注入效果（单测保逻辑，E2E 保集成；本环境无显示器跑不了 GUI）。
-- **写操作审计日志**（ADR-AI-1 决策3）：写确认通过后落库，事后可追溯"谁改了什么"。
-- **单 turn 总超时 + token 用量统计**（ADR-AI-4 决策2/3）：成本可观测，是后续一切优化的度量地基。
+**Now 阶段（剩余）**
+- **KB 端到端自测**：真连接上 上传→绑库→发查询，确认注入效果（单测保逻辑，E2E 保集成；本环境无显示器跑不了 GUI）。清单见 `docs/e2e-checklist.md`。
 - **知识库随连接导出/导入**：连接导出 yaml（#1/#2）目前不含 kb 内容，需补。
 
 **Next 阶段（质量与深度）**
@@ -252,10 +254,14 @@ N7 内联增强   ★       X7 应用修改
 - **worker 并行调度**：当前串行委派，可并行步骤未并发（延迟/成本还有优化空间）。
 - **知识库 RAG 升级**（原风险4 / L4）：换向量库或 FTS5，解决字面匹配 miss 语义改写 + 大库截断丢信息；检索逻辑已收敛在 `get_injected_kb_docs` + `SearchKnowledge` 两点，换层上层零改动（可逆）。**按需触发**：真实用起来发现字面匹配不够用时再做，现在做是过度投入。
 
-**工程收尾**
-- 全部改动（Agent 重构 + 知识库）尚未 `git commit`，建议先提交落库防丢。
+**Next 阶段新增（由本轮可观测能力衍生）**
+- **审计日志留存策略**：`audit_log` 只增不删，长期会膨胀。当前 200 条上限只是读取侧的截断，写入侧无上限。需定期归档或按条数/天数滚动清理（先观察真实增速再定，避免过早优化）。
+- **token 成本换算**：现在只有 token 数，没有金额。要显示成本需引入"厂商 × 模型 × 单价"表——但单价会变、需维护，判断是否值得后再做。
 
-**建议推进顺序**：`git commit`（零风险防丢）→ KB 端到端自测 → 审计日志 + token 统计（可观测地基）→ 其余按需。
+**工程收尾**
+- 全部改动（Agent 重构 + 知识库 + 可观测三件套）需 `git commit` 落库防丢。
+
+**建议推进顺序**：`git commit`（零风险防丢）→ KB 端到端自测（照 `docs/e2e-checklist.md` 走一遍）→ 知识库导出/导入 → Next 阶段按需。
 
 ---
 

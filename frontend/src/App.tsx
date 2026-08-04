@@ -18,9 +18,11 @@ import {
   onChatPlan,
   onChatToken,
   onChatTool,
+  onChatUsage,
   resolveConfirm,
 } from "./api";
 import type {
+  AuditRow,
   ChatItem,
   ChatMessage,
   ConfirmRequest,
@@ -38,6 +40,7 @@ import type {
   QueryOutput,
   StatusInfo,
   TableStructure,
+  TokenUsage,
   TreeModel,
   VendorPreset,
 } from "./types";
@@ -523,6 +526,14 @@ export function App() {
   /// calls in parallel, so this is a queue: we show the head and answer them
   /// one at a time rather than stacking modals.
   const [confirmQueue, setConfirmQueue] = useState<ConfirmRequest[]>([]);
+  /// Token cost (ADR-AI-4 决策3): last turn's usage plus a running session
+  /// total. `null` means the provider never reported usage for this turn —
+  /// deliberately distinct from a reported zero.
+  const [lastUsage, setLastUsage] = useState<TokenUsage | null>(null);
+  const [sessionTokens, setSessionTokens] = useState(0);
+  /// Write-guardrail audit trail (ADR-AI-1 决策3), loaded on demand.
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
   const [form, setForm] = useState<ConnForm>({
     open: false,
     editing: false,
@@ -2492,6 +2503,18 @@ export function App() {
     }
   };
 
+  /// Open the write-guardrail audit trail. Loaded on demand rather than kept
+  /// in state: it's a rarely-opened forensic view, and the table only grows.
+  const openAudit = async () => {
+    setAuditOpen(true);
+    try {
+      setAuditRows(await api.listAuditLogs(200));
+    } catch (e) {
+      setAuditRows([]);
+      showToast("读取审计日志失败: " + String(e));
+    }
+  };
+
   const sendChat = async () => {
     const input = document.getElementById("chat-input") as HTMLTextAreaElement;
     const text = input.value;
@@ -2500,6 +2523,7 @@ export function App() {
     setChat(next);
     input.value = "";
     setStreaming(true);
+    setLastUsage(null);
     setChat((prev) => [...prev, { role: "assistant", content: "" }]);
     try {
       // The chat log is a human transcript, not the model's context. Plan
@@ -2758,6 +2782,12 @@ export function App() {
     }).then((u) => unsubs.push(u));
     onChatConfirm((req) => {
       setConfirmQueue((prev) => [...prev, req]);
+    }).then((u) => unsubs.push(u));
+    // Cost lands just before `chat-done`. Providers that stay silent leave
+    // `lastUsage` at null, so the footer shows nothing rather than a fake 0.
+    onChatUsage((u) => {
+      setLastUsage(u);
+      setSessionTokens((prev) => prev + (u.total_tokens || 0));
     }).then((u) => unsubs.push(u));
     onChatDone(() => {
       setStreaming(false);
@@ -3069,6 +3099,13 @@ export function App() {
           </span>
           <button
             className="icon-btn"
+            title="写操作审计日志"
+            onClick={() => void openAudit()}
+          >
+            🛡
+          </button>
+          <button
+            className="icon-btn"
             title="收起 Chat"
             onClick={() => {
               setChatOpen(false);
@@ -3122,6 +3159,22 @@ export function App() {
           )}
           <div ref={chatEndRef} />
         </div>
+        {(lastUsage || sessionTokens > 0) && (
+          <div className="chat-usage" title="LLM token 用量（ADR-AI-4）">
+            {lastUsage ? (
+              <>
+                <span>⚡ 本轮 {fmtNum(lastUsage.total_tokens)} tokens</span>
+                <span className="dim">
+                  （入 {fmtNum(lastUsage.prompt_tokens)} / 出{" "}
+                  {fmtNum(lastUsage.completion_tokens)}）
+                </span>
+              </>
+            ) : (
+              <span className="dim">⚡ 本轮用量未上报</span>
+            )}
+            <span className="dim">· 会话累计 {fmtNum(sessionTokens)}</span>
+          </div>
+        )}
         <div className="chat-input">
           <textarea
             id="chat-input"
@@ -3551,6 +3604,38 @@ export function App() {
         </div>
         );
       })()}
+
+      {auditOpen && (
+        <div className="modal-mask" onClick={() => setAuditOpen(false)}>
+          <div className="modal wide" onClick={(e) => e.stopPropagation()}>
+            <h3>写操作审计日志</h3>
+            <p className="hint">
+              AI 每次触碰写语句都会留痕：批准、拒绝、超时、直接阻断（DDL /
+              破坏性语句）。只读查询不记录。最近 200 条，新的在前。
+            </p>
+            <div className="audit-list">
+              {auditRows.length === 0 && <div className="empty">暂无记录</div>}
+              {auditRows.map(([conn, db, sql, decision, ts], i) => (
+                <div key={i} className="audit-item">
+                  <div className="audit-meta">
+                    <span className={"audit-tag audit-" + decision}>
+                      {auditLabel(decision)}
+                    </span>
+                    <span>{conn}</span>
+                    {db ? <span className="history-db">▦ {db}</span> : null}
+                    <span className="history-time">{fmtTime(ts)}</span>
+                  </div>
+                  <pre className="history-sql">{sql}</pre>
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <span className="spacer" />
+              <button onClick={() => setAuditOpen(false)}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {settingsOpen && (
         <div className="modal-mask" onClick={() => setSettingsOpen(false)}>
@@ -4279,4 +4364,26 @@ function fmtTime(ts: number): string {
 
 function roleLabel(r: string) {
   return r === "user" ? "你" : r === "assistant" ? "AI" : "工具";
+}
+
+/// Thousands separator for token counts — five-digit numbers are common and
+/// unreadable unsegmented.
+function fmtNum(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/// Human label for a guardrail verdict stored in the audit trail.
+function auditLabel(d: string): string {
+  switch (d) {
+    case "write-approved":
+      return "已批准";
+    case "write-rejected":
+      return "已拒绝";
+    case "write-expired":
+      return "已超时";
+    case "deny":
+      return "已阻断";
+    default:
+      return d;
+  }
 }

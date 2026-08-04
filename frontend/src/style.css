@@ -1457,6 +1457,19 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 }
 .chat-plan-steps li::marker { color: var(--text-tertiary); }
 
+/* ---- Token cost strip (ADR-AI-4 决策3) ---- */
+.chat-usage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 14px 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.chat-usage .dim { color: var(--text-tertiary); }
+
 /* ---- Input area ---- */
 .chat-input {
   display: flex;
@@ -1926,6 +1939,41 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   color: var(--text-primary);
 }
 .history-actions { display: flex; gap: var(--sp-2); }
+
+/* ---- Write-guardrail audit trail (ADR-AI-1 决策3) ---- */
+.audit-list {
+  overflow-y: auto;
+  margin: var(--sp-2) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-height: 60vh;
+}
+.audit-item {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  background: var(--bg-canvas);
+}
+.audit-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-2xs);
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+.audit-tag {
+  border-radius: var(--r-full);
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+}
+.audit-write-approved { background: var(--warning-soft); color: var(--warning-500); }
+.audit-write-rejected { background: var(--bg-inset); color: var(--text-secondary); }
+.audit-write-expired { background: var(--bg-inset); color: var(--text-tertiary); }
+.audit-deny { background: var(--danger-soft); color: var(--danger-500); }
+.audit-item .history-sql { margin-bottom: 0; }
 .history-actions button {
   background: var(--bg-subtle);
   color: var(--text-secondary);

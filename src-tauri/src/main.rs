@@ -92,6 +92,7 @@ fn main() {
             list_kb_docs,
             delete_kb_doc,
             set_kb_bindings,
+            list_audit_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ChatQuery");

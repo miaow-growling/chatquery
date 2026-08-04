@@ -253,6 +253,22 @@ impl ConnectionStore {
     ) -> Result<Vec<crate::store::KbDoc>> {
         self.storage.get_injected_kb_docs(conn_id, db)
     }
+    pub fn add_audit(
+        &self,
+        conn_id: &str,
+        conn_name: &str,
+        db: Option<&str>,
+        sql: &str,
+        decision: &str,
+    ) -> Result<()> {
+        self.storage.add_audit(conn_id, conn_name, db, sql, decision)
+    }
+    pub fn list_audits(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<(String, Option<String>, String, String, i64)>> {
+        self.storage.list_audits(limit)
+    }
 
     // --- Container CRUD (ADR-016) -----------------------------------------
 
