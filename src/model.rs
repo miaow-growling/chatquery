@@ -11,6 +11,23 @@ pub enum DisplayResult {
     Redis(RedisResult),
 }
 
+/// A write statement the guardrail stopped, waiting for the user's verdict
+/// (ADR-AI-1 + ADR-AI-4). Serialized straight to the UI, which renders a modal
+/// and answers via `resolve_confirm(turn_id, id, approved)`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfirmRequest {
+    /// Unique id of this confirmation (scoped by turn).
+    pub id: String,
+    /// The turn that is blocked on the answer.
+    pub turn_id: String,
+    /// Connection name the statement targets.
+    pub connection: String,
+    /// The exact statement that will run if approved.
+    pub sql: String,
+    /// Human-readable reason the guardrail intervened.
+    pub reason: String,
+}
+
 /// Messages sent from the async backend to the TUI event loop.
 #[derive(Debug)]
 pub enum BackendMsg {
@@ -22,6 +39,12 @@ pub enum BackendMsg {
     ChatToken(String),
     /// A tool invocation notice, e.g. "execute_query → demo: 12 行".
     ChatTool(String),
+    /// The orchestrator's execution plan, as structured steps. Sent instead of
+    /// inlining the plan into the token stream so the UI can render it as its
+    /// own card rather than as assistant prose.
+    ChatPlan(Vec<String>),
+    /// The agent needs the user to approve a write statement before it runs.
+    ChatConfirm(ConfirmRequest),
     /// The LLM turn finished; commit any streamed assistant text.
     ChatDone,
     /// Connection health update (id, ok?).
@@ -60,6 +83,14 @@ impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: ChatRole::User,
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: ChatRole::System,
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,

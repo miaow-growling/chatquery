@@ -222,6 +222,38 @@ impl ConnectionStore {
         self.storage.delete_query(id)
     }
 
+    // --- Knowledge base (ADR-AI-6) -----------------------------------------
+
+    pub fn add_kb_doc(&self, name: &str, content: &str) -> Result<String> {
+        self.storage.add_kb_doc(name, content)
+    }
+    pub fn update_kb_doc(&self, id: &str, name: &str, content: &str) -> Result<()> {
+        self.storage.update_kb_doc(id, name, content)
+    }
+    pub fn list_kb_docs(&self) -> Result<Vec<crate::store::KbDoc>> {
+        self.storage.list_kb_docs()
+    }
+    pub fn delete_kb_doc(&mut self, id: &str) -> Result<()> {
+        self.storage.delete_kb_doc(id)
+    }
+    pub fn set_kb_bindings(
+        &mut self,
+        kb_id: &str,
+        bindings: &[(String, Option<String>)],
+    ) -> Result<()> {
+        self.storage.set_kb_bindings(kb_id, bindings)
+    }
+    pub fn get_kb_bindings(&self, kb_id: &str) -> Result<Vec<crate::store::KbBinding>> {
+        self.storage.get_kb_bindings(kb_id)
+    }
+    pub fn get_injected_kb_docs(
+        &self,
+        conn_id: &str,
+        db: Option<&str>,
+    ) -> Result<Vec<crate::store::KbDoc>> {
+        self.storage.get_injected_kb_docs(conn_id, db)
+    }
+
     // --- Container CRUD (ADR-016) -----------------------------------------
 
     pub fn create_env(&mut self, name: &str, db_type: Option<DbType>) -> Result<String> {

@@ -8,10 +8,13 @@ use chatquery::db::mysql::{
     ColumnInfo, ExplainVisual, ForeignKeyInfo, QueryResult, Schema, TableMeta, TableStructure,
 };
 use chatquery::llm::client::stream_chat;
+use chatquery::llm::control::TurnControl;
 use chatquery::model::BackendMsg;
 use chatquery::model::{ChatMessage, ChatRole};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::time::timeout;
 
 use crate::state::AppState;
@@ -454,6 +457,113 @@ pub fn delete_query(state: State<AppState>, id: String) -> Result<(), String> {
         .lock()
         .unwrap()
         .delete_query(&id)
+        .map_err(|e| e.to_string())
+}
+
+// --- Knowledge base (ADR-AI-6) ---------------------------------------------
+
+#[derive(Serialize)]
+pub struct KbBindingDto {
+    pub conn_id: String,
+    pub database: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct KbDocDto {
+    pub id: String,
+    pub name: String,
+    pub content: String,
+    pub created: i64,
+    pub updated: i64,
+    pub bindings: Vec<KbBindingDto>,
+}
+
+#[derive(Deserialize)]
+pub struct KbBindingInput {
+    pub conn_id: String,
+    #[serde(default)]
+    pub database: Option<String>,
+}
+
+#[tauri::command]
+pub fn add_kb_doc(
+    state: State<AppState>,
+    name: String,
+    content: String,
+) -> Result<String, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .add_kb_doc(&name, &content)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_kb_doc(
+    state: State<AppState>,
+    id: String,
+    name: String,
+    content: String,
+) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .update_kb_doc(&id, &name, &content)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_kb_docs(state: State<AppState>) -> Result<Vec<KbDocDto>, String> {
+    let store = state.store.lock().unwrap();
+    let docs = store.list_kb_docs().map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(docs.len());
+    for d in docs {
+        let bindings = store.get_kb_bindings(&d.id).map_err(|e| e.to_string())?;
+        out.push(KbDocDto {
+            id: d.id,
+            name: d.name,
+            content: d.content,
+            created: d.created,
+            updated: d.updated,
+            bindings: bindings
+                .into_iter()
+                .map(|b| KbBindingDto {
+                    conn_id: b.conn_id,
+                    database: b.database,
+                })
+                .collect(),
+        });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn delete_kb_doc(state: State<AppState>, id: String) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .delete_kb_doc(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_kb_bindings(
+    state: State<AppState>,
+    kb_id: String,
+    bindings: Vec<KbBindingInput>,
+) -> Result<(), String> {
+    let bs: Vec<(String, Option<String>)> = bindings
+        .into_iter()
+        .map(|b| (b.conn_id, b.database))
+        .collect();
+    state
+        .store
+        .lock()
+        .unwrap()
+        .set_kb_bindings(&kb_id, &bs)
         .map_err(|e| e.to_string())
 }
 
@@ -1022,32 +1132,87 @@ pub fn save_llm_config(
     Ok(())
 }
 
+/// Monotonic turn counter. Combined with the process-start instant this gives
+/// ids that are unique for the lifetime of the app without a uuid dependency.
+static TURN_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn next_turn_id() -> String {
+    let n = TURN_SEQ.fetch_add(1, Ordering::Relaxed);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("t{}-{}", ms, n)
+}
+
 /// Run one LLM turn. The model streams tokens (and emits tool notices) which
 /// we forward to the frontend as Tauri events — mirroring the old TUI's
 /// `BackendMsg` channel, but over the webview's event bus. Results sent to the
 /// model are still masked on the cloud path (see `llm::tools::exec_builtin`).
+///
+/// Returns the turn id. The UI needs it to cancel the turn (`cancel_turn`) or
+/// to answer a write confirmation (`resolve_confirm`) — both of which target a
+/// run that is still in flight, so the id must be handed back synchronously,
+/// before any streaming begins.
 #[tauri::command]
 pub async fn chat_turn(
     app: AppHandle,
     state: State<'_, AppState>,
     conn_id: String,
     messages: Vec<ChatMessage>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let conns: Vec<ConnectionConfig> = state.store.lock().unwrap().list().to_vec();
     let llm = state.llm.lock().unwrap().clone();
     let mcp = state.mcp.clone();
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackendMsg>();
-    let run_app = app.clone();
-
-    // Drive the LLM turn and report terminal errors as an event.
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = chatquery::llm::session::run_turn(&llm, conns, mcp, &messages, &tx).await {
-            let _ = run_app.emit("chat-error", e.to_string());
+    // Build the knowledge-base loader closure (ADR-AI-6): it reads docs bound
+    // to the active connection/db from the store. The `Arc` keeps it 'static
+    // so it can cross into the spawned LLM future; a TUI turn passes a no-op.
+    let store = Arc::clone(&state.store);
+    let kb_loader: chatquery::llm::KbLoader = Arc::new(move |conn_id: &str, db: Option<&str>| {
+        let store = store.lock().unwrap();
+        match store.get_injected_kb_docs(conn_id, db) {
+            Ok(docs) => docs.into_iter().map(|d| (d.name, d.content)).collect(),
+            Err(_) => Vec::new(),
         }
     });
 
+    let turn_id = next_turn_id();
+    let ctl = TurnControl::new(turn_id.clone());
+    state
+        .turns
+        .lock()
+        .unwrap()
+        .insert(turn_id.clone(), ctl.clone());
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackendMsg>();
+
+    // Drive the LLM turn. Terminal errors and completion both travel through
+    // `tx` (not a direct emit) so they stay ordered behind the tokens already
+    // queued in the channel — otherwise `chat-done` can overtake the tail of
+    // the stream and the UI commits a truncated message.
+    tauri::async_runtime::spawn(async move {
+        let r = chatquery::llm::session::run_turn(
+            &llm,
+            conns,
+            mcp,
+            &messages,
+            &conn_id,
+            &tx,
+            ctl.clone(),
+            kb_loader,
+        )
+        .await;
+        if let Err(e) = r {
+            let _ = tx.send(BackendMsg::Error(e.to_string()));
+        }
+        let _ = tx.send(BackendMsg::ChatDone);
+        // Release any confirmation still waiting on a UI that never answered.
+        ctl.cancel();
+    });
+
     // Bridge backend messages -> frontend events.
+    let bridge_turn_id = turn_id.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(msg) = rx.recv().await {
             match msg {
@@ -1056,6 +1221,12 @@ pub async fn chat_turn(
                 }
                 BackendMsg::ChatTool(s) => {
                     let _ = app.emit("chat-tool", s);
+                }
+                BackendMsg::ChatPlan(steps) => {
+                    let _ = app.emit("chat-plan", steps);
+                }
+                BackendMsg::ChatConfirm(req) => {
+                    let _ = app.emit("chat-confirm", req);
                 }
                 BackendMsg::ChatDone => {
                     let _ = app.emit("chat-done", ());
@@ -1066,10 +1237,36 @@ pub async fn chat_turn(
                 _ => {}
             }
         }
+        // Channel closed => the turn is over. Drop its control handle so the
+        // registry doesn't grow across a long session.
+        app.state::<AppState>()
+            .turns
+            .lock()
+            .unwrap()
+            .remove(&bridge_turn_id);
     });
 
-    let _ = conn_id;
-    Ok(())
+    Ok(turn_id)
+}
+
+/// Stop an in-flight LLM turn (ADR-AI-4). Best-effort and idempotent: an
+/// unknown or already-finished id is a no-op, not an error.
+#[tauri::command]
+pub fn cancel_turn(state: State<AppState>, turn_id: String) {
+    let ctl = state.turns.lock().unwrap().get(&turn_id).cloned();
+    if let Some(c) = ctl {
+        c.cancel();
+    }
+}
+
+/// Answer a pending write confirmation raised by the guardrail. `approved`
+/// true runs the statement, false feeds a refusal back to the model.
+#[tauri::command]
+pub fn resolve_confirm(state: State<AppState>, turn_id: String, id: String, approved: bool) {
+    let ctl = state.turns.lock().unwrap().get(&turn_id).cloned();
+    if let Some(c) = ctl {
+        c.resolve(&id, approved);
+    }
 }
 
 // --- Encryption key management (#0) ----------------------------------------

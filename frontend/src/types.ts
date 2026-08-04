@@ -152,6 +152,23 @@ export interface ChatMessage {
   content: string;
 }
 
+/// A chat-log entry. Superset of `ChatMessage`: the log can also hold a `plan`
+/// card, which is UI-only and must be stripped before the history is sent back
+/// to the model (the Rust `ChatRole` has no such variant).
+export type ChatItem =
+  | ChatMessage
+  | { role: "plan"; content: string; steps: string[] };
+
+/// A write statement the AI guardrail paused, awaiting the user's verdict
+/// (ADR-AI-1 / ADR-AI-4). Answer via `resolveConfirm(turn_id, id, approved)`.
+export interface ConfirmRequest {
+  id: string;
+  turn_id: string;
+  connection: string;
+  sql: string;
+  reason: string;
+}
+
 /// Payload for the `apply_edit` command (ADR-018): write back one row's edited
 /// cells. `pk` locates the row by its ORIGINAL primary-key values; `set` carries
 /// the new column values.
@@ -250,4 +267,26 @@ export interface ExplainVisual {
   format: string;
   nodes: ExplainNode[];
   raw: string | null;
+}
+
+/// Knowledge-base document (ADR-AI-6). Plain-text / Markdown content that the
+/// AI agent can read when answering queries for bound connections / databases.
+export interface KbBindingDto {
+  /// Connection id this document is bound to.
+  conn_id: string;
+  /// null = bound to the whole connection; a name = bound to that database only.
+  database: string | null;
+}
+export interface KbDocDto {
+  id: string;
+  name: string;
+  content: string;
+  created: string;
+  updated: string;
+  bindings: KbBindingDto[];
+}
+/// Input row for `set_kb_bindings`.
+export interface KbBindingInput {
+  conn_id: string;
+  database: string | null;
 }

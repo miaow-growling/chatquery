@@ -3,12 +3,15 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ChatMessage,
   ColumnInfo,
+  ConfirmRequest,
   ConnInput,
   EditPayload,
   ExplainVisual,
   ForeignKeyInfo,
   ImportResult,
   KeyStatus,
+  KbBindingInput,
+  KbDocDto,
   LlmConfigDto,
   LlmConfigInput,
   QueryItem,
@@ -161,6 +164,15 @@ export const api = {
   // --- EXPLAIN visualisation (#6) ---
   explainVisual: (connId: string, query: string, db?: string | null) =>
     invoke<ExplainVisual>("explain_visual", { connId, query, db: db ?? "" }),
+  // --- Knowledge base (ADR-AI-6): docs bound to connections / databases ---
+  listKbDocs: () => invoke<KbDocDto[]>("list_kb_docs"),
+  addKbDoc: (name: string, content: string) =>
+    invoke<string>("add_kb_doc", { name, content }),
+  updateKbDoc: (id: string, name: string, content: string) =>
+    invoke("update_kb_doc", { id, name, content }),
+  deleteKbDoc: (id: string) => invoke("delete_kb_doc", { id }),
+  setKbBindings: (kbId: string, bindings: KbBindingInput[]) =>
+    invoke("set_kb_bindings", { kbId, bindings }),
 };
 
 export function onChatToken(cb: (t: string) => void): Promise<UnlistenFn> {
@@ -175,6 +187,28 @@ export function onChatDone(cb: () => void): Promise<UnlistenFn> {
 export function onChatError(cb: (t: string) => void): Promise<UnlistenFn> {
   return listen<string>("chat-error", (e) => cb(e.payload));
 }
-export function chatTurn(connId: string, messages: ChatMessage[]): Promise<void> {
-  return invoke("chat_turn", { connId, messages });
+/// The orchestrator's plan, as structured steps (rendered as its own card).
+export function onChatPlan(cb: (steps: string[]) => void): Promise<UnlistenFn> {
+  return listen<string[]>("chat-plan", (e) => cb(e.payload));
+}
+/// A write statement the guardrail paused; the turn is blocked until answered.
+export function onChatConfirm(
+  cb: (req: ConfirmRequest) => void,
+): Promise<UnlistenFn> {
+  return listen<ConfirmRequest>("chat-confirm", (e) => cb(e.payload));
+}
+/// Starts a turn and resolves with its id — needed to cancel it or answer a
+/// confirmation while it is still running.
+export function chatTurn(connId: string, messages: ChatMessage[]): Promise<string> {
+  return invoke<string>("chat_turn", { connId, messages });
+}
+export function cancelTurn(turnId: string): Promise<void> {
+  return invoke("cancel_turn", { turnId });
+}
+export function resolveConfirm(
+  turnId: string,
+  id: string,
+  approved: boolean,
+): Promise<void> {
+  return invoke("resolve_confirm", { turnId, id, approved });
 }

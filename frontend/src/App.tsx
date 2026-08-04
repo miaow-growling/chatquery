@@ -29,6 +29,8 @@ import type {
   ExplainNode,
   ExplainVisual,
   ForeignKeyInfo,
+  KbBindingDto,
+  KbDocDto,
   KeyStatus,
   LlmConfigDto,
   LlmConfigInput,
@@ -44,6 +46,26 @@ import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Tree } from "./Tree";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+/** 复制图标（内联 SVG，避免引入图标库）。 */
+function CopyIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+    </svg>
+  );
+}
 
 /** 渲染 AI 消息内容为 Markdown：标题/加粗/列表/代码块/表格/链接等。
  *  用 react-markdown + remark-gfm，默认不 dangerouslySetInnerHTML，XSS 安全。 */
@@ -491,6 +513,7 @@ export function App() {
     mask_enabled: true,
   });
   const [chat, setChat] = useState<ChatItem[]>([]);
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [streaming, setStreaming] = useState(false);
   /// Id of the in-flight turn — the handle for cancelling it. Kept in a ref
   /// (not state) because the event listeners are registered once on mount and
@@ -684,9 +707,9 @@ export function App() {
   // Settings is a left-nav module switcher: each module opens its own config
   // page on the right. Keeping this as explicit buttons (not a <select>
   // dropdown) makes the module list scannable and easy to extend.
-  const [settingsTab, setSettingsTab] = useState<"model" | "key" | "general">(
-    "model"
-  );
+  const [settingsTab, setSettingsTab] = useState<
+    "model" | "key" | "general" | "kb"
+  >("model");
   const [presets, setPresets] = useState<VendorPreset[]>([]);
   const [llmCfg, setLlmCfg] = useState<LlmConfigDto | null>(null);
   const [cfgForm, setCfgForm] = useState<LlmConfigInput>({
@@ -846,6 +869,164 @@ export function App() {
     setEnvDlgType("mysql");
     return new Promise((res) => setDlg({ kind: "envType", title, resolve: res }));
   };
+
+  // --- Knowledge base (ADR-AI-6) -----------------------------------------
+  // Docs are plain text / Markdown bound to connections (whole connection) or to
+  // a specific database. A doc can bind to many connections / databases (1:N:N).
+  const [kbDocs, setKbDocs] = useState<KbDocDto[]>([]);
+  const [kbEditing, setKbEditing] = useState<KbDocDto | null>(null);
+  const [kbName, setKbName] = useState("");
+  const [kbContent, setKbContent] = useState("");
+  const [kbBindings, setKbBindings] = useState<KbBindingDto[]>([]);
+  const [kbMsg, setKbMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // Distinguishes "list empty state" from "actively creating a new draft" — both
+  // have kbEditing=null and empty name/content, so we need an explicit flag or
+  // clicking 新建知识库 looks like a no-op (it resets to the same empty state).
+  const [kbIsNew, setKbIsNew] = useState(false);
+  // Caches DB lists per connection so the binding editor's database dropdown
+  // is populated lazily (an 8000-DB instance should not freeze the UI).
+  const [kbDbCache, setKbDbCache] = useState<Record<string, string[]>>({});
+  const [kbLoadingDbs, setKbLoadingDbs] = useState<string | null>(null);
+  // Controlled selects for the "add a binding" row.
+  const [kbNewConn, setKbNewConn] = useState("");
+  const [kbNewDb, setKbNewDb] = useState("");
+
+  const loadKbDocs = useCallback(async () => {
+    try {
+      setKbDocs(await api.listKbDocs());
+    } catch (e) {
+      showToast("加载知识库失败: " + String(e));
+    }
+  }, []);
+
+  const loadKbDbs = useCallback(
+    async (connId: string) => {
+      if (kbDbCache[connId] || kbLoadingDbs === connId) return;
+      setKbLoadingDbs(connId);
+      try {
+        const dbs = await api.listDatabases(connId);
+        setKbDbCache((c) => ({ ...c, [connId]: dbs }));
+      } catch {
+        setKbDbCache((c) => ({ ...c, [connId]: [] }));
+      } finally {
+        setKbLoadingDbs(null);
+      }
+    },
+    [kbDbCache, kbLoadingDbs]
+  );
+
+  const refreshKbEditing = useCallback(async (id: string) => {
+    const fresh = (await api.listKbDocs()).find((d) => d.id === id);
+    if (fresh) {
+      setKbEditing(fresh);
+      setKbName(fresh.name);
+      setKbContent(fresh.content);
+      setKbBindings(fresh.bindings.map((b) => ({ ...b })));
+    }
+  }, []);
+
+  const startNewKb = () => {
+    setKbIsNew(true);
+    setKbEditing(null);
+    setKbName("");
+    setKbContent("");
+    setKbBindings([]);
+    setKbMsg(null);
+  };
+
+  const editKb = (doc: KbDocDto) => {
+    setKbIsNew(false);
+    setKbEditing(doc);
+    setKbName(doc.name);
+    setKbContent(doc.content);
+    setKbBindings(doc.bindings.map((b) => ({ ...b })));
+    setKbMsg(null);
+  };
+
+  const saveKbDoc = async () => {
+    setKbMsg(null);
+    const name = kbName.trim();
+    if (!name) {
+      setKbMsg({ ok: false, text: "请填写知识库名称" });
+      return;
+    }
+    try {
+      if (kbEditing) {
+        await api.updateKbDoc(kbEditing.id, name, kbContent);
+        await api.setKbBindings(
+          kbEditing.id,
+          kbBindings.map((b) => ({ conn_id: b.conn_id, database: b.database }))
+        );
+        await refreshKbEditing(kbEditing.id);
+      } else {
+        const id = await api.addKbDoc(name, kbContent);
+        if (kbBindings.length > 0) {
+          try {
+            await api.setKbBindings(
+              id,
+              kbBindings.map((b) => ({ conn_id: b.conn_id, database: b.database }))
+            );
+            setKbMsg({ ok: true, text: "已创建并绑定" });
+          } catch (e) {
+            setKbMsg({ ok: false, text: "文档已创建，但绑定失败：" + String(e) });
+          }
+        } else {
+          setKbMsg({ ok: true, text: "已创建" });
+        }
+        await refreshKbEditing(id);
+        setKbIsNew(false);
+      }
+      await loadKbDocs();
+      setKbMsg({ ok: true, text: kbEditing ? "已保存" : "已创建" });
+    } catch (e) {
+      setKbMsg({ ok: false, text: String(e) });
+    }
+  };
+
+  const deleteKb = async (doc: KbDocDto) => {
+    if (
+      !(await confirmAsync(
+        `确定删除知识库「${doc.name}」？相关绑定关系也会一并删除，且不可恢复。`,
+        "删除知识库"
+      ))
+    )
+      return;
+    try {
+      await api.deleteKbDoc(doc.id);
+      showToast("已删除知识库「" + doc.name + "」");
+      if (kbEditing && kbEditing.id === doc.id) {
+        setKbIsNew(false);
+        setKbEditing(null);
+        setKbName("");
+        setKbContent("");
+        setKbBindings([]);
+        setKbMsg(null);
+      }
+      await loadKbDocs();
+    } catch (e) {
+      showToast("删除失败: " + String(e));
+    }
+  };
+
+  const addKbBinding = (connId: string, database: string | null) => {
+    if (!connId) return;
+    setKbBindings((bs) => {
+      if (bs.some((b) => b.conn_id === connId && b.database === database)) {
+        showToast("该连接 / 数据库绑定已存在");
+        return bs;
+      }
+      return [...bs, { conn_id: connId, database }];
+    });
+  };
+  const removeKbBinding = (idx: number) => {
+    setKbBindings((bs) => bs.filter((_, i) => i !== idx));
+  };
+
+  // Load knowledge-base docs whenever the user switches to the KB tab.
+  useEffect(() => {
+    if (settingsTab === "kb") void loadKbDocs();
+  }, [settingsTab]);
+
   // `val` may be a string (prompt), boolean (confirm), the envType payload
   // ({name, dbType}), or null — kept loosely typed because each dialog variant
   // only ever receives its own shape at runtime.
@@ -2910,17 +3091,31 @@ export function App() {
               </div>
             ) : (
               <div key={i} className={"msg " + m.role}>
+                <div className="msg-actions">
+                  <button
+                    type="button"
+                    className={"msg-copy" + (copiedIdx === i ? " copied" : "")}
+                    title="复制消息"
+                    onClick={async () => {
+                      const ok = await copyText(m.content || "");
+                      if (ok) {
+                        setCopiedIdx(i);
+                        setTimeout(() => setCopiedIdx((p) => (p === i ? null : p)), 1500);
+                      }
+                    }}
+                  >
+                    {copiedIdx === i ? "✓" : <CopyIcon />}
+                  </button>
+                </div>
                 {m.role === "user" ? (
                   <div className="msg-body">{m.content || "…"}</div>
                 ) : (
-                  <>
-                    <div className="msg-bubble">
-                      <div className="msg-role">{roleLabel(m.role)}</div>
-                      <div className="msg-body">
-                        <MarkdownMessage content={m.content || "…"} />
-                      </div>
+                  <div className="msg-bubble">
+                    <div className="msg-role">{roleLabel(m.role)}</div>
+                    <div className="msg-body">
+                      <MarkdownMessage content={m.content || "…"} />
                     </div>
-                  </>
+                  </div>
                 )}
               </div>
             ),
@@ -3359,7 +3554,12 @@ export function App() {
 
       {settingsOpen && (
         <div className="modal-mask" onClick={() => setSettingsOpen(false)}>
-          <div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
+          <div
+            className={
+              "modal settings-modal" + (settingsTab === "kb" ? " kb-wide" : "")
+            }
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="settings-nav">
               <div className="settings-nav-title">设置</div>
               <button
@@ -3379,6 +3579,12 @@ export function App() {
                 onClick={() => setSettingsTab("general")}
               >
                 通用
+              </button>
+              <button
+                className={"nav-item" + (settingsTab === "kb" ? " active" : "")}
+                onClick={() => setSettingsTab("kb")}
+              >
+                知识库
               </button>
             </div>
 
@@ -3497,6 +3703,180 @@ export function App() {
                       </small>
                     </span>
                   </label>
+                </div>
+              )}
+
+              {/* --- 模块四：知识库 (ADR-AI-6) --- */}
+              {settingsTab === "kb" && (
+                <div className="settings-page kb-page">
+                  <div className="kb-layout">
+                    {/* 左：文档列表 */}
+                    <div className="kb-list">
+                      <div className="kb-list-header">
+                        <span>知识库文档</span>
+                        <button className="kb-new" onClick={startNewKb}>
+                          ＋ 新建
+                        </button>
+                      </div>
+                      <div className="kb-list-scroll">
+                        {kbDocs.length === 0 && (
+                          <div className="kb-empty">暂无文档，点击上方新建</div>
+                        )}
+                        {kbDocs.map((d) => (
+                          <div
+                            key={d.id}
+                            className={
+                              "kb-list-item" +
+                              (kbEditing && kbEditing.id === d.id ? " active" : "")
+                            }
+                            onClick={() => editKb(d)}
+                          >
+                            <div className="kb-list-name">{d.name}</div>
+                            <div className="kb-list-meta">
+                              {d.bindings.length} 个绑定 · {d.content.length} 字
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 右：编辑器 */}
+                    <div className="kb-editor">
+                      {!kbIsNew && !kbEditing ? (
+                        <div className="kb-empty-large">
+                          选择左侧文档编辑，或点击「新建」开始。
+                        </div>
+                      ) : (
+                        <div className="kb-editor-card">
+                          <label>
+                            名称
+                            <input
+                              value={kbName}
+                              placeholder="例如：订单库业务说明"
+                              onChange={(e) => setKbName(e.target.value)}
+                            />
+                          </label>
+
+                          <label className="kb-content-label">
+                            内容（纯文本 / Markdown）
+                            <div className="kb-content-row">
+                              <textarea
+                                className="kb-textarea"
+                                value={kbContent}
+                                placeholder="粘贴或撰写知识内容，例如表含义、字段口径、统计口径、常见查询示例…"
+                                onChange={(e) => setKbContent(e.target.value)}
+                              />
+                              <CertPickButton
+                                accept=".txt,.md,.markdown,.text,text/plain,text/markdown"
+                                title="从文件导入（.txt / .md）"
+                                onPick={(t) => setKbContent(t)}
+                              />
+                            </div>
+                            <span className="kb-count">{kbContent.length} 字</span>
+                          </label>
+
+                          <div className="kb-bindings">
+                            <div className="kb-bindings-head">
+                              <span>绑定到连接 / 数据库</span>
+                              <span className="kb-bindings-sub">
+                                绑定后 AI 会在对应连接 / 库下引用本文档
+                              </span>
+                            </div>
+                            {kbBindings.length === 0 && (
+                              <div className="kb-empty">尚未绑定任何连接</div>
+                            )}
+                            {kbBindings.map((b, i) => {
+                              const c = allConns.find((x) => x.id === b.conn_id);
+                              return (
+                                <div className="kb-binding-row" key={i}>
+                                  <span className="kb-binding-conn">
+                                    {c ? c.name : b.conn_id}
+                                  </span>
+                                  <span className="kb-binding-db">
+                                    {b.database ?? "整条连接"}
+                                  </span>
+                                  <button
+                                    className="kb-binding-del"
+                                    title="移除该绑定"
+                                    onClick={() => removeKbBinding(i)}
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              );
+                            })}
+                            <div className="kb-binding-add">
+                              <select
+                                value={kbNewConn}
+                                onChange={(e) => {
+                                  setKbNewConn(e.target.value);
+                                  setKbNewDb("");
+                                  if (e.target.value) void loadKbDbs(e.target.value);
+                                }}
+                              >
+                                <option value="">选择连接…</option>
+                                {allConns.map((c) => (
+                                  <option key={c.id} value={c.id}>
+                                    {c.name}
+                                  </option>
+                                ))}
+                              </select>
+                              <select
+                                value={kbNewDb}
+                                disabled={!kbNewConn}
+                                onChange={(e) => setKbNewDb(e.target.value)}
+                              >
+                                <option value="">整条连接</option>
+                                {(kbDbCache[kbNewConn] ?? []).map((db) => (
+                                  <option key={db} value={db}>
+                                    {db}
+                                  </option>
+                                ))}
+                                {kbLoadingDbs === kbNewConn && (
+                                  <option value="">加载中…</option>
+                                )}
+                              </select>
+                              <button
+                                className="primary"
+                                disabled={!kbNewConn}
+                                onClick={() => {
+                                  addKbBinding(
+                                    kbNewConn,
+                                    kbNewDb === "" ? null : kbNewDb
+                                  );
+                                  setKbNewDb("");
+                                }}
+                              >
+                                添加
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="modal-actions">
+                            <button
+                              className="primary"
+                              onClick={() => void saveKbDoc()}
+                            >
+                              {kbEditing ? "保存文档" : "创建文档"}
+                            </button>
+                            {kbEditing && (
+                              <button
+                                className="primary danger"
+                                onClick={() => void deleteKb(kbEditing)}
+                              >
+                                删除
+                              </button>
+                            )}
+                          </div>
+                          {kbMsg && (
+                            <div className={"cfg-msg " + (kbMsg.ok ? "ok" : "err")}>
+                              {kbMsg.text}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -3863,28 +4243,30 @@ function rowsToUpdate(
   return stmts.join("\n");
 }
 
-async function copyText(text: string): Promise<void> {
+async function copyText(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
-      return;
+      return true;
     }
   } catch {
     /* fall through to legacy path */
   }
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.style.position = "fixed";
-  ta.style.top = "-9999px";
-  document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
   try {
-    document.execCommand("copy");
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
   } catch {
-    /* ignore */
+    return false;
   }
-  document.body.removeChild(ta);
 }
 
 function fmtTime(ts: number): string {

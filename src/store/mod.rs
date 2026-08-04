@@ -18,6 +18,23 @@ pub struct QueryRow {
     pub created: i64,
 }
 
+/// A knowledge-base document (plain text / Markdown). Stored in plaintext
+/// (same sensitivity tier as saved queries); encrypt later via `crypto` if needed.
+pub struct KbDoc {
+    pub id: String,
+    pub name: String,
+    pub content: String,
+    pub created: i64,
+    pub updated: i64,
+}
+
+/// A single binding target: a connection (`conn_id`) and optionally a specific
+/// database. `database = None` means the whole connection.
+pub struct KbBinding {
+    pub conn_id: String,
+    pub database: Option<String>,
+}
+
 /// SQLite-backed persistence for connection configs and (later) history.
 /// Single file under XDG_CONFIG_HOME/chatquery/app.db.
 ///
@@ -37,43 +54,7 @@ impl Storage {
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("app.db");
         let conn = Connection::open(path)?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS connections (
-                id   TEXT PRIMARY KEY,
-                data TEXT NOT NULL
-            );",
-        )?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS containers (
-                id     TEXT PRIMARY KEY,
-                kind   TEXT NOT NULL,
-                name   TEXT NOT NULL,
-                parent TEXT,
-                ord    INTEGER NOT NULL DEFAULT 0
-            );",
-        )?;
-        // ADR-022: environments are bound to a db_type so empty ones can be
-        // placed under the right root. Existing deployments lack the column;
-        // add it idempotently (PRAGMA-guarded so re-running is a no-op).
-        {
-            let mut pragma = conn.prepare("PRAGMA table_info(containers)")?;
-            let has_db_type: bool = pragma
-                .query_map([], |r| r.get::<_, String>(1))?
-                .any(|c| c.map(|n| n == "db_type").unwrap_or(false));
-            if !has_db_type {
-                conn.execute("ALTER TABLE containers ADD COLUMN db_type TEXT", [])?;
-            }
-        } // `pragma` dropped here, releasing its borrow of `conn`
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS queries (
-                id      TEXT PRIMARY KEY,
-                name    TEXT,
-                sql     TEXT NOT NULL,
-                conn_id TEXT,
-                db      TEXT,
-                created INTEGER NOT NULL
-            );",
-        )?;
+        init_schema(&conn)?;
         // #0: connections are encrypted with K (the configurable key), which
         // degenerates to the KEK when no user key is set — so a fresh install
         // behaves exactly as before. See crypto::load_encryption_key.
@@ -353,6 +334,121 @@ impl Storage {
             .execute("DELETE FROM queries WHERE id = ?1", params![id])?;
         Ok(())
     }
+
+    // --- Knowledge base (ADR-AI-6) ---------------------------------------
+
+    pub fn add_kb_doc(&self, name: &str, content: &str) -> Result<String> {
+        let id = gen_id("kb");
+        let now = now_secs();
+        self.conn.execute(
+            "INSERT INTO kb_docs (id, name, content, created, updated)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, name, content, now, now],
+        )?;
+        Ok(id)
+    }
+
+    pub fn update_kb_doc(&self, id: &str, name: &str, content: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE kb_docs SET name = ?1, content = ?2, updated = ?3 WHERE id = ?4",
+            params![name, content, now_secs(), id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_kb_docs(&self) -> Result<Vec<KbDoc>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, content, created, updated FROM kb_docs ORDER BY updated DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(KbDoc {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                content: r.get(2)?,
+                created: r.get(3)?,
+                updated: r.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_kb_doc(&mut self, id: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM kb_bindings WHERE kb_id = ?1", params![id])?;
+        tx.execute("DELETE FROM kb_docs WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Replace all bindings for a doc (idempotent: clears then inserts).
+    pub fn set_kb_bindings(
+        &mut self,
+        kb_id: &str,
+        bindings: &[(String, Option<String>)],
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM kb_bindings WHERE kb_id = ?1", params![kb_id])?;
+        for (conn_id, database) in bindings {
+            tx.execute(
+                "INSERT OR IGNORE INTO kb_bindings (kb_id, conn_id, database) VALUES (?1, ?2, ?3)",
+                params![kb_id, conn_id, database],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn get_kb_bindings(&self, kb_id: &str) -> Result<Vec<KbBinding>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT conn_id, database FROM kb_bindings WHERE kb_id = ?1")?;
+        let rows = stmt.query_map(params![kb_id], |r| {
+            Ok(KbBinding {
+                conn_id: r.get(0)?,
+                database: r.get(1)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Docs bound to (conn_id, whole-connection) OR (conn_id, specific db).
+    /// This is the set the AI should see when operating in that context.
+    pub fn get_injected_kb_docs(
+        &self,
+        conn_id: &str,
+        db: Option<&str>,
+    ) -> Result<Vec<KbDoc>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT d.id, d.name, d.content, d.created, d.updated
+             FROM kb_docs d
+             JOIN kb_bindings b ON b.kb_id = d.id
+             WHERE (b.conn_id = ?1 AND b.database IS NULL)
+                OR (b.conn_id = ?1 AND b.database = ?2)
+             ORDER BY d.updated DESC",
+        )?;
+        let rows = stmt.query_map(params![conn_id, db], |r| {
+            Ok(KbDoc {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                content: r.get(2)?,
+                created: r.get(3)?,
+                updated: r.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
 }
 
 fn now_secs() -> i64 {
@@ -360,6 +456,170 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Schema bootstrap, extracted from `open()` so tests can build an isolated
+/// in-memory store without touching the on-disk DB or the encryption key.
+fn init_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS connections (
+            id   TEXT PRIMARY KEY,
+            data TEXT NOT NULL
+        );",
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS containers (
+            id     TEXT PRIMARY KEY,
+            kind   TEXT NOT NULL,
+            name   TEXT NOT NULL,
+            parent TEXT,
+            ord    INTEGER NOT NULL DEFAULT 0
+        );",
+    )?;
+    {
+        let mut pragma = conn.prepare("PRAGMA table_info(containers)")?;
+        let has_db_type: bool = pragma
+            .query_map([], |r| r.get::<_, String>(1))?
+            .any(|c| c.map(|n| n == "db_type").unwrap_or(false));
+        if !has_db_type {
+            conn.execute("ALTER TABLE containers ADD COLUMN db_type TEXT", [])?;
+        }
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS queries (
+            id      TEXT PRIMARY KEY,
+            name    TEXT,
+            sql     TEXT NOT NULL,
+            conn_id TEXT,
+            db      TEXT,
+            created INTEGER NOT NULL
+        );",
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS kb_docs (
+            id      TEXT PRIMARY KEY,
+            name    TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created INTEGER NOT NULL,
+            updated INTEGER NOT NULL
+        );",
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS kb_bindings (
+            kb_id   TEXT NOT NULL,
+            conn_id TEXT NOT NULL,
+            database TEXT,
+            PRIMARY KEY (kb_id, conn_id, database)
+        );",
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Build an isolated in-memory store with the full schema. Avoids touching
+    /// the real on-disk DB / encryption key so kb logic can be unit-tested.
+    fn mem_store() -> Storage {
+        let conn = Connection::open(":memory:").expect("mem db");
+        init_schema(&conn).expect("schema");
+        Storage { conn, key: [0u8; 32] }
+    }
+
+    fn names(mut docs: Vec<KbDoc>) -> Vec<String> {
+        docs.sort_by(|a, b| a.name.cmp(&b.name));
+        docs.into_iter().map(|d| d.name).collect()
+    }
+
+    #[test]
+    fn kb_crud_and_update() {
+        let mut s = mem_store();
+        let id1 = s.add_kb_doc("订单说明", "内容A").unwrap();
+        let _id2 = s.add_kb_doc("用户说明", "内容B").unwrap();
+        assert_eq!(s.list_kb_docs().unwrap().len(), 2);
+        s.update_kb_doc(&id1, "订单说明V2", "内容A改").unwrap();
+        let got = s.list_kb_docs().unwrap();
+        let updated = got.iter().find(|d| d.id == id1).unwrap();
+        assert_eq!(updated.name, "订单说明V2");
+        assert_eq!(updated.content, "内容A改");
+    }
+
+    /// Core accuracy guard: only docs bound to the active connection/db are
+    /// injected. A db-specific binding must NOT leak into another db, and a
+    /// different connection's docs must never appear.
+    #[test]
+    fn kb_injection_isolation() {
+        let mut s = mem_store();
+        let a = s.add_kb_doc("整条连接A", "A").unwrap();
+        let b = s.add_kb_doc("库X专用", "B").unwrap();
+        let c = s.add_kb_doc("连接B整条", "C").unwrap();
+        s.set_kb_bindings(&a, &[("connA".into(), None)]).unwrap();
+        s.set_kb_bindings(&b, &[("connA".into(), Some("dbX".into()))]).unwrap();
+        s.set_kb_bindings(&c, &[("connB".into(), None)]).unwrap();
+
+        // db=None → only whole-connection bindings, not db-specific ones
+        let r = s.get_injected_kb_docs("connA", None).unwrap();
+        assert_eq!(names(r), vec!["整条连接A".to_string()]);
+
+        // connA + dbX → whole-connection (A) AND dbX-specific (B)
+        let r = s.get_injected_kb_docs("connA", Some("dbX")).unwrap();
+        assert_eq!(names(r), vec!["库X专用".to_string(), "整条连接A".to_string()]);
+
+        // connA + dbY → only whole-connection A (no binding for dbY)
+        let r = s.get_injected_kb_docs("connA", Some("dbY")).unwrap();
+        assert_eq!(names(r), vec!["整条连接A".to_string()]);
+
+        // connB + dbX → its own whole-connection C; must NOT leak connA's dbX doc
+        let r = s.get_injected_kb_docs("connB", Some("dbX")).unwrap();
+        assert_eq!(names(r), vec!["连接B整条".to_string()]);
+    }
+
+    /// One doc bound to both whole-connection and a specific db: DISTINCT
+    /// keeps it from appearing twice.
+    #[test]
+    fn kb_one_to_many_binding() {
+        let mut s = mem_store();
+        let d = s.add_kb_doc("一对多文档", "D").unwrap();
+        s.set_kb_bindings(
+            &d,
+            &[("connA".into(), None), ("connA".into(), Some("dbX".into()))],
+        )
+        .unwrap();
+        let r = s.get_injected_kb_docs("connA", None).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].name, "一对多文档");
+        let r = s.get_injected_kb_docs("connA", Some("dbX")).unwrap();
+        assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn kb_delete_cascades_bindings() {
+        let mut s = mem_store();
+        let e = s.add_kb_doc("待删", "E").unwrap();
+        s.set_kb_bindings(&e, &[("connA".into(), Some("dbX".into()))])
+            .unwrap();
+        assert_eq!(s.get_kb_bindings(&e).unwrap().len(), 1);
+        s.delete_kb_doc(&e).unwrap();
+        assert!(s.get_kb_bindings(&e).unwrap().is_empty());
+        assert!(s
+            .get_injected_kb_docs("connA", Some("dbX"))
+            .unwrap()
+            .is_empty());
+    }
+
+    /// set_kb_bindings replaces the full set, not appends.
+    #[test]
+    fn kb_set_bindings_replaces() {
+        let mut s = mem_store();
+        let f = s.add_kb_doc("替换绑定", "F").unwrap();
+        s.set_kb_bindings(&f, &[("connA".into(), None)]).unwrap();
+        s.set_kb_bindings(&f, &[("connB".into(), None)]).unwrap();
+        let bs = s.get_kb_bindings(&f).unwrap();
+        assert_eq!(bs.len(), 1);
+        assert_eq!(bs[0].conn_id, "connB");
+    }
 }
 
 fn config_dir() -> PathBuf {

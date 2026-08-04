@@ -1,73 +1,572 @@
 use crate::config::LlmConfig;
-use crate::db::connection::ConnectionConfig;
+use crate::db::connection::{ConnectionConfig, DbType};
+use crate::db::mysql;
 use crate::error::Result;
-use crate::llm::client::stream_chat;
-use crate::llm::tools::{exec_tool, tool_schema};
+use crate::llm::client::{stream_chat, ToolCall};
+use crate::llm::control::TurnControl;
+use crate::llm::KbLoader;
+use crate::llm::memory::SessionMemory;
+use crate::llm::planner::{needs_planning, plan_task};
+use crate::llm::policy::{check_statement, PolicyDecision};
+use crate::llm::tools::{build_registry, ToolContext, ToolRegistry};
+use crate::llm::worker::{classify_step, WorkerKind};
 use crate::mcp::host::McpHostManager;
-use crate::model::{BackendMsg, ChatMessage, ChatRole, ToolCallBrief};
+use crate::model::{BackendMsg, ChatMessage, ChatRole, ConfirmRequest, ToolCallBrief};
+use futures::future::join_all;
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Bound the tool-call round trips so a misbehaving model can't loop forever.
 const MAX_TOOL_ITERS: usize = 5;
 
-/// Run a full LLM turn: stream the assistant reply, execute any tool calls,
-/// feed the results back, and loop until the model replies without tools.
-/// Progress is reported over `tx` so the TUI can render live.
+/// How long a write confirmation waits for the user before it self-refuses.
+const CONFIRM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// A single agent: owns its tool registry, working memory, and (in the
+/// multi-agent topology) a `role`. The chat uses one `Agent` for a simple
+/// task; a complex task is handled by an Orchestrator that spawns Explorer /
+/// Executor workers — each a fresh `Agent` with its own context window and a
+/// role-scoped system prompt.
+pub struct Agent {
+    cfg: LlmConfig,
+    conns: Vec<ConnectionConfig>,
+    mcp: Option<Arc<McpHostManager>>,
+    registry: ToolRegistry,
+    memory: SessionMemory,
+    role: WorkerKind,
+    /// Side channel for cancellation and write-confirmation (ADR-AI-4).
+    /// Shared by the orchestrator and every worker it spawns, so cancelling
+    /// the turn stops the whole tree.
+    ctl: TurnControl,
+    /// Injected knowledge-base loader (ADR-AI-6). Lets the agent read docs
+    /// bound to the active connection/db without depending on the store.
+    kb: KbLoader,
+}
+
+impl Agent {
+    /// Build the default (single-agent / Orchestrator) agent for a turn.
+    pub async fn build(
+        cfg: LlmConfig,
+        conns: Vec<ConnectionConfig>,
+        mcp: Option<Arc<McpHostManager>>,
+        conn_id: &str,
+        ctl: TurnControl,
+        kb: KbLoader,
+    ) -> Self {
+        let registry = build_registry(mcp.as_deref()).await;
+        let memory = SessionMemory::new(Some(conn_id.to_string()), None);
+        Self {
+            cfg,
+            conns,
+            mcp,
+            registry,
+            memory,
+            role: WorkerKind::Orchestrator,
+            ctl,
+            kb,
+        }
+    }
+
+    /// Build a delegated worker with a specific role. It gets its own registry
+    /// (a scoped subset in future) and a fresh working memory, so its tool
+    /// output never bleeds into the Orchestrator's context. The control plane
+    /// is *shared* — one cancel stops every worker.
+    pub async fn build_worker(
+        role: WorkerKind,
+        cfg: LlmConfig,
+        conns: Vec<ConnectionConfig>,
+        mcp: Option<Arc<McpHostManager>>,
+        conn_id: &str,
+        ctl: TurnControl,
+        kb: KbLoader,
+    ) -> Self {
+        let registry = build_registry(mcp.as_deref()).await;
+        let memory = SessionMemory::new(Some(conn_id.to_string()), None);
+        Self {
+            cfg,
+            conns,
+            mcp,
+            registry,
+            memory,
+            role,
+            ctl,
+            kb,
+        }
+    }
+
+    pub async fn run(&mut self, history: &[ChatMessage], tx: &UnboundedSender<BackendMsg>) -> Result<()> {
+        // 复杂度路由：复杂任务走多智能体（Orchestrator 规划 → 委派 Worker →
+        // 综合）；简单任务零额外开销，直接单 ReAct 循环。
+        let last_user = history
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::User)
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+
+        if !needs_planning(&last_user, history.len()) {
+            let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb).await;
+            let mut messages = Vec::new();
+            if !system.is_empty() {
+                messages.push(ChatMessage::system(system));
+            }
+            messages.extend(history.iter().cloned());
+            self.react(messages, tx).await?;
+            return Ok(());
+        }
+
+        // 复杂任务：先规划（失败则安全降级为直接 ReAct）。
+        let plan: Vec<String> = match plan_task(&self.cfg, &last_user, &self.conns, &self.memory).await {
+            Ok(steps) if !steps.is_empty() => steps,
+            _ => {
+                let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb).await;
+                let mut messages = Vec::new();
+                if !system.is_empty() {
+                    messages.push(ChatMessage::system(system));
+                }
+                messages.extend(history.iter().cloned());
+                self.react(messages, tx).await?;
+                return Ok(());
+            }
+        };
+
+        // The plan travels as its own structured event, not as prose in the
+        // token stream — the UI renders it as a distinct card so it reads as
+        // "what I'm about to do", not as part of the answer.
+        let _ = tx.send(BackendMsg::ChatPlan(plan.clone()));
+
+        // 逐步委派给对应角色的 Worker。串行执行：计划步骤之间通常存在依赖，
+        // 且串行能稳定控制延迟与成本（后续可升级为可并行步骤的并发调度）。
+        let conn_id = self.memory.current_conn.clone().unwrap_or_default();
+        let mut shared_context = String::new();
+        for (idx, step) in plan.iter().enumerate() {
+            if self.ctl.is_cancelled() {
+                return Ok(());
+            }
+            let role = classify_step(step);
+            let _ = tx.send(BackendMsg::ChatToken(format!(
+                "\n— 步骤 {}：{}\n",
+                idx + 1,
+                step
+            )));
+            let mut worker = Agent::build_worker(
+                role,
+                self.cfg.clone(),
+                self.conns.clone(),
+                self.mcp.clone(),
+                &conn_id,
+                self.ctl.clone(),
+                self.kb.clone(),
+            )
+            .await;
+            let wsys = build_worker_system(role, &self.conns, &self.memory, &plan, idx + 1, step, &shared_context, &self.kb).await;
+            let mut wmsg = Vec::new();
+            if !wsys.is_empty() {
+                wmsg.push(ChatMessage::system(wsys));
+            }
+            wmsg.push(ChatMessage::user(&last_user));
+            if let Some(result) = worker.react(wmsg, tx).await? {
+                shared_context.push_str(&format!(
+                    "步骤 {}（{}）：{}\n\n",
+                    idx + 1,
+                    role.label(),
+                    result
+                ));
+                let note: String = result.chars().take(80).collect();
+                self.memory.note_result(&format!("{}: {}", role.label(), note));
+            }
+        }
+
+        if self.ctl.is_cancelled() {
+            return Ok(());
+        }
+        // Orchestrator 综合所有 Worker 的结果，给用户一个面向结论的回答。
+        self.synthesize(&last_user, &plan, &shared_context, tx).await
+    }
+
+    /// Generic ReAct loop. Given messages that already include the system
+    /// prompt and any history/tool results, stream LLM turns until the model
+    /// stops calling tools. Returns the final assistant text (used by the
+    /// Orchestrator to collect worker output).
+    async fn react(
+        &mut self,
+        mut messages: Vec<ChatMessage>,
+        tx: &UnboundedSender<BackendMsg>,
+    ) -> Result<Option<String>> {
+        let mut last_assistant: Option<String> = None;
+        // Tag a worker's first streamed token with its role so the transcript
+        // shows who is talking (the Orchestrator's own text stays untagged).
+        let mut tagged = false;
+        let role = self.role;
+        let ctl = self.ctl.clone();
+
+        for _ in 0..MAX_TOOL_ITERS {
+            if ctl.is_cancelled() {
+                break;
+            }
+            // `select!` borrows its arms for the whole statement, so the
+            // schema vec and the delta sink need real bindings (not temporaries).
+            let schemas = self.registry.schemas();
+            let mut on_delta = |d: &str| {
+                if role != WorkerKind::Orchestrator && !tagged {
+                    let _ = tx.send(BackendMsg::ChatToken(format!("[{}] {}", role.label(), d)));
+                    tagged = true;
+                } else {
+                    let _ = tx.send(BackendMsg::ChatToken(d.to_string()));
+                }
+            };
+            // Race the stream against cancellation: dropping the `stream_chat`
+            // future tears down the HTTP body reader, so a cancel lands within
+            // one chunk instead of one full completion.
+            let choice = tokio::select! {
+                biased;
+                _ = ctl.cancelled() => break,
+                r = stream_chat(&self.cfg, &messages, &schemas, &mut on_delta) => r?,
+            };
+
+            if choice.tool_calls.is_empty() {
+                if !choice.content.trim().is_empty() {
+                    last_assistant = Some(choice.content.clone());
+                    messages.push(ChatMessage::assistant(choice.content.clone()));
+                }
+                break;
+            }
+
+            // Persist the assistant message carrying tool calls (required for the API round-trip).
+            let tcs: Vec<ToolCallBrief> = choice
+                .tool_calls
+                .iter()
+                .map(|t| ToolCallBrief {
+                    id: t.id.clone(),
+                    name: t.name.clone(),
+                    arguments: t.arguments.clone(),
+                })
+                .collect();
+            messages.push(ChatMessage {
+                role: ChatRole::Assistant,
+                content: choice.content.clone(),
+                tool_calls: Some(tcs),
+                tool_call_id: None,
+            });
+
+            // Execute tool calls in parallel; the policy gate runs per-call
+            // before any DB hit (so destructive SQL is refused without touching
+            // the server).
+            let ctx = ToolContext {
+                conns: &self.conns,
+                mcp: self.mcp.as_deref(),
+                kb_loader: self.kb.clone(),
+            };
+            let mut futures = Vec::new();
+            for tc in &choice.tool_calls {
+                futures.push(exec_with_policy(
+                    tc,
+                    &self.registry,
+                    &ctx,
+                    &self.conns,
+                    &ctl,
+                    tx,
+                ));
+            }
+            let results = join_all(futures).await;
+            for (tc, (summary, detail)) in choice.tool_calls.iter().zip(results.into_iter()) {
+                let _ = tx.send(BackendMsg::ChatTool(format!("{} → {}", tc.name, summary)));
+                messages.push(ChatMessage {
+                    role: ChatRole::Tool,
+                    content: detail,
+                    tool_calls: None,
+                    tool_call_id: Some(tc.id.clone()),
+                });
+                self.memory.note_result(&summary);
+            }
+        }
+
+        Ok(last_assistant)
+    }
+
+    /// Orchestrator-only step: write a user-facing synthesis from the worker
+    /// results. One extra tool-free LLM call — the cost of turning raw query
+    /// dumps into a coherent answer.
+    async fn synthesize(
+        &self,
+        user_query: &str,
+        plan: &[String],
+        shared_context: &str,
+        tx: &UnboundedSender<BackendMsg>,
+    ) -> Result<()> {
+        let _ = tx.send(BackendMsg::ChatToken("\n📊 综合结论：\n".to_string()));
+        let mut p = String::new();
+        p.push_str("你是 Orchestrator。多个 Worker 已经按计划完成了任务，下面是它们各自产出的结果。\n");
+        p.push_str("\n## 执行计划：\n");
+        for (i, s) in plan.iter().enumerate() {
+            p.push_str(&format!("{}. {}\n", i + 1, s));
+        }
+        p.push_str(&format!("\n## 用户原始问题：\n{}\n", user_query));
+        p.push_str(&format!("\n## Worker 产出结果：\n{}\n", shared_context));
+        p.push_str(
+            "\n请综合以上结果，用中文给用户一个清晰、面向结论的回答。说明关键发现、数据规模、\
+             以及任何需要注意的点。不要重复完整 SQL，除非对结论必要。\n",
+        );
+        let messages = vec![ChatMessage::system(p)];
+        let mut on_delta = |d: &str| {
+            let _ = tx.send(BackendMsg::ChatToken(d.to_string()));
+        };
+        tokio::select! {
+            biased;
+            _ = self.ctl.cancelled() => return Ok(()),
+            r = stream_chat(&self.cfg, &messages, &[], &mut on_delta) => { r?; }
+        }
+        let _ = tx.send(BackendMsg::ChatToken("\n".to_string()));
+        Ok(())
+    }
+}
+
+/// Run a full LLM turn using a freshly-built orchestrator agent. Kept as the
+/// command entry point so `chat_turn` doesn't need to know about `Agent`.
+///
+/// `ctl` is the turn's control plane: the caller keeps a clone so it can
+/// cancel the turn or answer a write-confirmation while this future runs.
 pub async fn run_turn(
     cfg: &LlmConfig,
     conns: Vec<ConnectionConfig>,
     mcp: Option<Arc<McpHostManager>>,
     history: &[ChatMessage],
+    conn_id: &str,
     tx: &UnboundedSender<BackendMsg>,
+    ctl: TurnControl,
+    kb: KbLoader,
 ) -> Result<()> {
-    let mut tools = vec![tool_schema()];
-    if let Some(m) = &mcp {
-        tools.extend(m.all_tool_schemas().await);
+    let mut agent = Agent::build(cfg.clone(), conns, mcp, conn_id, ctl.clone(), kb).await;
+    let out = agent.run(history, tx).await;
+    if ctl.is_cancelled() {
+        let _ = tx.send(BackendMsg::ChatToken("\n⏹ 已取消。\n".to_string()));
+        // A cancelled turn is not a failure — swallow whatever the aborted
+        // stream reported so the UI shows "cancelled", not "error".
+        return Ok(());
     }
-    let mut messages: Vec<ChatMessage> = history.to_vec();
+    out
+}
 
-    for _ in 0..MAX_TOOL_ITERS {
-        let choice = stream_chat(cfg, &messages, &tools, &mut |delta: &str| {
-            let _ = tx.send(BackendMsg::ChatToken(delta.to_string()));
-        })
-        .await?;
-
-        if choice.tool_calls.is_empty() {
-            if !choice.content.trim().is_empty() {
-                messages.push(ChatMessage::assistant(choice.content.clone()));
+/// Connection / active-db context block. Shared by the Orchestrator prompt and
+/// every worker prompt so they all see the same ground truth without
+/// duplicating the schema fetch.
+async fn context_block(
+    conns: &[ConnectionConfig],
+    memory: &SessionMemory,
+    kb: &KbLoader,
+) -> String {
+    let mut p = String::new();
+    p.push_str("可用连接：\n");
+    for c in conns {
+        let kind = match c.db_type {
+            DbType::Mysql => "MySQL",
+            DbType::Redis => "Redis",
+        };
+        p.push_str(&format!("- {} ({})\n", c.name, kind));
+    }
+    if let Some(conn_id) = &memory.current_conn {
+        if let Some(cfg) = conns.iter().find(|c| &c.id == conn_id) {
+            let kind = match cfg.db_type {
+                DbType::Mysql => "MySQL",
+                DbType::Redis => "Redis",
+            };
+            p.push_str(&format!("\n当前连接：{} ({})\n", cfg.name, kind));
+            if cfg.db_type == DbType::Mysql {
+                let db = if cfg.database.is_empty() {
+                    "mysql"
+                } else {
+                    &cfg.database
+                };
+                if let Ok(tables) = mysql::search_tables(cfg, db, None, 100).await {
+                    if !tables.is_empty() {
+                        p.push_str(&format!("该库（{}）中的部分表（最多 100 张）：\n", db));
+                        for t in &tables {
+                            p.push_str(&format!(
+                                "- {}{}\n",
+                                t.name,
+                                if t.is_view { " [视图]" } else { "" }
+                            ));
+                        }
+                    }
+                }
             }
-            break;
         }
-
-        // Persist the assistant message carrying tool calls (required for the API round-trip).
-        let tcs: Vec<ToolCallBrief> = choice
-            .tool_calls
-            .iter()
-            .map(|t| ToolCallBrief {
-                id: t.id.clone(),
-                name: t.name.clone(),
-                arguments: t.arguments.clone(),
-            })
-            .collect();
-        messages.push(ChatMessage {
-            role: ChatRole::Assistant,
-            content: choice.content.clone(),
-            tool_calls: Some(tcs),
-            tool_call_id: None,
-        });
-
-        for tc in &choice.tool_calls {
-            let (summary, detail) = exec_tool(tc, &conns, mcp.as_deref()).await;
-            let _ = tx.send(BackendMsg::ChatTool(format!("{} → {}", tc.name, summary)));
-            messages.push(ChatMessage {
-                role: ChatRole::Tool,
-                content: detail,
-                tool_calls: None,
-                tool_call_id: Some(tc.id.clone()),
+        // ADR-AI-6: inject knowledge-base docs bound to the active connection/db.
+        let db = memory
+            .current_db
+            .clone()
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                conns
+                    .iter()
+                    .find(|c| &c.id == conn_id)
+                    .and_then(|c| {
+                        if c.database.is_empty() {
+                            None
+                        } else {
+                            Some(c.database.clone())
+                        }
+                    })
             });
+        let docs = kb(conn_id, db.as_deref());
+        if !docs.is_empty() {
+            p.push_str("\n## 知识库（已绑定当前连接/库，辅助理解业务口径）：\n");
+            let mut total = 0usize;
+            const PER_DOC: usize = 2000;
+            const TOTAL_CAP: usize = 6000;
+            for (name, content) in &docs {
+                if total >= TOTAL_CAP {
+                    break;
+                }
+                let take: String = content.chars().take(PER_DOC).collect();
+                total += take.chars().count();
+                p.push_str(&format!("- 文档「{}」：{}\n", name, take));
+            }
+            if total >= TOTAL_CAP {
+                p.push_str("(知识库较大，仅注入部分；需要更多片段可用 search_knowledge 工具检索)\n");
+            }
         }
     }
+    p
+}
 
-    Ok(())
+/// Construct the system prompt with current connection/db context (ADR-AI-2).
+/// Lists up to 100 tables of the active DB so the model has real schema
+/// awareness without dumping an 8000-table schema.
+async fn build_system_prompt(
+    conns: &[ConnectionConfig],
+    memory: &SessionMemory,
+    plan: Option<&[String]>,
+    kb: &KbLoader,
+) -> String {
+    let mut p = context_block(conns, memory, kb).await;
+    p.push_str(
+        "\n规则：\n\
+         - 只使用 execute_query 工具，并指定已知连接名。\n\
+         - 优先只读查询；不要臆造表名或列名。\n\
+         - 当前库若绑定了知识库，相关内容已包含在上方上下文中；如需更具体的片段，可用 search_knowledge 工具按关键词检索。\n\
+         - 写操作（INSERT/UPDATE/DELETE/REPLACE）会先弹窗请用户确认，确认后才真正执行；\
+         写之前请先用只读查询确认影响范围，并且必须带精确的 WHERE 条件。\n\
+         - DDL 与破坏性语句（DROP/TRUNCATE/ALTER/CREATE 等）一律被护栏拦截，请告知用户手动执行。\n",
+    );
+    if let Some(steps) = plan {
+        p.push_str("\n## 本次执行计划（必须严格按以下步骤顺序执行，不要偏离或跳步）：\n");
+        for (i, s) in steps.iter().enumerate() {
+            p.push_str(&format!("{}. {}\n", i + 1, s));
+        }
+    }
+    p
+}
+
+/// Build a role-scoped system prompt for a delegated worker.
+async fn build_worker_system(
+    role: WorkerKind,
+    conns: &[ConnectionConfig],
+    memory: &SessionMemory,
+    plan: &[String],
+    step_idx: usize,
+    step: &str,
+    shared_context: &str,
+    kb: &KbLoader,
+) -> String {
+    let mut p = String::new();
+    p.push_str(role.system_prefix());
+    p.push_str(&context_block(conns, memory, kb).await);
+    p.push_str("\n## 本次任务计划（全局目标）：\n");
+    for (i, s) in plan.iter().enumerate() {
+        let mark = if i + 1 == step_idx { " ← 你负责这一步" } else { "" };
+        p.push_str(&format!("{}. {}{}\n", i + 1, s, mark));
+    }
+    p.push_str(&format!("\n## 你负责的第 {} 步：\n{}\n", step_idx, step));
+    if !shared_context.is_empty() {
+        p.push_str(&format!(
+            "\n## 前序步骤的结果（供你参考，步骤间可能有依赖）：\n{}\n",
+            shared_context
+        ));
+    }
+    p.push_str(
+        "\n规则：只使用 execute_query 工具；优先只读查询；不要臆造表名或列名；\
+         当前库若绑定了知识库，相关内容已包含在上下文里，需要更具体的片段可用 search_knowledge 检索；\
+         写操作会先请用户确认（写前先查清影响范围并带精确 WHERE）；\
+         DDL 与破坏性语句会被护栏拦截，请告知用户手动执行。\n",
+    );
+    p
+}
+
+/// Execute a tool call, running the safety guardrail first for `execute_query`
+/// on MySQL: read-only runs straight through, DDL / destructive statements are
+/// hard-denied, and writes pause here until the user answers the confirmation
+/// prompt the UI raised.
+///
+/// A rejection is fed back to the model as a *tool result*, not an error — the
+/// model needs to see "the user said no" so it can explain itself instead of
+/// blindly retrying.
+async fn exec_with_policy(
+    tc: &ToolCall,
+    reg: &ToolRegistry,
+    ctx: &ToolContext<'_>,
+    conns: &[ConnectionConfig],
+    ctl: &TurnControl,
+    tx: &UnboundedSender<BackendMsg>,
+) -> (String, String) {
+    if tc.name == "execute_query" {
+        let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(Value::Null);
+        let conn_name = args
+            .get("connection")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(cfg) = conns.iter().find(|c| c.name == conn_name) {
+            if cfg.db_type == DbType::Mysql {
+                match check_statement(query) {
+                    PolicyDecision::Allow => {}
+                    PolicyDecision::Deny(reason) => {
+                        return ("已拦截".into(), format!("AI 护栏拒绝执行：{}", reason));
+                    }
+                    PolicyDecision::ConfirmRequired(reason) => {
+                        if ctl.is_cancelled() {
+                            return ("已取消".into(), "会话已取消，未执行。".into());
+                        }
+                        let (id, rx) = ctl.register_confirm();
+                        let _ = tx.send(BackendMsg::ChatConfirm(ConfirmRequest {
+                            id,
+                            turn_id: ctl.turn_id().to_string(),
+                            connection: conn_name.to_string(),
+                            sql: query.to_string(),
+                            reason,
+                        }));
+                        // Bounded wait. If the webview reloads (or the user
+                        // walks away) nobody will ever answer, and an
+                        // unbounded await would wedge the turn — and its entry
+                        // in the turn registry — forever. Timing out reads as
+                        // a refusal, which is the safe default.
+                        let answer = tokio::time::timeout(CONFIRM_TIMEOUT, rx).await;
+                        match answer.unwrap_or(Ok(false)) {
+                            Ok(true) => {
+                                let _ = tx.send(BackendMsg::ChatTool(
+                                    "写操作已获用户确认，正在执行".to_string(),
+                                ));
+                            }
+                            Ok(false) => {
+                                return (
+                                    "用户拒绝".into(),
+                                    "用户拒绝执行这条写操作。不要重试，也不要改写后再次尝试；\
+                                     请向用户说明影响，并给出可供其手动执行的 SQL。"
+                                        .into(),
+                                );
+                            }
+                            Err(_) => {
+                                return (
+                                    "确认失效".into(),
+                                    "确认请求未获响应（会话已结束、被取消或超时），语句未执行。".into(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    reg.call(tc, ctx).await
 }

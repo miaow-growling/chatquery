@@ -1,5 +1,6 @@
 use crate::config::{load_mcp_servers, LlmConfig};
 use crate::db::connection::{ConnectionConfig, ConnectionStore, DbType};
+use crate::llm::control::TurnControl;
 use crate::llm::session::run_turn;
 use crate::mcp::host::McpHostManager;
 use crate::model::{BackendMsg, ChatMessage, DisplayResult};
@@ -486,8 +487,30 @@ impl App {
         let history: Vec<ChatMessage> = self.chat.clone();
         let mcp = self.mcp.clone();
         let tx = result_tx.clone();
+        // The TUI has no confirmation modal and no stop key yet, so it gets a
+        // control plane that is never signalled: writes will simply hang the
+        // guardrail's confirm wait until the turn's own teardown rejects it.
+        // Rather than that, cancel it up-front — writes stay refused in the
+        // TUI, which matches the pre-existing behaviour.
+        let ctl = TurnControl::new("tui");
+        ctl.cancel_confirmations_only();
+        let conn_id = self
+            .store
+            .get(self.selected_conn)
+            .map(|c| c.id.clone())
+            .unwrap_or_default();
         tokio::spawn(async move {
-            match run_turn(&cfg, conns, mcp, &history, &tx).await {
+            match run_turn(
+                &cfg,
+                conns,
+                mcp,
+                &history,
+                &conn_id,
+                &tx,
+                ctl,
+                std::sync::Arc::new(|_, _| Vec::new()),
+            )
+            .await {
                 Ok(()) => {
                     let _ = tx.send(BackendMsg::ChatDone);
                 }

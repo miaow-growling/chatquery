@@ -61,6 +61,13 @@ pub const VENDOR_PRESETS: &[VendorPreset] = &[
         model: "hunyuan-turbo",
     },
     VendorPreset {
+        id: "tokenhub",
+        label: "腾讯 TokenHub",
+        provider: LlmProvider::OpenAi,
+        base_url: "https://tokenhub.tencentmaas.com/v1",
+        model: "hy3",
+    },
+    VendorPreset {
         id: "deepseek",
         label: "DeepSeek",
         provider: LlmProvider::OpenAi,

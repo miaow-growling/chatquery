@@ -155,6 +155,17 @@ async fn run_app(
                 }
                 BackendMsg::ChatToken(s) => app.push_chat_token(&s),
                 BackendMsg::ChatTool(info) => app.push_chat_tool(info),
+                // The TUI has no plan card / confirm modal yet: render the
+                // plan inline and note the (auto-refused) confirmation.
+                BackendMsg::ChatPlan(steps) => {
+                    app.push_chat_token(&format!(
+                        "\n📋 执行计划：\n{}\n",
+                        chatquery::llm::planner::render_plan(&steps)
+                    ));
+                }
+                BackendMsg::ChatConfirm(req) => {
+                    app.push_chat_tool(format!("需确认（TUI 暂不支持，已拒绝）: {}", req.sql));
+                }
                 BackendMsg::ChatDone => app.commit_chat_stream(),
                 BackendMsg::ConnHealth(id, ok) => {
                     use chatquery::tui::app::ConnStatus;

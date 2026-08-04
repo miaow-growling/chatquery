@@ -37,10 +37,11 @@ fn main() {
 
     tauri::Builder::default()
         .manage(AppState {
-            store: Mutex::new(store),
+            store: Arc::new(Mutex::new(store)),
             schema_cache: Mutex::new(HashMap::new()),
             llm: Mutex::new(llm),
             mcp,
+            turns: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             list_tree,
@@ -61,6 +62,8 @@ fn main() {
             get_schema,
             complete_sql,
             chat_turn,
+            cancel_turn,
+            resolve_confirm,
             get_status,
             get_llm_config,
             get_vendor_presets,
@@ -84,6 +87,11 @@ fn main() {
             import_connections,
             export_template,
             explain_visual,
+            add_kb_doc,
+            update_kb_doc,
+            list_kb_docs,
+            delete_kb_doc,
+            set_kb_bindings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ChatQuery");

@@ -1252,6 +1252,7 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 
 /* ---- Message base ---- */
 .msg {
+  position: relative;
   max-width: 88%;
   align-self: flex-start;
 }
@@ -1515,6 +1516,43 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 /* Stop button — replaces 发送 while a turn is streaming. */
 .chat-input button.danger { background: var(--danger-500); color: #fff; }
 .chat-input button.danger:hover:not(:disabled) { background: var(--danger-500); filter: brightness(1.08); }
+
+/* Per-message copy button — appears on hover, top-right of the bubble. */
+.msg-actions {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+.msg:hover .msg-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.msg-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-elevated, var(--bg-subtle));
+  color: var(--text-secondary);
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.14);
+}
+.msg-copy:hover {
+  color: var(--brand);
+  border-color: var(--brand-border);
+}
+.msg-copy.copied {
+  color: var(--success-500);
+  border-color: var(--success-500);
+}
 
 /* Collapsed chat rail */
 .chat-rail {
@@ -2357,3 +2395,195 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   cursor: pointer;
 }
 .settings-close:hover { background: var(--bg-subtle); color: var(--text-primary); }
+
+/* --- Knowledge base (ADR-AI-6) --- */
+/* Widen the settings modal so the KB two-pane layout has enough room. */
+.settings-modal.kb-wide { width: 880px; max-width: 96vw; }
+.kb-page {
+  gap: 0;
+  padding: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.kb-layout {
+  display: flex;
+  gap: 0;
+  align-items: stretch;
+  height: 100%;
+  min-height: 540px;
+}
+.kb-list {
+  flex: 0 0 224px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+.kb-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  border-bottom: 1px solid var(--border);
+}
+.kb-list-header span {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.kb-new {
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--text-primary);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.kb-new:hover { background: var(--bg-hover); border-style: solid; }
+.kb-list-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.kb-list-item {
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+  background: var(--bg);
+  transition: background .12s ease, border-color .12s ease;
+}
+.kb-list-item:hover { background: var(--bg-hover); }
+.kb-list-item.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+.kb-list-name { font-size: var(--fs-sm); font-weight: 600; line-height: 1.4; }
+.kb-list-meta { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: 2px; }
+.kb-empty, .kb-empty-large {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.kb-empty-large {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  text-align: center;
+  padding: var(--sp-5);
+}
+.kb-editor {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-4);
+  overflow-y: auto;
+}
+.kb-editor-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-4);
+  box-shadow: 0 1px 3px rgb(0 0 0 / .04);
+}
+.kb-content-label { display: flex; flex-direction: column; gap: var(--sp-2); }
+.kb-content-row { display: flex; gap: var(--sp-2); align-items: flex-start; }
+.kb-textarea {
+  flex: 1 1 auto;
+  min-height: 280px;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-input, var(--bg));
+  color: var(--text-primary);
+}
+.kb-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.kb-count { font-size: var(--fs-xs); color: var(--text-secondary); }
+.kb-bindings {
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.kb-bindings-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+}
+.kb-bindings-sub {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.kb-binding-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-subtle);
+}
+.kb-binding-conn { font-weight: 600; }
+.kb-binding-db {
+  color: var(--text-secondary);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-1);
+  font-size: var(--fs-xs);
+}
+.kb-binding-del {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--fs-md);
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.kb-binding-del:hover { color: var(--danger-500); background: var(--danger-soft); }
+.kb-binding-add {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+.kb-binding-add select {
+  flex: 1 1 160px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-input, var(--bg));
+  color: var(--text-primary);
+}

@@ -40,3 +40,31 @@ COLUMN_DEFAULT、EXTRA、SCHEMA_NAME、CONSTRAINT_NAME、REFERENCED_* 等）在 
   - 后端 `search_tables`(`INFORMATION_SCHEMA.TABLES`, 前缀 `LIKE` + `LIMIT`, 通配符已转义) 取代 `list_tables` 用于补全/过滤；`list_tables` 仍用于树预取全量（仅建 Node 不一次性渲染）。
   - 树表文件夹用 `FolderView` 窗口化(`TREE_PAGE=200`)+ 过滤输入框，**禁止一次性渲染几千节点**（曾因 8000 个 `<div>` 冻结主线程）。
   - 遗留：`schema()`(供 AI 补全 `complete_sql` 经 `schema_cache`)仍全量拉列；首次对超大库用 AI 补全会卡一次，需要时给 `schema()` 加 `LIMIT` 截断。
+
+## Agent 架构（2026-08-03 决策）
+- **方向：多智能体（C）**。用户明确选 C（Orchestrator + 专项 worker：Explorer/Executor/Analyst/MCP Bridge），但落地必须走 A→B→C：A 是地基（C 的硬前置），B 的"规划"能力由 Orchestrator 吸收。当前**已完成 A 地基**（src/llm/）：
+  - `ToolRegistry`（`tools.rs`）：用 `BuiltinTool` 枚举取代原 `exec_tool` 字符串分发（async trait 不能 dyn，故用枚举而非 Box<dyn Tool>）；MCP 工具仍按 `mcp__server__tool` 名路由。worker 未来 = 不同 `BuiltinTool` 子集。
+  - `Agent` 结构体（`session.rs`）：持有 `cfg/conns/mcp/registry/memory`，`run()` 即原 ReAct 循环；`run_turn` 改为构造 `Agent` 的入口，签名加 `conn_id`。
+  - `SessionMemory`（`memory.rs`）：工作记忆（current_conn/current_db/last_results 有界 8），供系统提示与跨轮记忆。
+  - `policy.rs`（**N1 护栏，ADR-AI-1**）：`check_statement` → `Allow`(只读) / `ConfirmRequired`(写操作，暂拒绝并说明) / `Deny`(DDL/破坏性/未知)。执行 `execute_query` 前对 MySQL 跑策略闸，破坏性 SQL 不触库即拒。
+  - **N2 上下文注入**：`build_system_prompt` 循环前构造 system 消息，含可用连接 + 当前连接 + 当前库最多 100 张表（复用 `search_tables`），模型首次获得真实 schema 感知。
+  - **并行**：同一轮多个 `tool_calls` 用 `futures::join_all` 并发执行。
+- 设计取舍（用户已确认 C）：多智能体代价=委派额外 LLM 调用+结果回传搬运+调试难+编排者可能循环；收益=能力隔离、单 worker 上下文小更省 token、加能力=加 worker。
+- **已完成 B 规划能力**（`planner.rs`，2026-08-03）：`needs_planning` 零成本启发式路由（多步连词/Join/多 FROM/history≥4 → 复杂）；`plan_task` 一次**无工具** LLM 调用产出 `Vec<String>` 步骤（plan 专用 system + 当前库≤30表上下文，容错剥编号/中文序号）；`session.rs` 接入——`Agent::run` 开头路由，复杂则 plan 喷给用户（`ChatToken` 📋，前端零改可见）+ 注入 `build_system_prompt(plan=?)` 作为执行约束。`plan` 是结构化步骤列表，未来 C 可直接遍历委派给 worker；planner 失败安全降级为直接 ReAct；简单任务零额外 LLM 开销。
+- **已完成 C worker 拆分首台阶**（`worker.rs` + `session.rs` 重构，2026-08-03，`cargo check --lib --no-default-features` 零警告）：
+  - 新增 `worker.rs`：`WorkerKind` 枚举（Orchestrator/Explorer/Executor）+ `system_prefix`（角色化系统提示前缀）+ `classify_step`（零成本启发式：探索类关键词/show/describe → Explorer，否则 Executor）。
+  - `Agent` 增 `role: WorkerKind` 字段；`build` 默认 Orchestrator，`build_worker(role, ...)` 构造带角色的独立子 Agent（fresh `SessionMemory` + 独立上下文窗口，工具结果不污染 Orchestrator）。
+  - `session.rs` 抽出可复用 `react(&mut self, messages, tx) -> Option<String>`（原 ReAct 循环，返回最后 assistant 文本供汇总）；`run` 重组为两条路径：
+    - **简单任务**（`!needs_planning`）：单 ReAct，零额外 LLM 开销（保持 B 行为）。
+    - **复杂任务**：`plan_task` → 逐步委派——每步 `classify_step` 路由到 Explorer/Executor worker，`build_worker_system` 注入「全局计划 + 当前步 + 前序结果」，`worker.react` 跑独立 ReAct，`react` 首个 token 用 `[角色]` 前缀归因 → Orchestrator `synthesize` 一次无工具 LLM 调用综合成面向结论的答复（📊 前缀）。
+  - 串行委派（步骤可能依赖，且稳延迟/成本）；planner 失败仍降级为直接 ReAct。
+  - 架构收益：每步独立上下文窗口避免长任务 token 污染；角色隔离提升聚焦。**代价**：复杂任务 = plan(1) + N×worker + synthesize(1) 次 LLM 调用，延迟与成本上升（已在 ADR-AI-5 写明，属刻意取舍）。
+  - `model.rs` 加 `ChatMessage::system` 构造器供 synthesize 用。
+- **已完成 交互控制面**（`control.rs` + 全链路，2026-08-03，三套 Rust 配置 + 前端 tsc/build 全通过）：
+  - 新增 `src/llm/control.rs`：`TurnControl`（Tauri 无关、含 3 单测）= `cancelled: AtomicBool` + `Notify` + `pending: Mutex<HashMap<String, oneshot::Sender<bool>>>`。API：`cancel()`/`cancelled()`(await)/`register_confirm()->(id, rx)`/`resolve(id, approved)`/`cancel_confirmations_only()`（TUI 降级用，写操作立即拒）。
+  - **写确认 UI**：`policy.rs` 的 `ConfirmRequired` 不再硬拒 → `exec_with_policy` 注册 oneshot、发 `BackendMsg::ChatConfirm(ConfirmRequest)` → Tauri emit `chat-confirm` → 前端 `confirmQueue` + 自建 modal（拒绝/红色执行）→ `resolve_confirm` 命令回填。**300s 超时**防 webview 刷新挂死；拒绝/超时以**工具结果**回灌"用户拒绝，不要重试"。DDL/破坏性仍 `Deny`，不开确认通道。
+  - **可取消 turn（ADR-AI-4）**：`chat_turn` 同步返回 `turn_id`，`AppState.turns: Mutex<HashMap<String, TurnControl>>` 登记；新命令 `cancel_turn`；`react`/`synthesize` 用 `tokio::select!{ biased; _ = ctl.cancelled() => break, r = stream_chat(...) }` 竞速 + 每步/每轮检查点。worker **共享同一 ctl**（一次取消停整棵树）。取消≠失败：吞错发 `⏹ 已取消。`。
+  - **计划卡片**：`plan` 改发 `BackendMsg::ChatPlan(Vec<String>)` → emit `chat-plan` → 前端 `ChatItem` 联合类型 + `.chat-plan` 卡片（`<ol>` 步骤）独立渲染。
+  - 顺带修两个预存 bug：① 桌面 `run_turn` 不发 `ChatDone` 致 `streaming` 卡 true；② 前端把展示用 `tool` 气泡回传模型（缺 `tool_call_id` → OpenAI 400），现只回放 user/assistant 文本。
+  - **坑**：`tokio::select!` arm 借用贯穿整句，`schemas()`/`on_delta` 闭包必须具名绑定（否则 E0716）；`BackendMsg` 新增变体后 `src/main.rs` TUI match 与 commands.rs 桥接都要补 arm（E0004）；终端错误/`ChatDone` 必须塞回 `tx` 由桥接顺序 emit，直接 `app.emit` 会插队截断消息。
+- 仍待做（C 后续）：写操作审计日志（ADR-AI-1 决策3）、单 turn 总超时 + token 用量统计（ADR-AI-4 决策2/3）、跨轮持久化记忆、复杂度路由升级 LLM 自评、worker 并行调度（可并行步骤并发）、worker 工具子集真正拆分（Explorer 去写工具）。
