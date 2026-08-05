@@ -2629,9 +2629,52 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 }
 .kb-binding-add select {
   flex: 1 1 160px;
-  padding: var(--sp-2) var(--sp-3);
+  height: 38px;
+  padding: 0 32px 0 12px;
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--bg-input, var(--bg));
+  border-radius: 10px;
+  background-color: var(--bg-canvas, var(--bg));
   color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 12 12' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 12px;
+  transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kb-binding-add select:hover {
+  border-color: var(--border-strong);
+}
+.kb-binding-add select:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, .12);
+  background-color: var(--bg-surface, var(--bg));
+}
+.kb-binding-add select:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+  background-color: var(--bg-subtle, var(--bg));
+}
+/* Option styling — only works in some browsers but helps where supported */
+.kb-binding-add select option {
+  padding: 6px 10px;
+  font-size: var(--fs-sm);
+}
+/* Add button aligned with the selects */
+.kb-binding-add button {
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font-size: var(--fs-sm);
+  font-weight: 500;
 }
