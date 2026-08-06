@@ -3678,6 +3678,7 @@ export function App() {
               {settingsTab === "model" && (
                 <div className="settings-page">
                   <h3>模型设置</h3>
+                  <div className="settings-group">
                   <DropdownSelect
                     label="模型厂商"
                     value={cfgForm.vendor}
@@ -3724,6 +3725,7 @@ export function App() {
                       {cfgMsg.text}
                     </div>
                   )}
+                  </div>
                   <div className="modal-actions">
                     <button className="primary" onClick={() => void saveSettings()}>
                       保存
@@ -3736,6 +3738,7 @@ export function App() {
               {settingsTab === "key" && (
                 <div className="settings-page">
                   <h3>连接加密密钥</h3>
+                  <div className="settings-group">
                   <div className={"key-status " + (keyStatus.configured ? "on" : "off")}>
                     当前状态：{keyStatus.configured ? "已配置自定义密钥" : "使用默认密钥（换机器/换人无法解密导出文件）"}
                   </div>
@@ -3754,6 +3757,7 @@ export function App() {
                       onChange={(e) => setKeyField(e.target.value)}
                     />
                   </label>
+                  </div>
                   <div className="modal-actions">
                     <button className="primary" onClick={() => void saveKey()}>
                       保存密钥并重加密
@@ -3771,6 +3775,7 @@ export function App() {
               {settingsTab === "general" && (
                 <div className="settings-page">
                   <h3>通用</h3>
+                  <div className="settings-group">
                   <label className="cfg-check">
                     <input
                       type="checkbox"
@@ -3788,6 +3793,7 @@ export function App() {
                       </small>
                     </span>
                   </label>
+                  </div>
                 </div>
               )}
 
