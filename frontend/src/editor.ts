@@ -43,6 +43,11 @@ export interface EditorHandle {
   /// Current selection text, or "" if nothing is selected. Powers "run
   /// selection only" — falls back to the whole doc when empty.
   getSelection(): string;
+  /// The statement the cursor sits in — or, with an active selection, the
+  /// selection expanded outward to the nearest `;` boundaries. Referencing SQL
+  /// into the chat must never hand the model half a statement, so this snaps
+  /// instead of slicing. Returns "" when the statement is blank.
+  getStatement(): string;
   /// Format the current selection (or the whole doc if nothing is selected)
   /// using sql-formatter. Returns true if formatting was applied.
   formatSql(): boolean;
@@ -202,6 +207,26 @@ async function readClipboard(): Promise<string> {
   }
 }
 
+/// Expand `[from, to)` to the enclosing statement by walking out to the
+/// nearest `;` on each side. Shared by autocomplete (which needs the current
+/// statement's FROM/JOIN clauses) and by chat references (which must never
+/// attach a half statement).
+///
+/// Known limitation: a naive `;` scan, so semicolons inside string literals or
+/// a stored-procedure body split the statement early. Accepted — the fix is a
+/// real tokenizer, and the failure mode (referencing slightly too little) is
+/// visible to the user in the reference chip.
+export function statementRange(
+  doc: string,
+  from: number,
+  to: number
+): [number, number] {
+  const start = doc.lastIndexOf(";", Math.max(0, from - 1)) + 1;
+  const semiAfter = doc.indexOf(";", to);
+  const end = semiAfter === -1 ? doc.length : semiAfter;
+  return [start, Math.max(start, end)];
+}
+
 /// Create a CodeMirror SQL editor mounted into `parent`.
 /// `onRun` fires on Ctrl/Cmd+Enter; the schema powers table/column autocomplete.
 /// `aiProvider` powers inline AI completion when enabled via `setAiComplete`.
@@ -287,9 +312,7 @@ function parseFromTables(sql: string): Map<string, string> {
   // `before`, so typing a column left of the FROM (e.g. `SELECT col▍ FROM t`)
   // found no tables and wrongly fell through to table-name suggestions.
   const docText = context.state.doc.toString();
-  const stmtStart = docText.lastIndexOf(";", from - 1) + 1;
-  const semiAfter = docText.indexOf(";", from);
-  const stmtEnd = semiAfter === -1 ? docText.length : semiAfter;
+  const [stmtStart, stmtEnd] = statementRange(docText, from, from);
   const tablesMap = parseFromTables(docText.slice(stmtStart, stmtEnd));
 
   // Are we typing in a table-name position (right after FROM / JOIN / a comma)?
@@ -498,6 +521,12 @@ function parseFromTables(sql: string): Map<string, string> {
     getSelection() {
       const { from, to } = view.state.selection.main;
       return view.state.sliceDoc(from, to);
+    },
+    getStatement() {
+      const { from, to } = view.state.selection.main;
+      const doc = view.state.doc.toString();
+      const [s, e] = statementRange(doc, from, to);
+      return doc.slice(s, e).trim();
     },
     setTheme(dark: boolean) {
       view.dispatch({

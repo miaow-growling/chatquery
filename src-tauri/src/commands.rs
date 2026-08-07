@@ -10,7 +10,7 @@ use chatquery::db::mysql::{
 use chatquery::llm::client::stream_chat;
 use chatquery::llm::control::TurnControl;
 use chatquery::model::BackendMsg;
-use chatquery::model::{ChatMessage, ChatRole};
+use chatquery::model::{ChatMessage, ChatRole, SqlReference};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -1154,13 +1154,19 @@ fn next_turn_id() -> String {
 /// to answer a write confirmation (`resolve_confirm`) — both of which target a
 /// run that is still in flight, so the id must be handed back synchronously,
 /// before any streaming begins.
+///
+/// `refs` carries SQL the user attached from the query editor for this turn
+/// (ADR: Chat 引用 SQL). It is optional and defaults to empty, so older callers
+/// — and the TUI — keep working unchanged.
 #[tauri::command]
 pub async fn chat_turn(
     app: AppHandle,
     state: State<'_, AppState>,
     conn_id: String,
     messages: Vec<ChatMessage>,
+    refs: Option<Vec<SqlReference>>,
 ) -> Result<String, String> {
+    let refs = refs.unwrap_or_default();
     let conns: Vec<ConnectionConfig> = state.store.lock().unwrap().list().to_vec();
     let llm = state.llm.lock().unwrap().clone();
     let mcp = state.mcp.clone();
@@ -1211,6 +1217,7 @@ pub async fn chat_turn(
             conns,
             mcp,
             &messages,
+            &refs,
             &conn_id,
             &tx,
                 ctl.clone(),

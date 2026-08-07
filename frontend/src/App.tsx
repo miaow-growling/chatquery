@@ -38,6 +38,7 @@ import type {
   LlmConfigInput,
   QueryItem,
   QueryOutput,
+  SqlReference,
   StatusInfo,
   TableStructure,
   TokenUsage,
@@ -518,6 +519,13 @@ export function App() {
   const [chat, setChat] = useState<ChatItem[]>([]);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [streaming, setStreaming] = useState(false);
+  /// SQL staged on the composer, waiting to be sent with the next message
+  /// (ADR: Chat 引用 SQL, 方案 B). Held here rather than pasted into the input
+  /// box so it stays structured (connection + db travel with it) and reversible
+  /// — dismissing a chip leaves the user's typed question untouched.
+  const [pendingRefs, setPendingRefs] = useState<SqlReference[]>([]);
+  /// A reference the user clicked to inspect in full (chips only show a head).
+  const [refView, setRefView] = useState<SqlReference | null>(null);
   /// Id of the in-flight turn — the handle for cancelling it. Kept in a ref
   /// (not state) because the event listeners are registered once on mount and
   /// would otherwise close over a stale value.
@@ -612,6 +620,43 @@ export function App() {
     cell?: { ri: number; ci: number };
     col?: number;
   } | null>(null);
+  // Hover preview of a clipped result cell. Only shown when the cell's content
+  // overflows its 360px max-width, so short cells stay clean. Positioned with
+  // fixed coords + clamped to the viewport after mount.
+  const [cellTip, setCellTip] = useState<{ text: string; x: number; y: number; maxW: number } | null>(null);
+  const cellTipRef = useRef<HTMLDivElement>(null);
+  // Hover-tip hide timer. We keep a small grace period so moving the cursor
+  // from the cell onto the tip (or back) doesn't instantly clear it — this is
+  // what made the tip "disappear when you move onto it" before.
+  const cellTipHideTimer = useRef<number | null>(null);
+  const cancelCellTipHide = () => {
+    if (cellTipHideTimer.current != null) {
+      clearTimeout(cellTipHideTimer.current);
+      cellTipHideTimer.current = null;
+    }
+  };
+  const scheduleCellTipHide = () => {
+    cancelCellTipHide();
+    cellTipHideTimer.current = window.setTimeout(() => setCellTip(null), 160);
+  };
+  // Stable cell-detail viewer. Unlike the hover tooltip, this works even when
+  // the Chat panel covers the right side of the result grid — you can open it
+  // via double-click or the right-click context menu.
+  const [cellView, setCellView] = useState<{ ri: number; ci: number; text: string } | null>(null);
+  useEffect(() => {
+    if (cellTip && cellTipRef.current) {
+      const el = cellTipRef.current;
+      const r = el.getBoundingClientRect();
+      let x = cellTip.x;
+      let y = cellTip.y;
+      if (x + r.width > window.innerWidth - 8) x = window.innerWidth - r.width - 8;
+      if (y + r.height > window.innerHeight - 8) y = window.innerHeight - r.height - 8;
+      if (x < 8) x = 8;
+      if (y < 8) y = 8;
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+    }
+  }, [cellTip]);
   const [toast, setToast] = useState<string | null>(null);
   const lastAnchorRef = useRef(0);
 
@@ -701,6 +746,11 @@ export function App() {
     const v = localStorage.getItem("cq_chat_open");
     return v === null ? true : v === "1";
   });
+  const [chatWidth, setChatWidth] = useState<number>(() => {
+    const v = localStorage.getItem("cq_chat_width");
+    const n = v ? parseInt(v, 10) : NaN;
+    return Number.isFinite(n) && n >= 220 && n <= 600 ? n : 360;
+  });
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     const v = localStorage.getItem("cq_theme");
     return v === "light" ? "light" : "dark";
@@ -712,6 +762,38 @@ export function App() {
   const [aiCompleteOn, setAiCompleteOn] = useState<boolean>(
     () => localStorage.getItem("cq_ai_complete") === "1"
   );
+
+  // --- Resizable chat panel -----------------------------------------------
+  const isResizingChat = useRef(false);
+  const startChatX = useRef(0);
+  const startChatW = useRef(360);
+  const stopChatResize = useCallback(() => {
+    if (!isResizingChat.current) return;
+    isResizingChat.current = false;
+    document.removeEventListener("mousemove", onChatResizeMove);
+    document.removeEventListener("mouseup", stopChatResize);
+  }, []);
+  const onChatResizeMove = useCallback((e: MouseEvent) => {
+    if (!isResizingChat.current) return;
+    const delta = startChatX.current - e.clientX; // dragging left expands chat
+    const next = Math.min(600, Math.max(220, startChatW.current + delta));
+    setChatWidth(next);
+  }, []);
+  const startChatResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingChat.current = true;
+    startChatX.current = e.clientX;
+    startChatW.current = chatWidth;
+    document.addEventListener("mousemove", onChatResizeMove);
+    document.addEventListener("mouseup", stopChatResize);
+  }, [chatWidth, onChatResizeMove, stopChatResize]);
+
+  // Persist chat width when the drag ends.
+  useEffect(() => {
+    if (!isResizingChat.current) {
+      localStorage.setItem("cq_chat_width", String(chatWidth));
+    }
+  }, [chatWidth]);
 
   // --- LLM vendor/key/model settings (Phase 19) --------------------------
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1194,6 +1276,18 @@ export function App() {
     setCtxMenu(null);
   };
 
+  // Open a stable modal showing the full cell value. Used when the hover
+  // tooltip is unreachable (e.g. Chat panel covers the grid).
+  const openCellView = (ri: number, ci: number) => {
+    if (!result || result.kind !== "table") return;
+    const row = result.rows[ri];
+    if (!row) return;
+    const text = fmtCell((edits[ri]?.[ci] ?? row[ci]) ?? "");
+    if (text === "") return;
+    setCellView({ ri, ci, text });
+    setCtxMenu(null);
+  };
+
   // Single left-click on a data cell: select ONLY that cell. Row/column
   // selections are cleared so the highlight is unambiguous.
   const onCellClick = (ri: number, ci: number) => {
@@ -1380,6 +1474,22 @@ export function App() {
     [tree]
   );
 
+  /// Human labels for a SQL reference. Resolving the connection id here (not
+  /// at capture time) means a renamed connection shows its new name, and a
+  /// deleted one degrades to "未知连接" instead of a bare uuid.
+  const refLabel = useCallback(
+    (r: SqlReference) => {
+      const c = findConn(r.conn_id);
+      return {
+        icon: c?.db_type === "redis" ? "🔴" : "🐬",
+        name: c?.name ?? "未知连接",
+        db: r.db || "默认库",
+        scope: r.scope === "full" ? "整个查询" : "单条语句",
+      };
+    },
+    [findConn],
+  );
+
   // Flat connection list (for the history/snippet connection filter).
   const allConns = useMemo(() => {
     const out: ConnSummary[] = [];
@@ -1542,6 +1652,50 @@ export function App() {
 
   /// Build the SQL-editor right-click menu (Navicat-style). `hasSel` reflects
   /// whether text is selected and gates the selection-only commands.
+  /// Stage editor SQL on the chat composer (ADR: Chat 引用 SQL, 方案 B).
+  ///
+  /// `scope: "statement"` snaps to `;` boundaries so the model never receives
+  /// half a statement; `"full"` takes the whole tab. The reference carries the
+  /// *tab's* connection/db, which is deliberately not the chat panel's binding
+  /// — asking about a prod query while the chat sits on staging must not
+  /// silently retarget the SQL.
+  ///
+  /// `prompt` pre-fills the input only when it is empty, so a half-typed
+  /// question is never clobbered.
+  const attachSqlRef = (scope: "statement" | "full", prompt?: string) => {
+    const ed = editorRef.current;
+    const t = active;
+    if (!ed || !t) return;
+    const sql = (scope === "full" ? ed.getDoc() : ed.getStatement()).trim();
+    if (!sql) {
+      showToast("没有可引用的 SQL");
+      return;
+    }
+    if (!t.connId) {
+      showToast("请先为当前查询选择连接 / 数据库");
+      return;
+    }
+    const ref: SqlReference = { conn_id: t.connId, db: t.db, scope, sql };
+    setPendingRefs((prev) =>
+      prev.some(
+        (r) => r.sql === ref.sql && r.conn_id === ref.conn_id && r.db === ref.db,
+      )
+        ? prev
+        : [...prev, ref],
+    );
+    setChatOpen(true);
+    localStorage.setItem("cq_chat_open", "1");
+    // The panel may be mounting this same tick; reach for its textarea after.
+    window.setTimeout(() => {
+      const input = document.getElementById(
+        "chat-input",
+      ) as HTMLTextAreaElement | null;
+      if (!input) return;
+      if (prompt && !input.value.trim()) input.value = prompt;
+      input.focus();
+    }, 0);
+  };
+
   const buildEditorMenu = (hasSel: boolean): MenuItem[] => {
     const ed = editorRef.current;
     return [
@@ -1562,6 +1716,35 @@ export function App() {
       { type: "sep" },
       { type: "item", label: "运行已选择", disabled: !hasSel, onClick: () => runQueryRef.current() },
       { type: "item", label: "运行全部", onClick: () => runQueryRef.current(true) },
+      { type: "sep" },
+      // "引用" only stages the SQL; the three verbs additionally pre-fill a
+      // question. Both paths go through the same reference, so the chat log
+      // always shows exactly what the model got.
+      {
+        type: "item",
+        label: hasSel ? "💬 引用选中语句到 Chat" : "💬 引用当前语句到 Chat",
+        onClick: () => attachSqlRef("statement"),
+      },
+      {
+        type: "item",
+        label: "💬 引用整个查询到 Chat",
+        onClick: () => attachSqlRef("full"),
+      },
+      {
+        type: "item",
+        label: "💬 问 AI：解释这段 SQL",
+        onClick: () =>
+          attachSqlRef("statement", "请解释这段 SQL 的执行逻辑与潜在问题。"),
+      },
+      {
+        type: "item",
+        label: "💬 问 AI：优化这段 SQL",
+        onClick: () =>
+          attachSqlRef(
+            "statement",
+            "请分析这段 SQL 的性能瓶颈并给出优化建议（含索引建议）。",
+          ),
+      },
     ];
   };
 
@@ -2032,7 +2215,7 @@ export function App() {
           </tr>
         </thead>
         <tbody>
-          {viewRows.map(({ origRi: ri, row }) => {
+          {viewRows.map(({ origRi: ri, row }, vi) => {
             const isDeleted = deletes.has(ri);
             return (
               <tr
@@ -2048,9 +2231,9 @@ export function App() {
                   onMouseEnter={() => onRowMouseEnter(ri)}
                   onClick={(e) => onRowClick(ri, e)}
                   onContextMenu={(e) => onRowCtx(ri, e)}
-                  title="点击选中整行 · 右键复制行"
+                  title="当前显示顺序行号 · 点击选中整行 · 右键复制行"
                 >
-                  {ri + 1}
+                  {vi + 1}
                 </td>
                 {editable && (
                   <td className="row-action-col">
@@ -2083,16 +2266,35 @@ export function App() {
                       }
                       title={
                         editable && !isDeleted
-                          ? "单击选中单元格 · 双击编辑 · 右键复制"
-                          : "单击选中单元格 · 右键复制"
+                          ? "单击选中单元格 · 双击编辑 · 右键复制 · 双击查看完整内容"
+                          : "单击选中单元格 · 右键复制 · 双击查看完整内容"
                       }
+                      onMouseEnter={(e) => {
+                        const t = e.currentTarget as HTMLTableCellElement;
+                        if (t.scrollWidth > t.clientWidth + 1) {
+                          cancelCellTipHide();
+                          const r = t.getBoundingClientRect();
+                          // Anchor just below the cell so the tip is visible
+                          // without the cursor having to leave the cell.
+                          setCellTip({
+                            text: String(ov ?? v ?? ""),
+                            x: r.left,
+                            y: r.bottom + 6,
+                            maxW: r.width,
+                          });
+                        }
+                      }}
+                      onMouseLeave={() => scheduleCellTipHide()}
                       onClick={() => onCellClick(ri, ci)}
                       onContextMenu={(e) => onCellCtx(ri, ci, e)}
                       onDoubleClick={() => {
-                        if (!editable || isDeleted) return;
-                        setCtxMenu(null);
-                        setEditing({ ri, ci });
-                        setDraft(v);
+                        if (editable && !isDeleted) {
+                          setCtxMenu(null);
+                          setEditing({ ri, ci });
+                          setDraft(v);
+                        } else {
+                          openCellView(ri, ci);
+                        }
                       }}
                     >
                       {isEditing ? (
@@ -2519,29 +2721,48 @@ export function App() {
     const input = document.getElementById("chat-input") as HTMLTextAreaElement;
     const text = input.value;
     if (!text.trim() || streaming) return;
-    const next: ChatItem[] = [...chat, { role: "user", content: text }];
+    // Snapshot the staged references and clear them immediately: they belong to
+    // this turn only. Leaving them on the composer would silently re-attach the
+    // same SQL to the next question.
+    const refs = pendingRefs;
+    setPendingRefs([]);
+    // The reference card is display-only (`role: "ref"` has no Rust
+    // counterpart) and is filtered out of the replayed history below — it
+    // exists so the transcript shows what the model actually received.
+    const next: ChatItem[] = [
+      ...chat,
+      ...(refs.length > 0
+        ? [{ role: "ref" as const, content: "", refs }]
+        : []),
+      { role: "user" as const, content: text },
+    ];
     setChat(next);
     input.value = "";
     setStreaming(true);
     setLastUsage(null);
     setChat((prev) => [...prev, { role: "assistant", content: "" }]);
     try {
-      // The chat log is a human transcript, not the model's context. Plan
-      // cards and tool breadcrumbs are display-only: `plan` has no Rust
-      // `ChatRole`, and a `tool` message without its originating
-      // `tool_call_id` makes the OpenAI API reject the whole request. The
-      // model already saw the real tool results inside its own turn, so only
-      // user/assistant text is replayed. Empty assistant placeholders (the
-      // streaming bubble) are dropped too.
+      // The chat log is a human transcript, not the model's context. Plan and
+      // ref cards and tool breadcrumbs are display-only: neither `plan` nor
+      // `ref` has a Rust `ChatRole`, and a `tool` message without its
+      // originating `tool_call_id` makes the OpenAI API reject the whole
+      // request. The model already saw the real tool results inside its own
+      // turn, so only user/assistant text is replayed. Empty assistant
+      // placeholders (the streaming bubble) are dropped too.
       const history = next.filter(
         (m): m is ChatMessage =>
           m.role === "user" ||
           (m.role === "assistant" && m.content.trim() !== ""),
       );
-      turnIdRef.current = await chatTurn(selId, history);
+      // `selId` binds the *agent* (which tools it can reach); each reference
+      // carries its own connection, and the backend tells the model to honour
+      // that one when running the referenced SQL.
+      turnIdRef.current = await chatTurn(selId, history, refs);
     } catch (e) {
       setStreaming(false);
       turnIdRef.current = null;
+      // Hand the references back so the user can retry without re-selecting.
+      setPendingRefs((prev) => (prev.length > 0 ? prev : refs));
       setChat((prev) => [...prev, { role: "tool", content: "错误: " + String(e) }]);
     }
   };
@@ -2811,7 +3032,14 @@ export function App() {
       <div className="titlebar" data-tauri-drag-region>
         <span className="titlebar-title">ChatQuery</span>
       </div>
-      <div className={"app" + (chatOpen ? "" : " chat-collapsed")}>
+      <div
+        className={"app" + (chatOpen ? "" : " chat-collapsed")}
+        style={
+          chatOpen
+            ? { gridTemplateColumns: `var(--sidebar-w) 1fr ${chatWidth}px` }
+            : undefined
+        }
+      >
       <aside className="sidebar">
         <div className="sidebar-head">
           <span>连接</span>
@@ -2915,15 +3143,56 @@ export function App() {
             </button>
           </div>
           <div className="pane-head">
-            <span>
+            <span className="ctx-conn-wrap">
               查询编辑器
-              <button
-                className="ctx-db-btn"
-                onClick={() => void openDbPicker()}
-                title="点击切换连接 / 数据库（每个查询独立）"
-              >
-                · {active?.connId ? `库: ${active.db || "默认"}` : "未选择连接"}
-              </button>
+              {active?.connId ? (
+                <button
+                  className="ctx-db-btn"
+                  onClick={() => void openDbPicker()}
+                  title={
+                    (() => {
+                      const c = findConn(active.connId);
+                      return c
+                        ? `连接「${c.name}」 · ${c.host}:${c.port} · 用户 ${c.user} · 库 ${active.db || "默认"}\n点击切换连接 / 数据库（每个查询独立）`
+                        : "点击切换连接 / 数据库（每个查询独立）";
+                    })()
+                  }
+                >
+                  {(() => {
+                    const c = findConn(active.connId);
+                    if (!c) return "未知连接";
+                    const icon = c.db_type === "redis" ? "🔴" : "🐬";
+                    return (
+                      <>
+                        <span className="conn-icon">{icon}</span>
+                        <span className="conn-name">{c.name}</span>
+                        <span className="conn-sep">·</span>
+                        <span className="conn-addr">
+                          {c.host}:{c.port}
+                        </span>
+                        <span className="conn-sep">·</span>
+                        <span className="conn-user">{c.user}</span>
+                        <span className="conn-sep">·</span>
+                        <span
+                          className={
+                            active.db ? "conn-db" : "conn-db conn-db-default"
+                          }
+                        >
+                          库: {active.db || "默认"}
+                        </span>
+                      </>
+                    );
+                  })()}
+                </button>
+              ) : (
+                <button
+                  className="ctx-db-btn"
+                  onClick={() => void openDbPicker()}
+                  title="点击选择连接 / 数据库（每个查询独立）"
+                >
+                  未选择连接
+                </button>
+              )}
               <span className="hint"> (Ctrl/Cmd+Enter 执行)</span>
             </span>
             <div className="pane-actions">
@@ -2932,6 +3201,13 @@ export function App() {
                 disabled={!active?.connId}
               >
                 格式化
+              </button>
+              <button
+                onClick={() => attachSqlRef("statement")}
+                disabled={!active?.connId}
+                title="把光标所在语句（或选中部分，按 ; 补全边界）引用到 Chat"
+              >
+                问 AI
               </button>
               <button onClick={saveCurrentAsSnippet}>存为片段</button>
               <button onClick={openHistory}>历史</button>
@@ -3091,6 +3367,15 @@ export function App() {
 
       {chatOpen ? (
         <section className="chat">
+          <div
+            className="chat-splitter"
+            onMouseDown={startChatResize}
+            onDoubleClick={() => {
+              setChatOpen(false);
+              localStorage.setItem("cq_chat_open", "0");
+            }}
+            title="拖动调整宽度 · 双击收起 Chat"
+          />
           <div className="pane-head">
             <span>Chat (LLM)</span>
             <span className="chat-status">
@@ -3125,6 +3410,29 @@ export function App() {
                     <li key={j}>{s}</li>
                   ))}
                 </ol>
+              </div>
+            ) : m.role === "ref" ? (
+              <div key={i} className="chat-ref">
+                <div className="chat-ref-head">已引用 SQL</div>
+                {m.refs.map((r, j) => {
+                  const l = refLabel(r);
+                  return (
+                    <button
+                      key={j}
+                      type="button"
+                      className="ref-chip in-log"
+                      title="点击查看完整 SQL"
+                      onClick={() => setRefView(r)}
+                    >
+                      <span className="ref-icon">{l.icon}</span>
+                      <span className="ref-conn">{l.name}</span>
+                      <span className="ref-sep">·</span>
+                      <span className="ref-db">{l.db}</span>
+                      <span className="ref-scope">{l.scope}</span>
+                      <span className="ref-sql">{refPreview(r.sql)}</span>
+                    </button>
+                  );
+                })}
               </div>
             ) : (
               <div key={i} className={"msg " + m.role}>
@@ -3175,10 +3483,59 @@ export function App() {
             <span className="dim">· 会话累计 {fmtNum(sessionTokens)}</span>
           </div>
         )}
+        {pendingRefs.length > 0 && (
+          <div className="ref-tray">
+            {pendingRefs.map((r, i) => {
+              const l = refLabel(r);
+              // The chat panel is bound to `selId` while a reference carries
+              // its own connection. Flagging the mismatch beats silently
+              // running prod SQL against whatever the panel happens to select.
+              const mismatch = r.conn_id !== selId;
+              return (
+                <span
+                  key={i}
+                  className={"ref-chip" + (mismatch ? " mismatch" : "")}
+                  title={
+                    (mismatch
+                      ? "该 SQL 来自另一个连接，AI 会按引用标注的连接处理\n"
+                      : "") + "点击查看完整 SQL"
+                  }
+                >
+                  <button
+                    type="button"
+                    className="ref-chip-main"
+                    onClick={() => setRefView(r)}
+                  >
+                    <span className="ref-icon">{l.icon}</span>
+                    <span className="ref-conn">{l.name}</span>
+                    <span className="ref-sep">·</span>
+                    <span className="ref-db">{l.db}</span>
+                    <span className="ref-scope">{l.scope}</span>
+                    <span className="ref-sql">{refPreview(r.sql)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="ref-chip-x"
+                    title="移除引用"
+                    onClick={() =>
+                      setPendingRefs((prev) => prev.filter((_, j) => j !== i))
+                    }
+                  >
+                    ×
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        )}
         <div className="chat-input">
           <textarea
             id="chat-input"
-            placeholder="问点什么，例如：统计 users 表行数"
+            placeholder={
+              pendingRefs.length > 0
+                ? "就引用的 SQL 提问，例如：帮我优化它"
+                : "问点什么，例如：统计 users 表行数"
+            }
             disabled={streaming}
           />
           {streaming ? (
@@ -4007,6 +4364,13 @@ export function App() {
                 >
                   复制单元格
                 </button>
+                <button
+                  onClick={() =>
+                    openCellView(ctxMenu.cell!.ri, ctxMenu.cell!.ci)
+                  }
+                >
+                  查看完整内容
+                </button>
                 <div className="ctx-sep" />
               </>
             )}
@@ -4205,6 +4569,80 @@ export function App() {
       )}
 
       {toast && <div className="toast">{toast}</div>}
+
+      {cellTip && (
+        <div
+          ref={cellTipRef}
+          className="cell-tip"
+          style={{ left: cellTip.x, top: cellTip.y, maxWidth: cellTip.maxW }}
+        >
+          {cellTip.text}
+          <div className="cell-tip-hint">双击单元格查看完整内容</div>
+        </div>
+      )}
+
+      {cellView && (
+        <div className="modal-mask" onClick={() => setCellView(null)}>
+          <div className="modal cell-view-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="cell-view-head">
+              <span>
+                {result?.kind === "table"
+                  ? result.columns[cellView.ci] ?? `#${cellView.ci + 1}`
+                  : `列 #${cellView.ci + 1}`}
+                {" · "}第 {cellView.ri + 1} 行
+              </span>
+              <button className="icon-btn" onClick={() => setCellView(null)} title="关闭 (Esc)">
+                ×
+              </button>
+            </div>
+            <pre className="cell-view-body">{cellView.text}</pre>
+            <div className="modal-actions">
+              <span className="cell-view-meta">{cellView.text.length.toLocaleString()} 字符</span>
+              <div className="spacer" />
+              <button onClick={() => void copyText(cellView.text)}>复制</button>
+              <button className="primary" onClick={() => setCellView(null)}>
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {refView && (
+        <div className="modal-mask" onClick={() => setRefView(null)}>
+          <div
+            className="modal cell-view-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="cell-view-head">
+              <span>
+                {(() => {
+                  const l = refLabel(refView);
+                  return `${l.icon} ${l.name} · ${l.db} · ${l.scope}`;
+                })()}
+              </span>
+              <button
+                className="icon-btn"
+                onClick={() => setRefView(null)}
+                title="关闭 (Esc)"
+              >
+                ×
+              </button>
+            </div>
+            <pre className="cell-view-body">{refView.sql}</pre>
+            <div className="modal-actions">
+              <span className="cell-view-meta">
+                {refView.sql.length.toLocaleString()} 字符
+              </span>
+              <div className="spacer" />
+              <button onClick={() => void copyText(refView.sql)}>复制</button>
+              <button className="primary" onClick={() => setRefView(null)}>
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
     </div>
   );
@@ -4376,6 +4814,13 @@ function roleLabel(r: string) {
 /// unreadable unsegmented.
 function fmtNum(n: number): string {
   return n.toLocaleString("en-US");
+}
+
+/// Collapse a SQL reference to a single chip-sized line. Whitespace is
+/// flattened so a multi-line statement still reads as one glance-able preview.
+function refPreview(sql: string, max = 56): string {
+  const one = sql.replace(/\s+/g, " ").trim();
+  return one.length > max ? one.slice(0, max) + "…" : one;
 }
 
 /// Human label for a guardrail verdict stored in the audit trail.

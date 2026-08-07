@@ -12,7 +12,9 @@ use crate::llm::policy::{check_statement, PolicyDecision};
 use crate::llm::tools::{build_registry, ToolContext, ToolRegistry};
 use crate::llm::worker::{classify_step, WorkerKind};
 use crate::mcp::host::McpHostManager;
-use crate::model::{BackendMsg, ChatMessage, ChatRole, ConfirmRequest, TokenUsage, ToolCallBrief};
+use crate::model::{
+    BackendMsg, ChatMessage, ChatRole, ConfirmRequest, SqlReference, TokenUsage, ToolCallBrief,
+};
 use futures::future::join_all;
 use serde_json::Value;
 use std::sync::Arc;
@@ -123,7 +125,12 @@ impl Agent {
         }
     }
 
-    pub async fn run(&mut self, history: &[ChatMessage], tx: &UnboundedSender<BackendMsg>) -> Result<()> {
+    pub async fn run(
+        &mut self,
+        history: &[ChatMessage],
+        refs: &[SqlReference],
+        tx: &UnboundedSender<BackendMsg>,
+    ) -> Result<()> {
         // 复杂度路由：复杂任务走多智能体（Orchestrator 规划 → 委派 Worker →
         // 综合）；简单任务零额外开销，直接单 ReAct 循环。
         let last_user = history
@@ -133,18 +140,31 @@ impl Agent {
             .map(|m| m.content.clone())
             .unwrap_or_default();
 
-        if !needs_planning(&last_user, history.len()) {
+        // Editor SQL the user attached to this turn. Rendered once and folded
+        // into the *last user message* rather than the system prompt: it is
+        // per-turn evidence, and recency is what keeps the model from
+        // reasoning about SQL that scrolled out of the conversation.
+        let refs_block = render_refs(refs, &self.conns);
+        // The planning heuristic sees the user's own words only — a 40-line
+        // pasted statement would otherwise make "解释这段 SQL" look like a
+        // multi-step research task and buy the user a needless plan + workers.
+        let planning_seed = last_user.clone();
+        let last_user = prepend_refs(&last_user, refs_block.as_deref());
+
+        if !needs_planning(&planning_seed, history.len()) {
             let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb).await;
             let mut messages = Vec::new();
             if !system.is_empty() {
                 messages.push(ChatMessage::system(system));
             }
             messages.extend(history.iter().cloned());
+            attach_refs_to_last_user(&mut messages, refs_block.as_deref());
             self.react(messages, tx).await?;
             return Ok(());
         }
 
-        // 复杂任务：先规划（失败则安全降级为直接 ReAct）。
+        // 复杂任务：先规划（失败则安全降级为直接 ReAct）。规划输入带上引用的
+        // SQL——否则「优化这段 SQL」只能规划出空泛步骤。
         let plan: Vec<String> = match plan_task(&self.cfg, &last_user, &self.conns, &self.memory).await {
             Ok(steps) if !steps.is_empty() => steps,
             _ => {
@@ -154,6 +174,7 @@ impl Agent {
                     messages.push(ChatMessage::system(system));
                 }
                 messages.extend(history.iter().cloned());
+                attach_refs_to_last_user(&mut messages, refs_block.as_deref());
                 self.react(messages, tx).await?;
                 return Ok(());
             }
@@ -356,16 +377,90 @@ impl Agent {
     }
 }
 
+/// Cap the SQL carried by a single reference. A runaway document (someone
+/// referencing a 5000-line migration file) would otherwise blow the context
+/// window and the token bill; truncating degrades the answer, dropping the
+/// turn breaks it.
+const MAX_REF_SQL_CHARS: usize = 8000;
+
+/// Render attached editor SQL as one context block, resolving each reference's
+/// connection id to a human name so the model can say (and use) "跑在 prod-1 /
+/// orders 上" without another lookup.
+///
+/// Returns `None` when there is nothing to attach — callers then skip injection
+/// entirely, keeping the zero-reference path byte-identical to before.
+fn render_refs(refs: &[SqlReference], conns: &[ConnectionConfig]) -> Option<String> {
+    if refs.is_empty() {
+        return None;
+    }
+    let mut p = String::from(
+        "[用户引用的 SQL]\n以下 SQL 来自用户的查询编辑器，是本次提问的对象。\
+         若需要执行，请使用每段标注的连接与库（以引用为准，不要改用其他连接）。\n",
+    );
+    for (i, r) in refs.iter().enumerate() {
+        let conn_name = conns
+            .iter()
+            .find(|c| c.id == r.conn_id)
+            .map(|c| c.name.as_str())
+            .unwrap_or("未知连接");
+        let scope = match r.scope.as_str() {
+            "statement" => "单条语句",
+            "full" => "整个查询",
+            _ => "片段",
+        };
+        let db = r.db.as_deref().unwrap_or("默认库");
+        p.push_str(&format!(
+            "\n引用 {} · 连接：{} · 库：{} · 范围：{}\n```sql\n",
+            i + 1,
+            conn_name,
+            db,
+            scope
+        ));
+        if r.sql.chars().count() > MAX_REF_SQL_CHARS {
+            let head: String = r.sql.chars().take(MAX_REF_SQL_CHARS).collect();
+            p.push_str(&head);
+            p.push_str("\n-- …（引用过长已截断）\n");
+        } else {
+            p.push_str(&r.sql);
+            p.push('\n');
+        }
+        p.push_str("```\n");
+    }
+    Some(p)
+}
+
+/// Put the reference block in front of the user's own words.
+fn prepend_refs(text: &str, block: Option<&str>) -> String {
+    match block {
+        Some(b) => format!("{}\n{}", b, text),
+        None => text.to_string(),
+    }
+}
+
+/// Fold the reference block into the most recent user message of an
+/// already-assembled request. Mutating the copy (not the stored history) keeps
+/// references strictly per-turn.
+fn attach_refs_to_last_user(messages: &mut [ChatMessage], block: Option<&str>) {
+    let Some(b) = block else { return };
+    if let Some(m) = messages.iter_mut().rev().find(|m| m.role == ChatRole::User) {
+        m.content = format!("{}\n{}", b, m.content);
+    }
+}
+
 /// Run a full LLM turn using a freshly-built orchestrator agent. Kept as the
 /// command entry point so `chat_turn` doesn't need to know about `Agent`.
 ///
 /// `ctl` is the turn's control plane: the caller keeps a clone so it can
 /// cancel the turn or answer a write-confirmation while this future runs.
+///
+/// `refs` is SQL the user attached from the editor for *this* turn; pass an
+/// empty slice for hosts that have no editor (the TUI).
 pub async fn run_turn(
     cfg: &LlmConfig,
     conns: Vec<ConnectionConfig>,
     mcp: Option<Arc<McpHostManager>>,
     history: &[ChatMessage],
+    refs: &[SqlReference],
     conn_id: &str,
     tx: &UnboundedSender<BackendMsg>,
     ctl: TurnControl,
@@ -375,7 +470,7 @@ pub async fn run_turn(
     let mut agent = Agent::build(cfg.clone(), conns, mcp, conn_id, ctl.clone(), kb, audit).await;
     // ADR-AI-4 决策2: bound a single turn's wall-clock time so a stuck stream
     // or runaway worker can't wedge the turn (and its registry slot) forever.
-    let result = tokio::time::timeout(TURN_TIMEOUT, agent.run(history, tx)).await;
+    let result = tokio::time::timeout(TURN_TIMEOUT, agent.run(history, refs, tx)).await;
     match result {
         Ok(out) => {
             out?;
@@ -633,4 +728,69 @@ async fn exec_with_policy(
         }
     }
     reg.call(tc, ctx).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r(scope: &str, sql: &str) -> SqlReference {
+        SqlReference {
+            conn_id: "c1".into(),
+            db: Some("shop".into()),
+            scope: scope.into(),
+            sql: sql.into(),
+        }
+    }
+
+    /// No references must leave the prompt byte-identical to the old path —
+    /// this is what makes the feature free for everyone who doesn't use it.
+    #[test]
+    fn no_refs_is_a_no_op() {
+        assert!(render_refs(&[], &[]).is_none());
+        assert_eq!(prepend_refs("hi", None), "hi");
+        let mut msgs = vec![ChatMessage::user("hi")];
+        attach_refs_to_last_user(&mut msgs, None);
+        assert_eq!(msgs[0].content, "hi");
+    }
+
+    #[test]
+    fn renders_provenance_and_sql() {
+        let block = render_refs(&[r("statement", "SELECT 1")], &[]).unwrap();
+        assert!(block.contains("单条语句"));
+        assert!(block.contains("库：shop"));
+        assert!(block.contains("SELECT 1"));
+        // An unresolvable connection degrades instead of panicking.
+        assert!(block.contains("未知连接"));
+    }
+
+    #[test]
+    fn unknown_scope_degrades() {
+        let block = render_refs(&[r("weird", "SELECT 1")], &[]).unwrap();
+        assert!(block.contains("片段"));
+    }
+
+    /// Oversized SQL is truncated, never dropped: a partial statement still
+    /// answers "what is this query doing", a missing one answers nothing.
+    #[test]
+    fn oversized_sql_is_truncated() {
+        let huge = "x".repeat(MAX_REF_SQL_CHARS + 500);
+        let block = render_refs(&[r("full", &huge)], &[]).unwrap();
+        assert!(block.contains("引用过长已截断"));
+        assert!(block.len() < huge.len() + 500);
+    }
+
+    /// The block lands on the LAST user message — recency is the point.
+    #[test]
+    fn attaches_to_last_user_message() {
+        let mut msgs = vec![
+            ChatMessage::user("第一问"),
+            ChatMessage::assistant("答"),
+            ChatMessage::user("第二问"),
+        ];
+        attach_refs_to_last_user(&mut msgs, Some("[BLOCK]"));
+        assert_eq!(msgs[0].content, "第一问");
+        assert!(msgs[2].content.starts_with("[BLOCK]"));
+        assert!(msgs[2].content.contains("第二问"));
+    }
 }

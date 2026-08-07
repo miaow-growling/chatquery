@@ -505,6 +505,8 @@ impl App {
                 conns,
                 mcp,
                 &history,
+                // The TUI has no SQL editor, so there is nothing to reference.
+                &[],
                 &conn_id,
                 &tx,
                 ctl,

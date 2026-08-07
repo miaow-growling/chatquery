@@ -18,6 +18,7 @@ import type {
   QueryItem,
   QueryOutput,
   Schema,
+  SqlReference,
   StatusInfo,
   TableMeta,
   TableStructure,
@@ -209,8 +210,19 @@ export function onChatConfirm(
 }
 /// Starts a turn and resolves with its id — needed to cancel it or answer a
 /// confirmation while it is still running.
-export function chatTurn(connId: string, messages: ChatMessage[]): Promise<string> {
-  return invoke<string>("chat_turn", { connId, messages });
+///
+/// `refs` is editor SQL attached to *this* turn only (ADR: Chat 引用 SQL); it is
+/// never replayed as history, so a stale reference can't steer a later answer.
+export function chatTurn(
+  connId: string,
+  messages: ChatMessage[],
+  refs?: SqlReference[],
+): Promise<string> {
+  return invoke<string>("chat_turn", {
+    connId,
+    messages,
+    refs: refs && refs.length > 0 ? refs : null,
+  });
 }
 export function cancelTurn(turnId: string): Promise<void> {
   return invoke("cancel_turn", { turnId });

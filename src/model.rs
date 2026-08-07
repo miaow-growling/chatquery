@@ -77,6 +77,28 @@ pub struct ToolCallBrief {
     pub arguments: String,
 }
 
+/// SQL the user attached to a chat turn from the query editor (ADR: Chat 引用
+/// SQL, 方案 B). It travels *beside* the message text rather than inside it, so
+/// the agent gets the statement together with its provenance — which connection
+/// and database it came from. That provenance is the whole point: without it the
+/// model has to ask "which instance?" before it can run or reason about the SQL.
+///
+/// Per-turn only: references are attached to the turn being sent and are never
+/// replayed as history, so an old reference can't silently steer a later answer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SqlReference {
+    /// Connection the SQL came from — the *editor tab's* connection, which may
+    /// differ from the one the chat panel is bound to.
+    pub conn_id: String,
+    /// Source database; `None` means the connection's default.
+    pub db: Option<String>,
+    /// `"statement"` = one statement snapped to `;` boundaries, `"full"` = the
+    /// whole editor document. Free-form on the wire; unknown values degrade to
+    /// a generic label rather than failing the turn.
+    pub scope: String,
+    pub sql: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: ChatRole,

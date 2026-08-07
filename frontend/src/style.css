@@ -11,84 +11,93 @@
 
 /* =====================  DESIGN TOKENS (DARK = base)  ===================== */
 :root {
-  /* Accent (system blue) */
-  --brand:        #0A84FF;
-  --brand-hover:  #409CFF;
-  --brand-soft:   rgb(10 132 255 / 0.22);
-  --brand-border: rgb(10 132 255 / 0.45);
-  --border-focus: #0A84FF;
+  /* Accent — indigo → violet (tech) */
+  --brand:        #6366F1;
+  --brand-hover:  #818CF8;
+  --brand-soft:   rgb(99 102 241 / 0.20);
+  --brand-border: rgb(129 140 248 / 0.55);
+  --border-focus: #818CF8;
 
-  /* Status / semantic */
-  --success-500: #30D158; --success-soft: rgb(48 209 88 / 0.16);
-  --warning-500: #FFD60A; --warning-soft: rgb(255 214 10 / 0.16);
-  --danger-500:  #FF453A; --danger-soft:  rgb(255 69 58 / 0.18);
-  --info-500:    #64D2FF; --info-soft:    rgb(100 210 255 / 0.16);
-  --mauve:       #BF5AF2;
+  /* Brand gradient + glow (shared by buttons, pills, active states) */
+  --brand-grad: linear-gradient(135deg, #6366F1 0%, #8B5CF6 55%, #A855F7 100%);
+  --brand-grad-soft: linear-gradient(135deg, rgb(99 102 241 / 0.20), rgb(168 85 247 / 0.20));
+  --glow-sm: 0 0 0 1px rgb(99 102 241 / 0.35), 0 4px 14px rgb(99 102 241 / 0.28);
+  --glow-md: 0 0 0 1px rgb(99 102 241 / 0.30), 0 6px 20px rgb(99 102 241 / 0.34);
+  --glow-lg: 0 0 0 1px rgb(168 85 247 / 0.40), 0 10px 28px rgb(99 102 241 / 0.45);
+  --grid-dot: radial-gradient(rgb(129 140 248 / 0.07) 1px, transparent 1.4px);
+
+  /* Status / semantic (vivid, dark-tuned) */
+  --success-500: #34D399; --success-soft: rgb(52 211 153 / 0.16);
+  --warning-500: #FBBF24; --warning-soft: rgb(251 191 36 / 0.16);
+  --danger-500:  #F87171; --danger-soft:  rgb(248 113 113 / 0.18);
+  --info-500:    #38BDF8; --info-soft:    rgb(56 189 248 / 0.16);
+  --mauve:       #A78BFA;
 
   /* Engine badges */
-  --mysql-500: #4FC3F7; --mysql-soft: rgb(79 195 247 / 0.16);
-  --redis-500: #FF453A; --redis-soft: rgb(255 69 58 / 0.16);
+  --mysql-500: #38BDF8; --mysql-soft: rgb(56 189 248 / 0.16);
+  --redis-500: #F87171; --redis-soft: rgb(248 113 113 / 0.16);
 
-  /* Neutral scale (dark) — macOS fill hierarchy */
-  --gray-0:  #f5f5f7;
-  --gray-25: #aeaeb2;
-  --gray-50: #8e8e93;
-  --gray-100:#636366;
-  --gray-200:#48484a;
-  --gray-300:#3a3a3c;
-  --gray-400:#2e2e30;
-  --gray-500:#262628;
-  --gray-600:#1f1f21;
-  --gray-700:#1a1a1c;
-  --gray-800:#161618;
-  --gray-900:#0e0e10;
+  /* Neutral scale (cool blue-gray, deep) */
+  --gray-0:  #F4F6FF;
+  --gray-25: #C2C8E0;
+  --gray-50: #9AA3C4;
+  --gray-100:#7A83A8;
+  --gray-200:#5C6488;
+  --gray-300:#454C6B;
+  --gray-400:#343A54;
+  --gray-500:#272C42;
+  --gray-600:#1E2236;
+  --gray-700:#181B2B;
+  --gray-800:#12141F;
+  --gray-900:#0B0D16;
 
-  /* Surface map (dark) */
-  --bg-base:    #1e1e1e;
-  --bg-canvas:  #1e1e1e;
-  --bg-surface: #2a2a2c;
-  --bg-elevated:#323234;
-  --bg-subtle:  #3a3a3c;
-  --bg-inset:   #161618;
-  --bg-hover:   #38383a;
+  /* Surface map (deep space) */
+  --bg-base:    #0B0D16;
+  --bg-canvas:  #0B0D16;
+  --bg-surface: #141826;
+  --bg-elevated:#1B2030;
+  --bg-subtle:  #1E2436;
+  --bg-inset:   #080A12;
+  --bg-hover:   #232A40;
 
-  --border:        #3a3a3c;
-  --border-soft:   #2e2e30;
-  --border-strong: #4a4a4e;
+  --border:        #262D44;
+  --border-soft:   #1A2034;
+  --border-strong: #353E5C;
 
-  /* Scrollbars: translucent neutral, macOS-style overlay */
-  --scrollbar-thumb:       rgba(150,150,160,0.42);
-  --scrollbar-thumb-hover: rgba(180,180,190,0.72);
+  /* Scrollbars: indigo-tinted, macOS-style overlay */
+  --scrollbar-thumb:       rgba(129 140 248 / 0.42);
+  --scrollbar-thumb-hover: rgba(165 180 252 / 0.72);
   --scrollbar-track:       transparent;
 
-  --text-primary:   #f5f5f7;
-  --text-secondary: #aeaeb2;
-  --text-tertiary:  #8e8e93;
+  --text-primary:   #EDEFFB;
+  --text-secondary: #A7AFC9;
+  --text-tertiary:  #6B7390;
   --text-on-brand:  #ffffff;
-  --text-disabled:  #636366;
+  --text-disabled:  #565E7E;
 
-  --grid-line: #2e2e30;
+  --grid-line: #1E2436;
 
-  /* Segmented-control raised segment fill (lighter than its pill) */
-  --segment-active: #48484a;
+  /* Segmented-control raised segment fill (cool) */
+  --segment-active: #2A3150;
 
-  /* Translucent vibrancy panel (overlays / popovers) */
-  --panel-bg: rgb(50 50 52 / 0.80);
+  /* Translucent vibrancy panel (overlays / popovers) — cool glass */
+  --panel-bg: rgb(22 27 44 / 0.82);
 
   /* Text selection */
-  --sel-bg: rgb(10 132 255 / 0.35);
+  --sel-bg: rgb(99 102 241 / 0.40);
 
   /* Opaque selection fills — used by sticky cells (selected column header,
-     row-number gutter) so scrolled content never bleeds through behind them. */
-  --sel-col-bg: #28527f;
-  --sel-row-bg: #1c3a63;
-  --sel-row-del-bg: #5b2b2b;
+     row-number gutter) so scrolled content never bleeds through behind them.
+     Kept OPAQUE (no transparency) to avoid WKWebView compositor crashes. */
+  --sel-col-bg: #2E2A5E;
+  --sel-row-bg: #211E45;
+  --sel-row-del-bg: #4A2630;
 
-  /* Shadows (soft, layered) */
-  --shadow-sm:  0 1px 2px rgb(0 0 0 / 0.30);
-  --shadow-md:  0 4px 14px rgb(0 0 0 / 0.40);
-  --shadow-lg:  0 10px 30px rgb(0 0 0 / 0.50);
-  --shadow-pop: 0 18px 50px rgb(0 0 0 / 0.60);
+  /* Shadows (deep, layered) */
+  --shadow-sm:  0 1px 2px rgb(0 0 0 / 0.40);
+  --shadow-md:  0 4px 14px rgb(0 0 0 / 0.50);
+  --shadow-lg:  0 10px 30px rgb(0 0 0 / 0.60);
+  --shadow-pop: 0 18px 50px rgb(0 0 0 / 0.70);
 
   /* Typography — SF stack */
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
@@ -110,7 +119,7 @@
   /* Spacing */
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px; --sp-8: 32px;
 
-  /* Radius (Apple-ish) */
+  /* Radius */
   --r-xs: 5px; --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-xl: 14px; --r-full: 9999px;
 
   /* Layout */
@@ -119,10 +128,14 @@
   --statusbar-h: 28px;
   --titlebar-h: 30px;
 
-  /* Vibrancy surfaces (macOS glass) */
-  --app-bg: radial-gradient(120% 90% at 0% 0%, rgb(22 30 50) 0%, rgb(20 20 22) 55%, rgb(15 15 17) 100%);
-  --sidebar-bg: rgb(30 30 32 / 0.62);
-  --titlebar-bg: rgb(30 30 32 / 0.66);
+  /* Deep-space background: faint grid + ambient violet/blue glows over near-black navy */
+  --app-bg:
+    var(--grid-dot) 0 0 / 26px 26px,
+    radial-gradient(68% 52% at 84% -10%, rgb(139 92 246 / 0.18), transparent 60%),
+    radial-gradient(54% 46% at -6% 108%, rgb(59 130 246 / 0.16), transparent 55%),
+    linear-gradient(180deg, #0C0E1A 0%, #090B14 58%, #070810 100%);
+  --sidebar-bg: rgb(16 20 36 / 0.66);
+  --titlebar-bg: rgb(16 20 36 / 0.72);
 
   /* Motion (Apple spring-ish easing) */
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
@@ -130,7 +143,7 @@
   --t-base: 240ms var(--ease);
 
   /* Focus ring */
-  --focus-ring: 0 0 0 3px rgb(10 132 255 / 0.40);
+  --focus-ring: 0 0 0 3px rgb(129 140 248 / 0.45);
 
   /* Legacy aliases (kept so any stray reference still resolves) */
   --brand-50: var(--brand-soft); --brand-100: var(--brand-soft); --brand-200: var(--brand-soft);
@@ -146,11 +159,11 @@
 
 /* =====================  LIGHT THEME  ===================== */
 :root[data-theme="light"] {
-  --brand:        #007AFF;
-  --brand-hover:  #006EDB;
-  --brand-soft:   rgb(0 122 255 / 0.12);
-  --brand-border: rgb(0 122 255 / 0.40);
-  --border-focus: #007AFF;
+  --brand:        #4F46E5;
+  --brand-hover:  #4338CA;
+  --brand-soft:   rgb(79 70 229 / 0.12);
+  --brand-border: rgb(79 70 229 / 0.42);
+  --border-focus: #4F46E5;
 
   --success-500: #34C759; --success-soft: rgb(52 199 89 / 0.14);
   --warning-500: #FF9F0A; --warning-soft: rgb(255 159 10 / 0.16);
@@ -216,9 +229,17 @@
   --focus-ring: 0 0 0 3px rgb(0 122 255 / 0.35);
 
   /* Vibrancy surfaces (light) */
-  --app-bg: radial-gradient(120% 90% at 0% 0%, rgb(228 236 255) 0%, rgb(255 255 255) 55%);
+  --app-bg: var(--grid-dot) 0 0 / 26px 26px, radial-gradient(120% 90% at 0% 0%, rgb(224 228 248) 0%, rgb(248 249 253) 55%, rgb(255 255 255) 100%);
   --sidebar-bg: rgb(246 246 251 / 0.62);
   --titlebar-bg: rgb(246 246 251 / 0.66);
+
+  /* Shared tech tokens (light-tuned) — keep in sync with dark theme */
+  --brand-grad: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+  --brand-grad-soft: linear-gradient(135deg, rgb(79 70 229 / 0.14), rgb(124 58 237 / 0.14));
+  --glow-sm: 0 0 0 1px rgb(79 70 229 / 0.30), 0 4px 14px rgb(79 70 229 / 0.20);
+  --glow-md: 0 0 0 1px rgb(79 70 229 / 0.28), 0 6px 20px rgb(79 70 229 / 0.26);
+  --glow-lg: 0 0 0 1px rgb(124 58 237 / 0.34), 0 10px 28px rgb(79 70 229 / 0.34);
+  --grid-dot: radial-gradient(rgb(79 70 229 / 0.05) 1px, transparent 1.4px);
 }
 
 /* =====================  RESET / BASE  ===================== */
@@ -577,8 +598,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 /* Solid accent capsule, no stripe, no shift */
 .tree-row.active {
-  background: var(--brand);
+  background: var(--brand-grad);
   color: #fff;
+  box-shadow: var(--glow-sm);
 }
 .tree-row.active .tw { color: rgb(255 255 255 / 0.85); }
 .tree-row.active .badge { opacity: 1; filter: none; }
@@ -698,6 +720,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   flex: 1 1 48%;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
   background: var(--bg-surface);
 }
@@ -789,7 +812,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .editor .cm-editor.cm-focused { outline: none; }
 
 /* Database-context chip in editor header */
+.ctx-conn-wrap { display: inline-flex; align-items: center; gap: 2px; min-width: 0; }
 .ctx-db-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  overflow: hidden;
   background: var(--brand-soft);
   color: var(--brand);
   border: 1px solid var(--brand-border);
@@ -802,8 +831,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .ctx-db-btn:hover:not(:disabled) { background: var(--brand-soft); border-color: var(--brand); }
 .ctx-db-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.ctx-db { color: var(--brand); font-weight: var(--fw-medium); }
-.ctx-db-default { color: var(--text-tertiary); font-weight: var(--fw-regular); }
+/* Connection context inside the editor header chip */
+.conn-icon { font-size: 11px; line-height: 1; }
+.conn-name { font-weight: var(--fw-semibold); color: var(--brand); }
+.conn-sep { color: var(--text-tertiary); opacity: 0.7; }
+.conn-addr { font-family: var(--font-mono); color: var(--text-secondary); }
+.conn-user { color: var(--text-secondary); }
+.conn-db { color: var(--brand); font-weight: var(--fw-medium); }
+.conn-db-default { color: var(--text-tertiary); font-weight: var(--fw-regular); }
 
 /* =====================  QUERY TABS  ===================== */
 .tab-bar {
@@ -897,13 +932,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .rtab:hover:not(:disabled) { color: var(--text-primary); }
 .rtab.active {
-  background: var(--segment-active);
-  color: var(--text-primary);
-  box-shadow: var(--shadow-sm);
+  background: var(--brand-grad);
+  color: #fff;
+  box-shadow: var(--glow-sm);
 }
 .rtab:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.result-body { flex: 1; overflow: auto; background: var(--bg-surface); }
+.result-body { flex: 1; min-width: 0; overflow: auto; background: var(--bg-surface); }
 .empty {
   display: flex;
   align-items: center;
@@ -928,6 +963,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 6px 12px;
   text-align: left;
   white-space: nowrap;
+  /* Cap runaway columns (UUID / JSON / TEXT): truncate with ellipsis
+     instead of stretching the whole table. Full value is still
+     recoverable via hover (title) and right-click copy. */
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .result-table th {
   background: var(--bg-subtle);
@@ -1199,6 +1240,7 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 /* =====================  CHAT PANEL  ===================== */
 /* Modern conversation UI — avatars, soft bubbles, clear hierarchy */
 .chat {
+  position: relative;
   background: var(--bg-surface);
   border-left: 1px solid var(--border);
   display: flex;
@@ -1206,6 +1248,30 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   min-width: 0;
   min-height: 0;       /* allow flex children to shrink below content size */
   overflow: hidden;     /* establish scroll context for chat-log */
+}
+
+/* Draggable splitter between main and chat */
+.chat-splitter {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 10;
+  background: transparent;
+  transition: background var(--t-fast);
+}
+.chat-splitter:hover,
+.chat-splitter.active {
+  background: var(--brand);
+  opacity: 0.35;
+}
+/* Widen the grab area without changing the visible splitter */
+.chat-splitter::before {
+  content: "";
+  position: absolute;
+  inset: 0 -4px;
 }
 
 /* Chat header — icon + title + status + collapse */
@@ -1274,11 +1340,11 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   display: none; /* hide role label on user msgs */
 }
 .msg.user .msg-body {
-  background: var(--brand);
+  background: var(--brand-grad);
   color: #ffffff;
   padding: 10px 15px;
   border-radius: 16px 16px 4px 16px;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.18);
+  box-shadow: var(--glow-sm);
   text-shadow: none;
 }
 
@@ -1299,14 +1365,15 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   width: 26px;
   height: 26px;
   border-radius: 8px;
-  background: var(--brand-soft);
-  border: 1px solid var(--brand-border);
-  color: var(--brand);
+  background: var(--brand-grad);
+  border: none;
+  color: #fff;
   font-size: 11px;
   font-weight: 700;
   flex-shrink: 0;
   margin-top: 2px;
   line-height: 1;
+  box-shadow: var(--glow-sm);
 }
 
 .msg.assistant .msg-role {
@@ -1323,7 +1390,7 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   border-radius: 14px 14px 14px 4px;
   padding: 10px 14px;
   color: var(--text-primary);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 0 0 1px rgb(99 102 241 / 0.10);
 }
 
 /* ---- Markdown rendering inside AI messages ---- */
@@ -1450,6 +1517,108 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   color: var(--text-secondary);
 }
 .chat-plan-steps li::marker { color: var(--text-tertiary); }
+
+/* ---- SQL references (ADR: Chat 引用 SQL) --------------------------------
+   Two placements share one chip: the composer tray (removable, pre-send) and
+   the transcript card (read-only, post-send). Same visual language on purpose
+   — what you staged is literally what the model received. */
+.chat-ref {
+  align-self: stretch;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--brand);
+  border-radius: 10px;
+  padding: 9px 12px;
+}
+.chat-ref-head {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--text-secondary);
+}
+/* Staged references sit between the log and the input. Capped + scrollable so
+   a stack of chips can never squeeze the transcript out of view. */
+.ref-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 14px 0;
+  max-height: 92px;
+  overflow-y: auto;
+  flex: none;
+}
+.ref-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.ref-chip.mismatch { border-color: #d08a3a; }
+.ref-chip.in-log {
+  border-radius: 8px;
+  cursor: pointer;
+  padding: 4px 9px;
+  gap: 5px;
+  text-align: left;
+  color: var(--text-secondary);
+}
+.ref-chip-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 4px 4px 4px 10px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.ref-chip-main:hover,
+.ref-chip.in-log:hover { background: var(--bg-subtle); }
+.ref-icon { flex: none; }
+.ref-conn { color: var(--brand); font-weight: 600; flex: none; }
+.ref-sep { color: var(--text-tertiary); flex: none; }
+.ref-db { color: var(--text-secondary); flex: none; }
+.ref-scope {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+/* The SQL preview is the only elastic part — it yields first when the panel
+   is narrow, so the provenance (which instance / which db) never truncates. */
+.ref-sql {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+}
+.ref-chip-x {
+  flex: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  line-height: 1;
+  padding: 4px 9px 5px 5px;
+}
+.ref-chip-x:hover { color: #d9534f; }
 
 /* ---- Token cost strip (ADR-AI-4 决策3) ---- */
 .chat-usage {
@@ -1677,10 +1846,10 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .seg button + button { box-shadow: -1px 0 0 var(--border); }
 .seg button:hover:not(.seg-on) { color: var(--text-primary); }
 .seg button.seg-on {
-  background: var(--segment-active);
-  color: var(--text-primary);
+  background: var(--brand-grad);
+  color: #fff;
   font-weight: 600;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
+  box-shadow: var(--glow-sm);
 }
 /* =====================  BUTTONS (unified bezel system)  ===================== */
 .btn {
@@ -1702,9 +1871,9 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-strong); }
 .btn:active:not(:disabled) { background: var(--bg-subtle); box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.12); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn.primary { background: var(--brand); color: var(--text-on-brand); border-color: transparent; font-weight: var(--fw-semibold); box-shadow: 0 1px 3px rgb(0 122 255 / 0.25); }
-.btn.primary:hover:not(:disabled) { background: var(--brand-hover); color: #fff; box-shadow: 0 2px 8px rgb(0 122 255 / 0.32); }
-.btn.primary:active:not(:disabled) { box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.18); }
+.btn.primary { background: var(--brand-grad); background-size: 160% 160%; background-position: 0% 0%; color: #fff; border-color: transparent; font-weight: var(--fw-semibold); box-shadow: var(--glow-md); transition: background-position var(--t-fast), box-shadow var(--t-fast), transform var(--t-fast), color var(--t-fast); }
+.btn.primary:hover:not(:disabled) { background-position: 100% 100%; color: #fff; box-shadow: var(--glow-lg); transform: translateY(-1px); }
+.btn.primary:active:not(:disabled) { box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.20); transform: translateY(0); }
 .btn.danger { background: var(--danger-500); color: #fff; border-color: transparent; font-weight: var(--fw-semibold); box-shadow: 0 1px 3px rgb(255 69 58 / 0.28); }
 .btn.danger:hover:not(:disabled) { background: var(--danger-500); filter: brightness(1.08); box-shadow: 0 2px 8px rgb(255 69 58 / 0.38); }
 .btn.danger:active:not(:disabled) { box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.2); }
@@ -2196,10 +2365,10 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 }
 .conn-tab:hover { color: var(--text-secondary); background: var(--bg-subtle); }
 .conn-tab.active {
-  background: var(--brand);
+  background: var(--brand-grad);
   color: #fff;
   font-weight: var(--fw-semibold);
-  box-shadow: 0 1px 4px rgb(0 122 255 / .3);
+  box-shadow: var(--glow-sm);
 }
 .conn-tab-body {
   flex: 1;
@@ -2438,9 +2607,10 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 }
 .nav-item:hover { background: rgba(127, 127, 127, .15); }
 .nav-item.active {
-  background: var(--accent);
+  background: var(--brand-grad);
   color: #fff;
   font-weight: 600;
+  box-shadow: var(--glow-sm);
 }
 .settings-content {
   flex: 1 1 auto;
@@ -2718,4 +2888,191 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   border-radius: 10px;
   font-size: var(--fs-sm);
   font-weight: 500;
+}
+
+/* ============================================================
+   SQL editor — autocomplete popup overhaul
+   Problem: @codemirror/autocomplete ships oneDark/legacy glyphs
+   (keyword => yellow 🔑 emoji, property => grey □ box) that clash
+   with ChatQuery's vibrancy/translucent UI — the "old TV" feeling.
+   Fix: drop the mismatched glyphs, use a unified color-coded dot per
+   completion type, full-invert the selected row, and glass-ify the
+   popup to match the app's popover language. (CSS vars flip with
+   dark/light automatically, so no JS theme reconfig needed.)
+   ============================================================ */
+.cm-editor .cm-tooltip.cm-tooltip-autocomplete {
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--panel-bg);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  backdrop-filter: blur(24px) saturate(1.6);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  padding: 5px;
+  font-family: var(--font-mono);
+}
+.cm-editor .cm-tooltip-autocomplete > ul {
+  font-family: var(--font-mono);
+  max-height: 18em;
+}
+.cm-editor .cm-tooltip-autocomplete > ul > li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+.cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--brand);
+  color: #fff;
+}
+.cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionDetail {
+  color: rgba(255, 255, 255, 0.82);
+}
+.cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionIcon {
+  filter: brightness(0) invert(1);
+}
+
+/* Kill the legacy emoji/box glyphs; replace with a unified dot. */
+.cm-editor .cm-completionIcon {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  padding: 0 !important;
+  margin: 0 !important;
+  color: transparent !important;
+}
+.cm-editor .cm-completionIcon::after {
+  content: "" !important;   /* wipe 🔑 / □ / ƒ … */
+}
+/* Type color-coding — column / table / keyword / function. */
+.cm-editor .cm-completionIcon-property { background: var(--info-500); }   /* column  : blue  */
+.cm-editor .cm-completionIcon-keyword  { background: #c586c0; }            /* keyword : mauve */
+.cm-editor .cm-completionIcon-function { background: #dcdcaa; }            /* func    : sand  */
+.cm-editor .cm-completionIcon-class,
+.cm-editor .cm-completionIcon-type,
+.cm-editor .cm-completionIcon-constant { background: #4ec9b0; }            /* type    : teal  */
+/* Tables/views carry no `type` => default neutral dot, fine. */
+
+.cm-editor .cm-completionLabel {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.cm-editor .cm-completionDetail {
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 11px;
+  font-style: normal;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  opacity: 0.9;
+}
+/* Scrollbar inside the popup — keep it subtle, not a chunky native bar. */
+.cm-editor .cm-tooltip-autocomplete > ul::-webkit-scrollbar {
+  width: 8px;
+}
+.cm-editor .cm-tooltip-autocomplete > ul::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 8px;
+}
+
+/* ============================================================
+   Result cell hover preview (truncated/overflowed cells)
+   A custom floating popover — NOT the native `title` (which is
+   slow to appear, unstyleable, and truncates long values). Shows
+   the FULL cell value on hover for any cell clipped at 360px.
+   Styled like the app's other popovers (vibrancy + shadow-pop).
+   pointer-events:none so it never steals the cursor / flickers.
+   ============================================================ */
+.cell-tip {
+  position: fixed;
+  z-index: 70;
+  max-width: 360px;
+  max-height: 160px;
+  overflow: auto;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--panel-bg);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Let the user still click/right-click the cells underneath the preview. */
+  pointer-events: none;
+  cursor: default;
+  animation: pop-in var(--t-fast);
+}
+.cell-tip-hint {
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px dashed var(--border);
+  color: var(--text-tertiary);
+  font-size: var(--fs-2xs);
+  line-height: 1.4;
+}
+
+/* ---- Stable cell-value viewer (opened via double-click / context menu) ----
+   Wider than a normal modal so long JSON/Markdown/chat content is readable.
+   The body is a scrollable <pre> that preserves line breaks and wraps long
+   tokens so the user can select and copy the whole value.
+*/
+.cell-view-modal {
+  width: 760px;
+  max-width: 92vw;
+  max-height: 82vh;
+  padding: 0;
+  overflow: hidden;
+}
+.cell-view-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text-secondary);
+  user-select: none;
+}
+.cell-view-head .icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-md);
+  font-size: 18px;
+  line-height: 1;
+}
+.cell-view-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: var(--sp-4) var(--sp-5);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 2;
+}
+.cell-view-meta {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.cell-view-modal .modal-actions {
+  border-top: 1px solid var(--border);
+  padding: var(--sp-3) var(--sp-5);
 }

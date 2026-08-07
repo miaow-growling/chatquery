@@ -152,12 +152,28 @@ export interface ChatMessage {
   content: string;
 }
 
+/// SQL attached to a chat turn from the query editor (ADR: Chat 引用 SQL).
+/// Carries its own provenance — the *editor tab's* connection and database,
+/// which may differ from the one the chat panel is bound to. Field names are
+/// snake_case to match the Rust `SqlReference` on the wire.
+export interface SqlReference {
+  conn_id: string;
+  db: string | null;
+  /// `statement` = one statement snapped to `;` boundaries; `full` = whole tab.
+  scope: "statement" | "full";
+  sql: string;
+}
+
 /// A chat-log entry. Superset of `ChatMessage`: the log can also hold a `plan`
-/// card, which is UI-only and must be stripped before the history is sent back
-/// to the model (the Rust `ChatRole` has no such variant).
+/// card or a `ref` card, both UI-only, which must be stripped before the
+/// history is sent back to the model (the Rust `ChatRole` has no such variant).
+/// The `ref` card exists for transparency — it shows exactly which SQL the
+/// model received, so an answer can never be attributed to SQL the user
+/// didn't knowingly attach.
 export type ChatItem =
   | ChatMessage
-  | { role: "plan"; content: string; steps: string[] };
+  | { role: "plan"; content: string; steps: string[] }
+  | { role: "ref"; content: string; refs: SqlReference[] };
 
 /// Token accounting for one finished turn (ADR-AI-4 决策3). Arrives on the
 /// `chat-usage` event just before `chat-done`. Providers that don't report
