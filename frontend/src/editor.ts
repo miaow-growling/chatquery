@@ -208,23 +208,148 @@ async function readClipboard(): Promise<string> {
 }
 
 /// Expand `[from, to)` to the enclosing statement by walking out to the
-/// nearest `;` on each side. Shared by autocomplete (which needs the current
-/// statement's FROM/JOIN clauses) and by chat references (which must never
-/// attach a half statement).
+/// nearest statement terminator on each side.
 ///
-/// Known limitation: a naive `;` scan, so semicolons inside string literals or
-/// a stored-procedure body split the statement early. Accepted — the fix is a
-/// real tokenizer, and the failure mode (referencing slightly too little) is
-/// visible to the user in the reference chip.
+/// Unlike a naive `;` scan, this respects string literals (`'...'`, `"..."`,
+/// `` `...` ``), comments (`/* ... */`, `-- `, `#`), and MySQL `DELIMITER`
+/// directives — so a `;` inside a string, comment, or stored-procedure body
+/// no longer splits the statement early. The failure mode of the old scan
+/// (referencing slightly too little) is gone; the new scan may reference
+/// slightly too MUCH inside a `DELIMITER` body, which is the safer direction
+/// for both chat references and autocomplete context.
 export function statementRange(
   doc: string,
   from: number,
   to: number
 ): [number, number] {
-  const start = doc.lastIndexOf(";", Math.max(0, from - 1)) + 1;
-  const semiAfter = doc.indexOf(";", to);
-  const end = semiAfter === -1 ? doc.length : semiAfter;
+  const bounds = statementBounds(doc);
+  let start = 0;
+  for (const b of bounds) {
+    if (b.termEnd <= from) start = b.termEnd;
+    else break;
+  }
+  let end = doc.length;
+  for (const b of bounds) {
+    if (b.termStart >= to) {
+      // Multi-char delimiters ($$ / // / …) are INCLUDED so a stored-procedure
+      // body ending in `END $$` stays a complete, runnable statement. The common
+      // single `;` is excluded for a cleaner chat reference.
+      end = b.len > 1 ? b.termEnd : b.termStart;
+      break;
+    }
+  }
+  // A `DELIMITER X` client directive is not server SQL. When it lands at the
+  // head of a statement (e.g. just before a `CREATE PROCEDURE` using $$), drop
+  // it so the reference is a runnable statement, not a client-script fragment.
+  const head = doc.slice(start, end);
+  const dm = head.match(/^\s*DELIMITER\s+\S+[^\S\r\n]*\r?\n?/i);
+  if (dm) start += dm[0].length;
   return [start, Math.max(start, end)];
+}
+
+interface StatementBound {
+  /// Index of the terminator's first char (exclusive end of the statement when
+  /// the delimiter is the single `;`).
+  termStart: number;
+  /// Index just past the terminator.
+  termEnd: number;
+  /// Length of the terminator (1 for `;`, >1 for `$$`/`//`/…). Multi-char
+  /// delimiters are kept INCLUDED in the returned statement so a stored-proc
+  /// body like `END $$` stays complete and runnable.
+  len: number;
+}
+
+/// Scan `doc` for every statement terminator, tracking MySQL `DELIMITER`
+/// directives so a procedure body using `$$` (or `//`) as its terminator is
+/// handled. String literals and comments are skipped so their content can
+/// never be mistaken for a terminator.
+function statementBounds(doc: string): StatementBound[] {
+  const bounds: StatementBound[] = [];
+  let delim = ";";
+  let i = 0;
+  const n = doc.length;
+  const isIdentStart = (c: string) => /[A-Za-z_]/.test(c);
+  const readIdent = (start: number) => {
+    let j = start;
+    while (j < n && /[A-Za-z0-9_]/.test(doc[j])) j++;
+    return j;
+  };
+  while (i < n) {
+    const c = doc[i];
+    // --- string literals + quoted identifiers ---
+    if (c === "'" || c === '"' || c === "`") {
+      const q = c;
+      i++;
+      while (i < n) {
+        if (doc[i] === q) {
+          if (doc[i + 1] === q) {
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        // backslash escape inside '...' and "..." (not in `...` identifiers)
+        if (q !== "`" && doc[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        i++;
+      }
+      continue;
+    }
+    // --- block comment ---
+    if (c === "/" && doc[i + 1] === "*") {
+      const close = doc.indexOf("*/", i + 2);
+      i = close === -1 ? n : close + 2;
+      continue;
+    }
+    // --- line comments: `-- ` (with a space) and `#` ---
+    if (
+      c === "-" &&
+      doc[i + 1] === "-" &&
+      (doc[i + 2] === " " || doc[i + 2] === "\t")
+    ) {
+      const nl = doc.indexOf("\n", i + 2);
+      i = nl === -1 ? n : nl;
+      continue;
+    }
+    if (c === "#") {
+      const nl = doc.indexOf("\n", i + 1);
+      i = nl === -1 ? n : nl;
+      continue;
+    }
+    // --- DELIMITER directive: switches the terminator for following statements ---
+    if (isIdentStart(c)) {
+      const wordEnd = readIdent(i);
+      if (doc.slice(i, wordEnd).toUpperCase() === "DELIMITER") {
+        let j = wordEnd;
+        while (j < n && (doc[j] === " " || doc[j] === "\t")) j++;
+        let k = j;
+        while (
+          k < n &&
+          doc[k] !== " " &&
+          doc[k] !== "\t" &&
+          doc[k] !== "\n" &&
+          doc[k] !== "\r"
+        )
+          k++;
+        if (k > j) delim = doc.slice(j, k);
+        i = k;
+        continue;
+      }
+      i = wordEnd;
+      continue;
+    }
+    // --- terminator ---
+    if (doc.startsWith(delim, i)) {
+      bounds.push({ termStart: i, termEnd: i + delim.length, len: delim.length });
+      i += delim.length;
+      continue;
+    }
+    i++;
+  }
+  return bounds;
 }
 
 /// Create a CodeMirror SQL editor mounted into `parent`.

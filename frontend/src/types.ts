@@ -158,6 +158,9 @@ export interface ChatMessage {
 /// snake_case to match the Rust `SqlReference` on the wire.
 export interface SqlReference {
   conn_id: string;
+  /// Id of the editor tab the SQL was referenced from, so a chat `ref` card
+  /// can jump back to it. `null` when not applicable (e.g. TUI).
+  tab_id: string | null;
   db: string | null;
   /// `statement` = one statement snapped to `;` boundaries; `full` = whole tab.
   scope: "statement" | "full";

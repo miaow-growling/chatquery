@@ -737,6 +737,7 @@ mod tests {
     fn r(scope: &str, sql: &str) -> SqlReference {
         SqlReference {
             conn_id: "c1".into(),
+            tab_id: None,
             db: Some("shop".into()),
             scope: scope.into(),
             sql: sql.into(),

@@ -1619,6 +1619,21 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   padding: 4px 9px 5px 5px;
 }
 .ref-chip-x:hover { color: #d9534f; }
+/* ▶ run / 👁 view affordances on a chat ref card — flex:none so they stay
+   visible while the SQL preview (the elastic part) yields first. */
+.ref-jump {
+  flex: none;
+  margin-left: 4px;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  padding: 1px 4px;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--text-tertiary);
+}
+.ref-jump:hover { color: var(--brand); background: var(--bg-subtle); }
 
 /* ---- Token cost strip (ADR-AI-4 决策3) ---- */
 .chat-usage {

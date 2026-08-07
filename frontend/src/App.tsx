@@ -1643,6 +1643,40 @@ export function App() {
     }
   }, [active, pageSize]);
 
+  // Run an arbitrary SQL on an explicit connection/database and show the result
+  // in the active tab's result pane. Powers "run this referenced SQL" from a
+  // chat ref card (on the ref's OWN connection, not the panel-bound one) and
+  // the "问 AI：运行并分析" editor action — reusing the same backend exec path
+  // as `runQuery`.
+  const runSqlExplicit = useCallback(
+    async (connId: string, sql: string, db: string | null) => {
+      if (!connId) {
+        setRunInfo({ kind: "warn", text: "请先选择连接 / 数据库" });
+        return;
+      }
+      if (!sql.trim()) return;
+      clearEditState();
+      setResultTab("data");
+      setRunInfo(null);
+      setRunning(true);
+      const t0 = performance.now();
+      try {
+        const r = await api.executeQuery(connId, sql, db, 0, pageSize);
+        const ms = Math.round(performance.now() - t0);
+        setActiveTab((tab) => ({ ...tab, sql, result: r, browseCtx: null }));
+        void api.logQuery(connId, db, sql);
+        setRunInfo(runStatFor(r, ms));
+      } catch (e) {
+        const ms = Math.round(performance.now() - t0);
+        setActiveTab((tab) => ({ ...tab, result: errOut(String(e)), browseCtx: null }));
+        setRunInfo({ kind: "err", text: `✗ ${ms}ms · ${String(e)}` });
+      } finally {
+        setRunning(false);
+      }
+    },
+    [pageSize],
+  );
+
   // Keep a live ref so the editor's run-key (registered once) always calls the
   // latest `runQuery` closure with the current selected connection.
   const runQueryRef = useRef<(forceFull?: boolean) => void>(() => {});
@@ -1675,7 +1709,13 @@ export function App() {
       showToast("请先为当前查询选择连接 / 数据库");
       return;
     }
-    const ref: SqlReference = { conn_id: t.connId, db: t.db, scope, sql };
+    const ref: SqlReference = {
+      conn_id: t.connId,
+      tab_id: t.id,
+      db: t.db,
+      scope,
+      sql,
+    };
     setPendingRefs((prev) =>
       prev.some(
         (r) => r.sql === ref.sql && r.conn_id === ref.conn_id && r.db === ref.db,
@@ -1744,6 +1784,18 @@ export function App() {
             "statement",
             "请分析这段 SQL 的性能瓶颈并给出优化建议（含索引建议）。",
           ),
+      },
+      {
+        type: "item",
+        label: "💬 问 AI：运行并分析这段 SQL",
+        onClick: () => {
+          const sql = (editorRef.current?.getStatement() ?? "").trim();
+          if (sql && active.connId) void runSqlExplicit(active.connId, sql, active.db);
+          attachSqlRef(
+            "statement",
+            "请分析这段 SQL 的执行计划与运行结果（结果已在右侧结果区展示），指出性能瓶颈与优化方向。",
+          );
+        },
       },
     ];
   };
@@ -3417,12 +3469,14 @@ export function App() {
                 {m.refs.map((r, j) => {
                   const l = refLabel(r);
                   return (
-                    <button
+                    <div
                       key={j}
-                      type="button"
                       className="ref-chip in-log"
-                      title="点击查看完整 SQL"
-                      onClick={() => setRefView(r)}
+                      title={r.tab_id ? "点击跳回来源标签页" : "点击查看完整 SQL"}
+                      onClick={() => {
+                        if (r.tab_id) switchTab(r.tab_id);
+                        else setRefView(r);
+                      }}
                     >
                       <span className="ref-icon">{l.icon}</span>
                       <span className="ref-conn">{l.name}</span>
@@ -3430,7 +3484,29 @@ export function App() {
                       <span className="ref-db">{l.db}</span>
                       <span className="ref-scope">{l.scope}</span>
                       <span className="ref-sql">{refPreview(r.sql)}</span>
-                    </button>
+                      <button
+                        type="button"
+                        className="ref-jump"
+                        title="运行这段 SQL"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void runSqlExplicit(r.conn_id, r.sql, r.db);
+                        }}
+                      >
+                        ▶
+                      </button>
+                      <button
+                        type="button"
+                        className="ref-jump"
+                        title="查看完整 SQL"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setRefView(r);
+                        }}
+                      >
+                        👁
+                      </button>
+                    </div>
                   );
                 })}
               </div>

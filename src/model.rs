@@ -90,6 +90,10 @@ pub struct SqlReference {
     /// Connection the SQL came from — the *editor tab's* connection, which may
     /// differ from the one the chat panel is bound to.
     pub conn_id: String,
+    /// Id of the editor tab the SQL was referenced from, so a chat `ref` card
+    /// can jump back to it. `None` when not applicable (e.g. TUI, or a full
+    /// document with no single tab concept).
+    pub tab_id: Option<String>,
     /// Source database; `None` means the connection's default.
     pub db: Option<String>,
     /// `"statement"` = one statement snapped to `;` boundaries, `"full"` = the
