@@ -7,10 +7,14 @@ use chatquery::db::importexport::{
 use chatquery::db::mysql::{
     ColumnInfo, ExplainVisual, ForeignKeyInfo, QueryResult, Schema, TableMeta, TableStructure,
 };
+use chatquery::db::redis::{KeyMeta, RedisValueView};
 use chatquery::llm::client::stream_chat;
 use chatquery::llm::control::TurnControl;
 use chatquery::model::BackendMsg;
-use chatquery::model::{ChatMessage, ChatRole, SqlReference};
+use chatquery::model::{
+    ChatMessage, ChatRole, ConversationRef, ConversationSummary, NewChatMessage, SqlReference,
+    StoredChatMessage,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -164,12 +168,28 @@ pub enum QueryOutput {
         /// stable row identity, in which case the UI must disable editing.
         #[serde(default)]
         primary_keys: Vec<String>,
+        /// Rows affected by a write statement (UPDATE/INSERT/DELETE/...).
+        /// Some for writes so the UI can show "N rows affected" feedback.
+        #[serde(default)]
+        affected: Option<u64>,
+        /// AUTO_INCREMENT id of the last INSERT, when the write produced one.
+        #[serde(default)]
+        last_insert_id: Option<u64>,
     },
     Redis {
         command: String,
         lines: Vec<String>,
         note: String,
         truncated: bool,
+        /// Structured value view (ADR-025 Phase A1). Populated by browse_redis_key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<RedisValueView>,
+        /// Seconds until expiry (ADR-025 Phase A1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl: Option<i64>,
+        /// Approximate memory usage in bytes (ADR-025 Phase A1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<u64>,
     },
 }
 
@@ -567,8 +587,100 @@ pub fn set_kb_bindings(
         .map_err(|e| e.to_string())
 }
 
-// --- EXPLAIN (execution plan) ------------------------------------------------
+// --- Conversations (docs/chat-conversation-design.md) ------------------------
+// 会话是一等实体：有 id/标题/绑定连接/时间戳，消息落 SQLite。前端只负责
+// 展示与加载；TUI/未来客户端复用同一套命令。
 
+#[tauri::command]
+pub fn list_conversations(
+    state: State<AppState>,
+) -> Result<Vec<ConversationSummary>, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .list_conversations()
+        .map_err(|e| e.to_string())
+}
+
+/// Create a conversation bound to `conn_id` (None = generic) and return its id.
+#[tauri::command]
+pub fn create_conversation(
+    state: State<AppState>,
+    conn_id: Option<String>,
+    title: Option<String>,
+) -> Result<String, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .create_conversation(conn_id.as_deref(), title.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_conversation(
+    state: State<AppState>,
+    id: String,
+    title: String,
+) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .rename_conversation(&id, &title)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_conversation(state: State<AppState>, id: String) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .delete_conversation(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct ConversationDetail {
+    pub info: ConversationSummary,
+    pub messages: Vec<StoredChatMessage>,
+}
+
+/// One conversation's info + messages (ascending seq). `offset`/`limit` default
+/// to 0 / 100 so a bare call returns the tail that fits the chat panel.
+#[tauri::command]
+pub fn get_conversation(
+    state: State<AppState>,
+    id: String,
+    offset: Option<u32>,
+    limit: Option<u32>,
+) -> Result<ConversationDetail, String> {
+    let store = state.store.lock().unwrap();
+    let (info, messages) = store
+        .get_conversation(&id, offset.unwrap_or(0) as i64, limit.unwrap_or(100) as i64)
+        .map_err(|e| e.to_string())?;
+    Ok(ConversationDetail { info, messages })
+}
+
+/// Append messages to a conversation. `id`/`seq` are backend-generated; the
+/// role whitelist + content length cap are enforced in the store layer.
+#[tauri::command]
+pub fn append_chat_messages(
+    state: State<AppState>,
+    conv_id: String,
+    messages: Vec<NewChatMessage>,
+) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .append_chat_messages(&conv_id, &messages)
+        .map_err(|e| e.to_string())
+}
+
+// --- EXPLAIN (execution plan) ------------------------------------------------
 #[tauri::command]
 pub async fn explain_query(
     state: State<'_, AppState>,
@@ -590,7 +702,7 @@ pub async fn explain_query(
         DbType::Mysql => {
             let sql = format!("EXPLAIN {}", query);
             let target_db: Option<&str> = if db.is_empty() { None } else { Some(db.as_str()) };
-            let r: QueryResult = chatquery::db::mysql::query(&cfg, &sql, target_db)
+            let r: QueryResult = chatquery::db::mysql::query(&cfg, &sql, target_db, false)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(QueryOutput::Table {
@@ -601,6 +713,8 @@ pub async fn explain_query(
                 page: 0,
                 page_size: 0,
                 primary_keys: vec![],
+                affected: None,
+                last_insert_id: None,
             })
         }
         DbType::Redis => Ok(QueryOutput::Redis {
@@ -608,6 +722,9 @@ pub async fn explain_query(
             lines: vec![],
             note: "EXPLAIN 仅支持 SQL 连接（MySQL）".to_string(),
             truncated: false,
+            value: None,
+            ttl: None,
+            size: None,
         }),
     }
 }
@@ -625,6 +742,15 @@ pub async fn test_connection(cfg: ConnInput) -> Result<bool, String> {
     }
 }
 
+/// Static (no DB access) pre-execution check: scan `query` for UPDATE/DELETE
+/// statements lacking a top-level WHERE/LIMIT. The UI calls this before
+/// `execute_query` so it can pop a confirm dialog; the backend re-checks on
+/// execute as the last line of defense.
+#[tauri::command]
+pub fn guard_write_sql(query: String) -> Vec<chatquery::sql_guard::WriteRisk> {
+    chatquery::sql_guard::analyze_write_sql(&query)
+}
+
 #[tauri::command]
 pub async fn execute_query(
     state: State<'_, AppState>,
@@ -633,6 +759,9 @@ pub async fn execute_query(
     db: String,
     page: u32,
     page_size: u32,
+    // Set by the UI after the user confirmed unguarded UPDATE/DELETE in the
+    // confirm dialog. Backend rejects whole-table writes without it.
+    allow_risky: Option<bool>,
 ) -> Result<QueryOutput, String> {
     let cfg = {
         let store = state.store.lock().unwrap();
@@ -655,6 +784,7 @@ pub async fn execute_query(
                     target_db,
                     page as usize,
                     page_size as usize,
+                    allow_risky.unwrap_or(false),
                 )
                 .await
                 .map_err(|e| e.to_string())?;
@@ -666,6 +796,8 @@ pub async fn execute_query(
                     page: page as usize,
                     page_size: page_size as usize,
                     primary_keys: vec![],
+                    affected: r.affected,
+                    last_insert_id: r.last_insert_id,
                 })
             }
             DbType::Redis => {
@@ -677,6 +809,9 @@ pub async fn execute_query(
                     lines: r.lines,
                     note: r.note,
                     truncated: r.truncated,
+                    value: r.value,
+                    ttl: r.ttl,
+                    size: r.size,
                 })
             }
         }
@@ -881,6 +1016,22 @@ pub async fn list_redis_keys(
         .map_err(|e| e.to_string())
 }
 
+/// List Redis keys with metadata (type, TTL, memory usage) via pipeline
+/// (ADR-025 Phase A2). One round-trip per page instead of N×3.
+#[tauri::command]
+pub async fn list_redis_keys_meta(
+    state: State<'_, AppState>,
+    conn_id: String,
+    db: u8,
+    pattern: String,
+    limit: usize,
+) -> Result<Vec<KeyMeta>, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    chatquery::db::redis::list_keys_meta(&cfg, db, &pattern, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn list_columns(
     state: State<'_, AppState>,
@@ -915,6 +1066,8 @@ pub async fn browse_table(
         page,
         page_size,
         primary_keys: r.primary_keys,
+        affected: None,
+        last_insert_id: None,
     })
 }
 
@@ -1038,7 +1191,51 @@ pub async fn browse_redis_key(
         lines: r.lines,
         note: r.note,
         truncated: r.truncated,
+        value: r.value,
+        ttl: r.ttl,
+        size: r.size,
     })
+}
+
+#[tauri::command]
+pub async fn delete_redis_key(
+    state: State<'_, AppState>,
+    conn_id: String,
+    db: u8,
+    key: String,
+) -> Result<u64, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    chatquery::db::redis::delete_key(&cfg, db, &key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn php_unserialize(data: String) -> Result<String, String> {
+    use std::process::Command;
+    let script = std::env::current_dir()
+        .map_err(|e| e.to_string())?
+        .join("php_unserialize.py");
+    let mut child = Command::new("python3")
+        .arg(&script)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动 Python 失败: {}", e))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(data.as_bytes());
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Python 进程错误: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("PHP 解析失败: {}", stderr.trim()));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(stdout.trim().to_string())
 }
 
 #[tauri::command]
@@ -1158,6 +1355,11 @@ fn next_turn_id() -> String {
 /// `refs` carries SQL the user attached from the query editor for this turn
 /// (ADR: Chat 引用 SQL). It is optional and defaults to empty, so older callers
 /// — and the TUI — keep working unchanged.
+///
+/// `conv_id` is the conversation this turn belongs to (P0 persistence context;
+/// the UI uses it to append messages via `append_chat_messages`).
+/// `conv_refs` carries cross-conversation references (@-mentions, P1); the
+/// injection itself is wired in `llm/session.rs` (#226).
 #[tauri::command]
 pub async fn chat_turn(
     app: AppHandle,
@@ -1165,8 +1367,38 @@ pub async fn chat_turn(
     conn_id: String,
     messages: Vec<ChatMessage>,
     refs: Option<Vec<SqlReference>>,
+    conv_id: Option<String>,
+    conv_refs: Option<Vec<ConversationRef>>,
 ) -> Result<String, String> {
     let refs = refs.unwrap_or_default();
+    // P1 跨会话引用（@-mention）：从 store 读取目标会话的尾部消息，渲染成
+    // 背景上下文块后随本轮注入（docs/chat-conversation-design.md §6.2）。
+    // 渲染发生在取锁作用域内、await 之前，锁在作用域结束即释放。
+    let conv_ctx: Option<String> = {
+        let store = state.store.lock().unwrap();
+        let conv_refs = conv_refs.unwrap_or_default();
+        if conv_refs.is_empty() {
+            None
+        } else {
+            chatquery::llm::session::render_conv_refs(&conv_refs, |r: &ConversationRef| {
+                // message 级引用定位单条：放宽窗口以覆盖更早的消息。
+                let window = if r.scope == "message" { 400 } else { 60 };
+                store
+                    .get_recent_conv(&r.conv_id, window)
+                    .ok()
+                    .flatten()
+                    .map(|(title, msgs)| {
+                        let pairs = msgs
+                            .into_iter()
+                            .map(|m| (m.role, m.content))
+                            .collect::<Vec<_>>();
+                        (title, pairs)
+                    })
+            })
+        }
+    };
+    // P0 会话持久化上下文：前端用它调 append_chat_messages；此处无需使用。
+    let _conv_id = conv_id;
     let conns: Vec<ConnectionConfig> = state.store.lock().unwrap().list().to_vec();
     let llm = state.llm.lock().unwrap().clone();
     let mcp = state.mcp.clone();
@@ -1218,6 +1450,7 @@ pub async fn chat_turn(
             mcp,
             &messages,
             &refs,
+            conv_ctx,
             &conn_id,
             &tx,
                 ctl.clone(),

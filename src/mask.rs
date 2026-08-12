@@ -110,6 +110,8 @@ pub fn mask_query_result(r: &QueryResult) -> QueryResult {
         truncated: r.truncated,
         total: r.total,
         primary_keys: r.primary_keys.clone(),
+        affected: r.affected,
+        last_insert_id: r.last_insert_id,
     }
 }
 
@@ -121,6 +123,9 @@ pub fn mask_redis_result(r: &RedisResult) -> RedisResult {
         lines,
         truncated: r.truncated,
         note: r.note.clone(),
+        value: r.value.clone(),
+        ttl: r.ttl,
+        size: r.size,
     }
 }
 
@@ -178,6 +183,8 @@ mod tests {
             truncated: false,
             total: None,
             primary_keys: vec![],
+            affected: None,
+            last_insert_id: None,
         };
         let m = mask_query_result(&r);
         // password column fully masked (prefix/suffix preserved)

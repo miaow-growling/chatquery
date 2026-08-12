@@ -172,9 +172,19 @@ async fn exec_builtin(args: &Value, conns: &[ConnectionConfig]) -> (String, Stri
     };
 
     match cfg.db_type {
-        DbType::Mysql => match mysql::query(cfg, &query, None).await {
+        DbType::Mysql => match mysql::query(cfg, &query, None, false).await {
             Ok(r) => {
-                let summary = format!("{}: {} 行", conn_name, r.rows.len());
+                let summary = match r.affected {
+                    Some(n) => {
+                        let id = if r.last_insert_id.unwrap_or(0) > 0 {
+                            format!(", 自增ID {}", r.last_insert_id.unwrap_or(0))
+                        } else {
+                            String::new()
+                        };
+                        format!("{}: 影响 {} 行{}", conn_name, n, id)
+                    }
+                    None => format!("{}: {} 行", conn_name, r.rows.len()),
+                };
                 let detail = if crate::mask::masking_enabled() {
                     let m = crate::mask::mask_query_result(&r);
                     format_result_table(&m.columns, &m.rows)

@@ -2,7 +2,8 @@ use crate::crypto;
 use crate::db::connection::{ConnectionConfig, DbType};
 use crate::db::container::{gen_id, Container, ContainerKind, LegacyConnection};
 use crate::error::{AppError, Result};
-use rusqlite::{params, Connection};
+use crate::model::{ConversationSummary, NewChatMessage, StoredChatMessage};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -492,6 +493,271 @@ impl Storage {
         }
         Ok(out)
     }
+
+    // --- Conversations / chat messages (docs/chat-conversation-design.md) ---
+
+    /// All conversations, most recently updated first (pinned float to the
+    /// top), capped at 200. `conn_name` resolves via the in-memory connection
+    /// list; if the store can't decrypt connections (wrong key) it degrades to
+    /// `None` labels rather than failing the whole chat list.
+    pub fn list_conversations(&self) -> Result<Vec<ConversationSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id, c.title, c.conn_id, c.created, c.updated, c.pinned,
+                    COUNT(m.id) AS msg_count,
+                    (SELECT content FROM chat_messages m2
+                      WHERE m2.conv_id = c.id ORDER BY m2.seq DESC LIMIT 1) AS last_content
+             FROM conversations c
+             LEFT JOIN chat_messages m ON m.conv_id = c.id
+             GROUP BY c.id
+             ORDER BY c.pinned DESC, c.updated DESC
+             LIMIT 200",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let conn_id: Option<String> = r.get(2)?;
+            let last_content: Option<String> = r.get(7)?;
+            Ok(ConversationSummary {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                conn_id: conn_id.clone(),
+                conn_name: None, // filled below
+                created: r.get(3)?,
+                updated: r.get(4)?,
+                pinned: r.get::<_, i64>(5)? != 0,
+                last_preview: preview_of(last_content.as_deref()),
+                msg_count: r.get(6)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        let names = self.conn_id_to_name();
+        for c in &mut out {
+            c.conn_name = c.conn_id.as_deref().and_then(|id| names.get(id).cloned());
+        }
+        Ok(out)
+    }
+
+    /// Create a conversation bound to `conn_id` (None = generic) and return
+    /// its id. `title` defaults to "新会话".
+    pub fn create_conversation(&self, conn_id: Option<&str>, title: Option<&str>) -> Result<String> {
+        let id = gen_id("s");
+        let now = now_secs();
+        self.conn.execute(
+            "INSERT INTO conversations (id, title, conn_id, created, updated, pinned)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            params![id, title.unwrap_or("新会话"), conn_id, now, now],
+        )?;
+        Ok(id)
+    }
+
+    pub fn rename_conversation(&self, id: &str, title: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE conversations SET title = ?1, updated = ?2 WHERE id = ?3",
+            params![title, now_secs(), id],
+        )?;
+        if n == 0 {
+            return Err(AppError::Msg(format!("会话不存在：{id}")));
+        }
+        Ok(())
+    }
+
+    /// Delete a conversation and cascade-delete its messages in one transaction.
+    pub fn delete_conversation(&mut self, id: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM chat_messages WHERE conv_id = ?1", params![id])?;
+        let n = tx.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        if n == 0 {
+            return Err(AppError::Msg(format!("会话不存在：{id}")));
+        }
+        Ok(())
+    }
+
+    /// One conversation's info + its messages (ascending `seq`), with
+    /// `offset`/`limit` pagination (defaults in the command layer: 0 / 100).
+    /// Returns `Err` when the conversation id is unknown.
+    pub fn get_conversation(
+        &self,
+        id: &str,
+        offset: i64,
+        limit: i64,
+    ) -> Result<(ConversationSummary, Vec<StoredChatMessage>)> {
+        let info = self
+            .conversation_summary(id)?
+            .ok_or_else(|| AppError::Msg(format!("会话不存在：{id}")))?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, role, content, meta, ts FROM chat_messages
+             WHERE conv_id = ?1 ORDER BY seq ASC LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows = stmt.query_map(params![id, limit, offset], |r| {
+            let meta: Option<String> = r.get(3)?;
+            Ok(StoredChatMessage {
+                id: r.get(0)?,
+                role: r.get(1)?,
+                content: r.get(2)?,
+                meta: meta
+                    .and_then(|m| serde_json::from_str(&m).ok()),
+                ts: r.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok((info, out))
+    }
+
+    /// Append messages to a conversation inside one transaction: assigns
+    /// `seq` continuing from the current max, generates ids, bumps `updated`.
+    /// Validates the role whitelist and content length. No-op on empty input.
+    pub fn append_chat_messages(
+        &mut self,
+        conv_id: &str,
+        messages: &[NewChatMessage],
+    ) -> Result<()> {
+        const ROLE_WHITELIST: [&str; 6] = ["user", "assistant", "tool", "system", "plan", "ref"];
+        const CONTENT_MAX_CHARS: usize = 200_000;
+        if messages.is_empty() {
+            return Ok(());
+        }
+        for m in messages {
+            if !ROLE_WHITELIST.contains(&m.role.as_str()) {
+                return Err(AppError::Msg(format!("非法消息角色：{}", m.role)));
+            }
+            if m.content.chars().count() > CONTENT_MAX_CHARS {
+                return Err(AppError::Msg("消息内容超出长度上限".into()));
+            }
+        }
+        let tx = self.conn.transaction()?;
+        let exists: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM conversations WHERE id = ?1",
+            params![conv_id],
+            |r| r.get(0),
+        )?;
+        if exists == 0 {
+            return Err(AppError::Msg(format!("会话不存在：{conv_id}")));
+        }
+        let max_seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM chat_messages WHERE conv_id = ?1",
+            params![conv_id],
+            |r| r.get(0),
+        )?;
+        let now = now_secs();
+        for (i, m) in messages.iter().enumerate() {
+            let meta_json = m.meta.as_ref().map(|v| v.to_string());
+            tx.execute(
+                "INSERT INTO chat_messages (id, conv_id, seq, role, content, meta, ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    gen_id("m"),
+                    conv_id,
+                    max_seq + i as i64 + 1,
+                    m.role,
+                    m.content,
+                    meta_json,
+                    now
+                ],
+            )?;
+        }
+        tx.execute(
+            "UPDATE conversations SET updated = ?1 WHERE id = ?2",
+            params![now, conv_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Single-conversation summary used by `get_conversation`. Returns `None`
+    /// Title + the last `n` messages of a conversation (ascending `seq`) —
+    /// the window the cross-conversation injector reads (#226). Returns `None`
+    /// when the conversation id is unknown.
+    pub fn get_recent_conv(
+        &self,
+        conv_id: &str,
+        n: i64,
+    ) -> Result<Option<(String, Vec<StoredChatMessage>)>> {
+        let title: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT title FROM conversations WHERE id = ?1",
+                params![conv_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(title) = title else { return Ok(None) };
+        let mut stmt = self.conn.prepare(
+            "SELECT id, role, content, meta, ts FROM (
+                SELECT * FROM chat_messages WHERE conv_id = ?1
+                ORDER BY seq DESC LIMIT ?2
+             ) ORDER BY seq ASC",
+        )?;
+        let rows = stmt.query_map(params![conv_id, n], |r| {
+            let meta: Option<String> = r.get(3)?;
+            Ok(StoredChatMessage {
+                id: r.get(0)?,
+                role: r.get(1)?,
+                content: r.get(2)?,
+                meta: meta.and_then(|m| serde_json::from_str(&m).ok()),
+                ts: r.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(Some((title, out)))
+    }
+
+    /// Single-conversation summary used by `get_conversation`. Returns `None`
+    /// when the id is unknown.
+    fn conversation_summary(&self, id: &str) -> Result<Option<ConversationSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id, c.title, c.conn_id, c.created, c.updated, c.pinned,
+                    COUNT(m.id) AS msg_count,
+                    (SELECT content FROM chat_messages m2
+                      WHERE m2.conv_id = c.id ORDER BY m2.seq DESC LIMIT 1) AS last_content
+             FROM conversations c
+             LEFT JOIN chat_messages m ON m.conv_id = c.id
+             WHERE c.id = ?1
+             GROUP BY c.id",
+        )?;
+        let mut rows = stmt.query_map(params![id], |r| {
+            let conn_id: Option<String> = r.get(2)?;
+            let last_content: Option<String> = r.get(7)?;
+            Ok(ConversationSummary {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                conn_id: conn_id.clone(),
+                conn_name: None,
+                created: r.get(3)?,
+                updated: r.get(4)?,
+                pinned: r.get::<_, i64>(5)? != 0,
+                last_preview: preview_of(last_content.as_deref()),
+                msg_count: r.get(6)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => {
+                let mut c = row?;
+                let names = self.conn_id_to_name();
+                c.conn_name = c.conn_id.as_deref().and_then(|id| names.get(id).cloned());
+                Ok(Some(c))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Best-effort conn_id → name map for list labels. Fails soft (empty map)
+    /// only if connection decryption itself fails — a display-only field.
+    fn conn_id_to_name(&self) -> std::collections::HashMap<String, String> {
+        self.load_connections()
+            .ok()
+            .into_iter()
+            .flatten()
+            .map(|c| (c.id.clone(), c.name))
+            .collect()
+    }
 }
 
 fn now_secs() -> i64 {
@@ -499,6 +765,11 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// First 60 characters of a message, for the conversation-list preview.
+fn preview_of(content: Option<&str>) -> String {
+    content.unwrap_or_default().chars().take(60).collect()
 }
 
 /// Schema bootstrap, extracted from `open()` so tests can build an isolated
@@ -565,6 +836,30 @@ fn init_schema(conn: &Connection) -> Result<()> {
             sql       TEXT NOT NULL,
             decision  TEXT NOT NULL
         );",
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS conversations (
+            id      TEXT PRIMARY KEY,
+            title   TEXT NOT NULL,
+            conn_id TEXT,
+            created INTEGER NOT NULL,
+            updated INTEGER NOT NULL,
+            pinned  INTEGER NOT NULL DEFAULT 0
+        );",
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS chat_messages (
+            id      TEXT PRIMARY KEY,
+            conv_id TEXT NOT NULL,
+            seq     INTEGER NOT NULL,
+            role    TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            meta    TEXT,
+            ts      INTEGER NOT NULL
+        );",
+    )?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_msg_conv ON chat_messages(conv_id, seq);",
     )?;
     Ok(())
 }
@@ -692,6 +987,146 @@ mod tests {
         let dbs: Vec<Option<String>> = rows.iter().map(|r| r.1.clone()).collect();
         assert!(dbs.contains(&None));
         assert!(dbs.contains(&Some("mydb".to_string())));
+    }
+
+    // --- Conversation persistence ----------------------------------------
+
+    fn msg(role: &str, content: &str) -> NewChatMessage {
+        NewChatMessage {
+            role: role.into(),
+            content: content.into(),
+            meta: None,
+        }
+    }
+
+    #[test]
+    fn conv_crud_and_rename() {
+        let s = mem_store();
+        let id = s.create_conversation(Some("c1"), None).unwrap();
+        let list = s.list_conversations().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title, "新会话");
+        assert_eq!(list[0].conn_id.as_deref(), Some("c1"));
+        assert_eq!(list[0].msg_count, 0);
+        assert_eq!(list[0].last_preview, "");
+
+        s.rename_conversation(&id, "订单问题排查").unwrap();
+        let (info, msgs) = s.get_conversation(&id, 0, 100).unwrap();
+        assert_eq!(info.title, "订单问题排查");
+        assert!(msgs.is_empty());
+
+        // Unknown conversation is an error, not silent.
+        assert!(s.get_conversation("nope", 0, 100).is_err());
+        assert!(s.rename_conversation("nope", "x").is_err());
+    }
+
+    #[test]
+    fn conv_append_seq_order_and_preview() {
+        let mut s = mem_store();
+        let id = s.create_conversation(None, None).unwrap();
+        s.append_chat_messages(
+            &id,
+            &[msg("user", "第一问"), msg("assistant", "第一答")],
+        )
+        .unwrap();
+        s.append_chat_messages(&id, &[msg("user", "第二问")])
+            .unwrap();
+
+        let (info, msgs) = s.get_conversation(&id, 0, 100).unwrap();
+        assert_eq!(info.msg_count, 3);
+        // Preview = last message, truncated to 60 chars.
+        assert_eq!(info.last_preview, "第二问");
+        // Seq ascending, roles preserved.
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "user"]);
+        assert_eq!(msgs[0].content, "第一问");
+        assert_eq!(msgs[2].content, "第二问");
+
+        // Pagination works.
+        let (_, page) = s.get_conversation(&id, 1, 1).unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].content, "第一答");
+    }
+
+    #[test]
+    fn conv_meta_roundtrip() {
+        let mut s = mem_store();
+        let id = s.create_conversation(None, None).unwrap();
+        s.append_chat_messages(
+            &id,
+            &[NewChatMessage {
+                role: "assistant".into(),
+                content: "带用量".into(),
+                meta: Some(serde_json::json!({"usage": {"total": 123}})),
+            }],
+        )
+        .unwrap();
+        let (_, msgs) = s.get_conversation(&id, 0, 100).unwrap();
+        assert_eq!(msgs.len(), 1);
+        let meta = msgs[0].meta.as_ref().expect("meta persisted");
+        assert_eq!(meta["usage"]["total"], 123);
+    }
+
+    #[test]
+    fn conv_delete_cascades_messages() {
+        let mut s = mem_store();
+        let id = s.create_conversation(None, None).unwrap();
+        s.append_chat_messages(&id, &[msg("user", "要删的"), msg("assistant", "也删")])
+            .unwrap();
+        assert_eq!(s.list_conversations().unwrap().len(), 1);
+        s.delete_conversation(&id).unwrap();
+        assert!(s.list_conversations().unwrap().is_empty());
+        // Cascade: messages are gone too (get now errors on unknown conv).
+        assert!(s.get_conversation(&id, 0, 100).is_err());
+    }
+
+    #[test]
+    fn conv_append_validates_input() {
+        let mut s = mem_store();
+        let id = s.create_conversation(None, None).unwrap();
+        // Unknown conversation → error.
+        assert!(s.append_chat_messages("nope", &[msg("user", "x")]).is_err());
+        // Role outside whitelist → error.
+        assert!(
+            s.append_chat_messages(&id, &[msg("spam", "x")]).is_err()
+        );
+        // Nothing was written by the rejected batches.
+        assert_eq!(s.get_conversation(&id, 0, 100).unwrap().1.len(), 0);
+        // Empty batch is a no-op, not an error.
+        s.append_chat_messages(&id, &[]).unwrap();
+    }
+
+    #[test]
+    fn conv_list_order_by_updated() {
+        let mut s = mem_store();
+        let a = s.create_conversation(None, None).unwrap();
+        let b = s.create_conversation(None, None).unwrap();
+        // B gets a message later → B floats above A.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        s.append_chat_messages(&b, &[msg("user", "新活动")]).unwrap();
+        let list = s.list_conversations().unwrap();
+        assert_eq!(list[0].id, b);
+        assert_eq!(list[0].last_preview, "新活动");
+        assert_eq!(list[1].id, a);
+    }
+
+    /// The injection window reads the TAIL of a conversation, ascending by
+    /// seq, and reports the title — the data render_conv_refs needs.
+    #[test]
+    fn conv_recent_window_is_tail_ascending() {
+        let mut s = mem_store();
+        let id = s.create_conversation(None, None).unwrap();
+        s.append_chat_messages(
+            &id,
+            &[msg("user", "m1"), msg("assistant", "m2"), msg("user", "m3")],
+        )
+        .unwrap();
+        let (title, msgs) = s.get_recent_conv(&id, 2).unwrap().expect("conv exists");
+        assert_eq!(title, "新会话");
+        let contents: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(contents, vec!["m2", "m3"]);
+        // Unknown conversation → None (not an error).
+        assert!(s.get_recent_conv("nope", 2).unwrap().is_none());
     }
 }
 

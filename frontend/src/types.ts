@@ -71,6 +71,11 @@ export type QueryOutput =
       /// Primary-key column names (browse path only). Empty => no stable row
       /// identity, so the UI must not allow edits.
       primaryKeys?: string[];
+      /// Rows affected by a write statement (UPDATE/INSERT/DELETE/...).
+      /// Present for writes so the UI can show "N rows affected" feedback.
+      affected?: number;
+      /// AUTO_INCREMENT id of the last INSERT, when the write produced one.
+      lastInsertId?: number;
     }
   | {
       kind: "redis";
@@ -78,7 +83,59 @@ export type QueryOutput =
       lines: string[];
       note: string;
       truncated: boolean;
+      /// Structured value view (ADR-025 Phase A1). Present when browsing a
+      /// single key; absent for ad-hoc queries.
+      value?: RedisValueView;
+      /// Seconds until expiry (ADR-025 Phase A1). None = persistent.
+      ttl?: number;
+      /// Approximate memory usage in bytes (ADR-025 Phase A1).
+      size?: number;
     };
+
+/// A statement flagged by the write guardrail: an UPDATE/DELETE without a
+/// top-level WHERE/LIMIT that would touch every row of a table.
+export interface WriteRisk {
+  /// "updateAll" | "deleteAll"
+  kind: "updateAll" | "deleteAll";
+  /// One-line, capped rendering of the offending statement.
+  preview: string;
+}
+
+// ---------------------------------------------------------------------------
+// Redis structured types (ADR-025 Phase A)
+// ---------------------------------------------------------------------------
+
+export type RedisValueView =
+  | { type: "string"; value: string }
+  | { type: "hash"; entries: HashEntry[] }
+  | { type: "list"; entries: ListEntry[]; truncated: boolean }
+  | { type: "set"; members: string[]; truncated: boolean }
+  | { type: "zset"; entries: ZsetEntry[]; truncated: boolean }
+  | { type: "none" };
+
+export interface HashEntry {
+  field: string;
+  value: string;
+}
+
+export interface ListEntry {
+  index: number;
+  value: string;
+}
+
+export interface ZsetEntry {
+  member: string;
+  score: number;
+}
+
+/// Lightweight metadata for a key returned by `list_redis_keys_meta`
+/// (ADR-025 Phase A2).
+export interface KeyMeta {
+  key: string;
+  key_type: string;
+  ttl?: number;
+  size?: number;
+}
 
 export interface ColumnInfo {
   name: string;
@@ -86,6 +143,8 @@ export interface ColumnInfo {
   key: string;
   nullable: string;
   default: string | null;
+  /// Column comment from INFORMATION_SCHEMA (② completion enhancement).
+  comment?: string;
 }
 
 export interface TableMeta {
@@ -321,4 +380,65 @@ export interface KbDocDto {
 export interface KbBindingInput {
   conn_id: string;
   database: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Conversations (docs/chat-conversation-design.md)
+// ---------------------------------------------------------------------------
+
+/// One conversation listed by `list_conversations`. `conn_name` is joined
+/// from the connections table for display; `last_preview` is the tail of the
+/// last message; `pinned` reserved for P2.
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  conn_id: string | null;
+  conn_name: string | null;
+  created: number;
+  updated: number;
+  pinned: boolean;
+  last_preview: string;
+  msg_count: number;
+}
+
+/// Input row for `append_chat_messages`. `id`/`seq` are backend-generated;
+/// `role` is whitelisted server-side (user/assistant/tool/system/plan/ref).
+/// `meta` carries structured data for decorative cards:
+///   ref → { refs: SqlReference[] }; plan → { steps: string[] };
+///   assistant → { usage: TokenUsage }.
+export interface NewChatMessage {
+  role: string;
+  content: string;
+  meta?: unknown;
+}
+
+/// A persisted message as read back by `get_conversation` (ascending `ts`).
+export interface StoredChatMessage {
+  id: string;
+  role: string;
+  content: string;
+  meta?: unknown;
+  ts: number;
+}
+
+/// `get_conversation` result: info + messages (ascending).
+export interface ConversationDetail {
+  info: ConversationSummary;
+  messages: StoredChatMessage[];
+}
+
+/// Cross-conversation reference (@-mention, docs/chat-conversation-design.md
+/// §6). `scope` is "session" (whole conversation tail) or "message" (one
+/// stored message); `message_id` present only for the latter.
+export interface ConversationRef {
+  conv_id: string;
+  scope: "session" | "message";
+  message_id: string | null;
+}
+
+/// UI-side pending @-mention card (not on the wire): carries display info so
+/// the chip can show title + preview without a lookup.
+export interface ConvRefCard extends ConversationRef {
+  title: string;
+  preview: string;
 }

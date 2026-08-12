@@ -24,7 +24,17 @@ Tauri v2 + React + Vite + TS 桌面 SQL 客户端;Rust library(sqlx MySQL)。
 坑:tokio::select! arm 借用须具名绑定;schemas()/on_delta 闭包具名;BackendMsg 新变体三处同步;错误/ChatDone 须塞回 tx 由桥接顺序 emit(直接 app.emit 会插队截断)。
 C 待做:跨轮持久化记忆、复杂度路由升级 LLM 自评、worker 并行调度、Explorer 去写工具。
 
-## 产品定位与编辑器(2026-08-06)
+## 产品定位与编辑器(2026-08-06，2026-08-10 更新)
 定位:聚焦"AI 驱动的查询助手",不全面对标 DataGrip/Navicat(不做重投入的 DB 工作台竞品)。
-编辑器现状:CodeMirror + MySQL 方言,补全已上下文感知(FROM/JOIN/别名)、一键格式化、内联 AI 补全、右键菜单;EXPLAIN 树形可视化已完成。短板:结果网格只读(无排序/筛选/导出)、补全缺类型/PK/注释与外键 JOIN 联想、多 SELECT 仅留最后结果集、编辑器内无语句历史。
-已选优先补齐:① 结果排序/筛选/导出(CSV/Excel/JSON + 复制为 INSERT/WHERE IN)② 补全增强(列类型/PK/注释展示 + 外键驱动 JOIN 关联列联想)③ 多结果集分标签 + 编辑器内语句历史/片段。暂不做可编辑单元格(双击改值→UPDATE)。
+编辑器现状:CodeMirror + MySQL 方言,补全已上下文感知(FROM/JOIN/别名、列类型/PK 标记/注释展示、外键驱动 JOIN 联想)、一键格式化、内联 AI 补全、右键菜单;EXPLAIN 树形可视化已完成。
+结果网格:已实现排序(列头 asc/desc/none)、筛选(列级包含/等于/不等于/范围/空值 + 全局搜索)、导出(CSV/Excel/JSON 下拉)、复制为(JSON/INSERT/UPDATE/WHERE IN/CSV)、多结果集分标签。
+语句历史:历史/片段弹窗 + 搜索 + 按连接筛选 + 载入/存为片段/删除。
+已全部落地(2026-08-10):①结果排序/筛选/导出 ②补全增强 ③多结果集分标签 + 编辑器内语句历史。暂不做可编辑单元格(双击改值→UPDATE)。
+
+Redis 浏览器(08-11):Redis 连接选中后中间区域切换为 Redis 浏览器模式(不再在左侧树展开 key)。浏览器含双栏(key-list 面板 + 类型感知值查看器)+ 控制台标签页。key-list 支持模式过滤 + 分页显示(type/TTL/大小)。MySQL 连接保持原编辑器+结果网格。
+
+## AI 会话体系（08-12，docs/chat-conversation-design.md）
+会话是一等实体:conversations/chat_messages 落 SQLite,前端只展示/加载(后端持久化,兼容 TUI)。6 命令 + chat_turn 增 conv_id/conv_refs(均可选)。
+- 持久化时机:sendChat 快照 turnItemsRef(绑定 convId 防串台)→ chat-done 时 append → 刷新列表;首条 user 自动标题(前 24 字,仅默认「新会话」时);首次启动自动建默认会话并回放。
+- @ 引用(P1):输入词首 @ 弹候选(缓存 list),Enter 选整段/点击钻取单条,随 conv_refs 发送;后端 render_conv_refs 注入(每会话最近 8 条、2000 字/条、12000 字预算,message 级放宽到 400 条窗口)。
+- 前端坑:setConvId 异步须先同步 convIdRef 再 loadConvs;[] deps 监听器闭包 stale → 用 ref 读最新值。

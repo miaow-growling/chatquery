@@ -25,7 +25,7 @@ import {
 } from "@codemirror/autocomplete";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { format as formatSqlText, type SqlLanguage } from "sql-formatter";
-import type { TableMeta } from "./types";
+import type { ColumnInfo, ForeignKeyInfo, TableMeta } from "./types";
 import { api } from "./api";
 
 export interface EditorHandle {
@@ -217,6 +217,25 @@ async function readClipboard(): Promise<string> {
 /// (referencing slightly too little) is gone; the new scan may reference
 /// slightly too MUCH inside a `DELIMITER` body, which is the safer direction
 /// for both chat references and autocomplete context.
+/// Split a SQL document into individual statements, respecting string
+/// literals, comments, and DELIMITER directives. Empty statements (just
+/// whitespace between terminators) are filtered out. Returns the trimmed
+/// statement text for each.
+export function splitStatements(doc: string): string[] {
+  const bounds = statementBounds(doc);
+  const out: string[] = [];
+  let prev = 0;
+  for (const b of bounds) {
+    const stmt = doc.slice(prev, b.termStart).trim();
+    if (stmt) out.push(stmt);
+    prev = b.termEnd;
+  }
+  // Trailing text after the last terminator (no trailing `;`).
+  const tail = doc.slice(prev).trim();
+  if (tail) out.push(tail);
+  return out;
+}
+
 export function statementRange(
   doc: string,
   from: number,
@@ -375,8 +394,11 @@ export function createEditor(
   // caches avoid re-querying the server on every keystroke. ---
   let ctxConnId: string | null = null;
   let ctxDb: string | null = null;
-  let colCache = new Map<string, string[]>();
+  let colCache = new Map<string, ColumnInfo[]>();
   let tableCache = new Map<string, TableMeta[]>();
+  // FK cache: keyed by db, holds all foreign-key relationships for that db.
+  // Used to suggest JOIN targets and auto-build ON clauses (② enhancement).
+  let fkCache = new Map<string, ForeignKeyInfo[]>();
 
 // Lightweight FROM/JOIN scanner for the current statement. Extracts an
 // (alias -> real table) map so autocomplete can suggest columns of the
@@ -406,6 +428,73 @@ function parseFromTables(sql: string): Map<string, string> {
     }
   }
   return map;
+}
+
+/// Build a human-readable detail string for a column completion option.
+/// Shows type + PK indicator + origin table (when provided).
+/// Examples: "🔑 int · users", "varchar(255) · orders"
+function colDetail(c: ColumnInfo, table?: string): string {
+  const pk = c.key === "PRI" ? "🔑 " : "";
+  const parts = [`${pk}${c.data_type}`];
+  if (table) parts.push(table);
+  return parts.join(" · ");
+}
+
+/// Fetch and cache foreign-key relationships for a database. Used to suggest
+/// JOIN targets and auto-build ON clauses when the user types after JOIN.
+async function getFks(connId: string, db: string): Promise<ForeignKeyInfo[]> {
+  const cached = fkCache.get(db);
+  if (cached) return cached;
+  try {
+    const fks = await api.listRelationships(connId, db);
+    fkCache.set(db, fks);
+    return fks;
+  } catch {
+    return [];
+  }
+}
+
+/// Find FK relationships that link any of `knownTables` to other tables.
+/// Returns suggestions: { table, column, refTable, refColumn } — meaning
+/// "you can JOIN `table` ON table.column = refTable.refColumn".
+function findJoinSuggestions(
+  fks: ForeignKeyInfo[],
+  knownTables: string[]
+): { table: string; column: string; refTable: string; refColumn: string }[] {
+  const known = new Set(knownTables.map((t) => t.toLowerCase()));
+  const out: { table: string; column: string; refTable: string; refColumn: string }[] = [];
+  const seen = new Set<string>();
+  for (const fk of fks) {
+    // Case 1: a known table is the FK table → suggest the referenced table
+    if (known.has(fk.table_name.toLowerCase()) &&
+        !known.has(fk.referenced_table.toLowerCase())) {
+      const key = `${fk.table_name}.${fk.referenced_table}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push({
+          table: fk.table_name,
+          column: fk.column_name,
+          refTable: fk.referenced_table,
+          refColumn: fk.referenced_column,
+        });
+      }
+    }
+    // Case 2: a known table is the referenced table → suggest the FK table
+    if (known.has(fk.referenced_table.toLowerCase()) &&
+        !known.has(fk.table_name.toLowerCase())) {
+      const key = `${fk.referenced_table}.${fk.table_name}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push({
+          table: fk.referenced_table,
+          column: fk.referenced_column,
+          refTable: fk.table_name,
+          refColumn: fk.column_name,
+        });
+      }
+    }
+  }
+  return out;
 }
 
   const schemaCompleter: CompletionSource = async (context) => {
@@ -455,21 +544,20 @@ function parseFromTables(sql: string): Map<string, string> {
     let cols = colCache.get(realTable);
     if (!cols) {
       try {
-        cols = (await api.listColumns(connId, db, realTable)).map(
-          (c) => c.name
-        );
+        cols = await api.listColumns(connId, db, realTable);
       } catch {
         cols = [];
       }
       colCache.set(realTable, cols);
     }
     const options = cols
-      .filter((c) => c.toLowerCase().startsWith(lowerPrefix))
+      .filter((c) => c.name.toLowerCase().startsWith(lowerPrefix))
       .map(
         (c): Completion => ({
-          label: c,
+          label: c.name,
           type: "property",
-          detail: realTable,
+          detail: colDetail(c),
+          info: c.comment || undefined,
         })
       );
     return { from, options, validFor: /^[\w`]*$/ };
@@ -485,7 +573,7 @@ function parseFromTables(sql: string): Map<string, string> {
       let cols = colCache.get(t);
       if (!cols) {
         try {
-          cols = (await api.listColumns(connId, db, t)).map((c) => c.name);
+          cols = await api.listColumns(connId, db, t);
         } catch {
           cols = [];
         }
@@ -497,11 +585,16 @@ function parseFromTables(sql: string): Map<string, string> {
     const seen = new Set<string>();
     const colOpts: Completion[] = [];
     for (const { c, t } of all) {
-      const cl = c.toLowerCase();
+      const cl = c.name.toLowerCase();
       if (seen.has(cl)) continue;
       seen.add(cl);
       if (lowerPrefix && !cl.startsWith(lowerPrefix)) continue;
-      colOpts.push({ label: c, type: "property", detail: t });
+      colOpts.push({
+        label: c.name,
+        type: "property",
+        detail: colDetail(c, t),
+        info: c.comment || undefined,
+      });
     }
 
     let tableOpts: Completion[] = [];
@@ -509,16 +602,39 @@ function parseFromTables(sql: string): Map<string, string> {
     // (right after FROM/JOIN/comma). When composing a column name we show
     // columns only — never a pile of tables that merely share the prefix.
     if (inTablePos) {
+      // ② FK-driven JOIN suggestions: when typing after JOIN, check if any
+      // of the already-mentioned tables have FK relationships to other tables.
+      // Suggest those tables with auto-built ON clauses.
+      const isJoinPos = /\bJOIN\s*$/i.test(preWord);
+      if (isJoinPos && tablesMap.size > 0) {
+        const fks = await getFks(connId, db);
+        const knownTables = Array.from(tablesMap.values());
+        const joinSugs = findJoinSuggestions(fks, knownTables);
+        for (const s of joinSugs) {
+          // Apply string inserts the table name + ON clause in one go.
+          const onClause = `${s.refTable} ON ${s.refTable}.${s.refColumn} = ${s.table}.${s.column}`;
+          tableOpts.push({
+            label: s.refTable,
+            type: "variable",
+            detail: `🔗 ${s.table}.${s.column} → ${s.refTable}.${s.refColumn}`,
+            apply: onClause,
+          });
+        }
+      }
       try {
         const tables = await api.searchTables(connId, db, prefix || null, 200);
-        tableOpts = tables
+        // Filter out tables already suggested by FK to avoid duplicates.
+        const fkLabels = new Set(tableOpts.map((t) => t.label.toLowerCase()));
+        const extra = tables
           .filter((t) => !lowerPrefix || t.name.toLowerCase().startsWith(lowerPrefix))
+          .filter((t) => !fkLabels.has(t.name.toLowerCase()))
           .map(
             (t): Completion => ({
               label: t.name,
               detail: t.is_view ? "view" : "table",
             })
           );
+        tableOpts = [...tableOpts, ...extra];
       } catch {
         /* ignore — column suggestions still work */
       }
@@ -624,6 +740,7 @@ function parseFromTables(sql: string): Map<string, string> {
       ctxDb = db;
       colCache.clear();
       tableCache.clear();
+      fkCache.clear();
     },
     clear() {
       view.dispatch({

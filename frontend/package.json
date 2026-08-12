@@ -22,7 +22,8 @@
     "react-dom": "^18.3.1",
     "react-markdown": "^9.1.0",
     "remark-gfm": "^4.0.1",
-    "sql-formatter": "^15.8.2"
+    "sql-formatter": "^15.8.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

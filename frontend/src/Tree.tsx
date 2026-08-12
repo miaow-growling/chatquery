@@ -50,10 +50,9 @@ type Node =
       table: string;
       col: ColumnInfo;
     }
-  | { kind: "redisdb"; key: string; connId: string; db: number; count?: number }
-  | { kind: "rediskey"; key: string; connId: string; db: number; name: string };
+  | { kind: "redisdb"; key: string; connId: string; db: number; count?: number };
 
-const LAZY = new Set(["conn", "db", "folder", "table", "redisdb"]);
+const LAZY = new Set(["conn", "db", "folder", "table"]);
 const isLazy = (n: Node) => LAZY.has(n.kind);
 
 function connNode(c: ConnSummary): Node {
@@ -61,68 +60,71 @@ function connNode(c: ConnSummary): Node {
 }
 
 function buildRoots(tree: TreeModel): Node[] {
-  const envs = [...tree.environments].sort((a, b) => a.order - b.order);
-  const labelOf = (t: string) => (t === "redis" ? "Redis" : "MySQL");
+  const labelOf = (t: string) => {
+    if (t === "redis") return "Redis";
+    if (t === "mysql") return "MySQL";
+    return t;
+  };
 
-  // ADR-022: environments are bound to a single db_type, so the root grouping
-  // is driven by each environment's own `db_type` — not inferred from its
-  // connections. This means an empty environment still lands under the correct
-  // root (MySQL/Redis) instead of being orphaned at the top level.
-  // The synthetic "__ungrouped" bucket holds mixed-type connections with no
-  // group, so it is split by connection type like before.
-  const types = new Set<string>();
-  for (const env of envs) {
-    if (env.id === "__ungrouped") {
-      for (const g of env.groups)
-        for (const c of g.connections) types.add(c.db_type);
-    } else {
-      types.add(env.db_type || "mysql");
+  // Collect all connection types actually present. Even if an environment's
+  // declared db_type is mysql, if it contains redis connections we want a
+  // Redis root with that environment under it (and vice versa). Empty envs
+  // still follow their declared db_type so they don't disappear.
+  const presentTypes = new Set<string>();
+  for (const env of tree.environments) {
+    presentTypes.add(env.db_type || "mysql");
+    for (const g of env.groups) {
+      for (const c of g.connections) presentTypes.add(c.db_type);
     }
   }
-  const sortedTypes = [...types].sort();
+  const sortedTypes = [...presentTypes].sort((a, b) => {
+    if (a === b) return 0;
+    if (a === "mysql") return -1;
+    if (b === "mysql") return 1;
+    if (a === "redis") return -1;
+    if (b === "redis") return 1;
+    return a.localeCompare(b);
+  });
 
   const roots: Node[] = [];
   for (const t of sortedTypes) {
     const envNodes: Node[] = [];
-    for (const env of envs) {
-      if (env.id === "__ungrouped") {
-        const conns = env.groups
-          .flatMap((g) => g.connections)
-          .filter((c) => c.db_type === t);
-        if (conns.length === 0) continue;
-        envNodes.push({
-          kind: "env",
-          key: `env:${env.id}:${t}`,
-          id: env.id,
-          name: env.name,
-          children: [
-            {
-              kind: "group",
-              key: `grp:${env.id}:${t}`,
-              id: env.id,
-              name: "",
-              children: conns.map(connNode),
-            },
-          ],
-        });
-      } else {
-        if ((env.db_type || "mysql") !== t) continue;
-        envNodes.push({
-          kind: "env",
-          key: `env:${env.id}`,
-          id: env.id,
-          name: env.name,
-          children: [...env.groups]
-            .sort((a, b) => a.order - b.order)
-            .map((g) => ({
-              kind: "group" as const,
-              key: `grp:${g.id}`,
-              id: g.id,
-              name: g.name,
-              children: g.connections.map(connNode),
-            })),
-        });
-      }
+    for (const env of tree.environments) {
+      // Keep groups that hold type-t connections. Empty groups are first-class
+      // entities (ADR-016): they stay visible and follow their environment.
+      const typedGroups = env.groups
+        .map((g) => ({
+          ...g,
+          connections: g.connections.filter((c) => c.db_type === t),
+          origEmpty: g.connections.length === 0,
+        }))
+        .filter((g) => g.connections.length > 0 || g.origEmpty);
+
+      const hasTypedConn = typedGroups.some((g) => g.connections.length > 0);
+      const envHasAnyConn = env.groups.some((g) => g.connections.length > 0);
+      const declared = (env.db_type || "mysql") === t;
+
+      // Show this env under type t only when it actually contains type-t
+      // connections, or when it is a completely empty env declaring type t
+      // (so empty envs don't disappear). A mysql env that only holds redis
+      // connections must NOT leave a ghost empty node under the MySQL root.
+      if (!hasTypedConn && (envHasAnyConn || !declared)) continue;
+
+      envNodes.push({
+        kind: "env",
+        key: `env:${env.id}:${t}`,
+        id: env.id,
+        name: env.name,
+        children: typedGroups
+          .sort((a, b) => a.order - b.order)
+          .map((g) => ({
+            kind: "group" as const,
+            key: `grp:${env.id}:${g.id}:${t}`,
+            id: g.id,
+            name: g.name,
+            children: g.connections.map(connNode),
+          })),
+      });
     }
     if (envNodes.length === 0) continue;
     roots.push({
@@ -252,19 +254,6 @@ async function loader(node: Node): Promise<LoadResult | null> {
         count: cols.length,
       };
     }
-    case "redisdb": {
-      const keys = await api.listRedisKeys(node.connId, node.db, "*", 300);
-      return {
-        nodes: keys.map((k) => ({
-          kind: "rediskey",
-          key: `rk:${node.connId}:${node.db}:${k}`,
-          connId: node.connId,
-          db: node.db,
-          name: k,
-        })),
-        count: keys.length,
-      };
-    }
     default:
       return null;
   }
@@ -273,7 +262,9 @@ async function loader(node: Node): Promise<LoadResult | null> {
 function badge(n: Node): { icon: string; cls: string } {
   switch (n.kind) {
     case "dbtype":
-      return { icon: "🐬", cls: "b-mysql" };
+      return n.name === "Redis"
+        ? { icon: "🔴", cls: "b-redis" }
+        : { icon: "🐬", cls: "b-mysql" };
     case "env":
       return { icon: "🌐", cls: "b-env" };
     case "group":
@@ -292,8 +283,6 @@ function badge(n: Node): { icon: string; cls: string } {
       return { icon: "▏", cls: "b-col" };
     case "redisdb":
       return { icon: "🗄", cls: "b-db" };
-    case "rediskey":
-      return { icon: "🔑", cls: "b-key" };
   }
 }
 
@@ -314,7 +303,7 @@ function FolderView(props: {
   const filtered = filter
     ? kids.filter(
         (c) =>
-          (c.kind === "table" || c.kind === "rediskey") &&
+          (c.kind === "table") &&
           c.name.toLowerCase().includes(filter.toLowerCase())
       )
     : kids;
@@ -491,19 +480,33 @@ export function Tree(props: TreeProps) {
     }
   }, []);
 
-  // Auto-expand the top-level database-type nodes (e.g. "MySQL") on first
-  // render so the sidebar opens directly at the 环境 level instead of hiding
-  // everything one extra click down.
-  const [autoExpanded, setAutoExpanded] = useState(false);
+  // Auto-expand top-level dbtype nodes AND environment nodes on every tree
+  // change — but only for nodes the user hasn't explicitly toggled. This way
+  // newly created environments/groups appear immediately without the user
+  // needing to manually expand, while respecting user collapses.
+  const userToggledRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (autoExpanded || roots.length === 0) return;
+    if (roots.length === 0) return;
     setExpanded((e) => {
       const next = { ...e };
-      for (const r of roots) next[r.key] = true;
-      return next;
+      let changed = false;
+      for (const r of roots) {
+        if (!userToggledRef.current.has(r.key) && !next[r.key]) {
+          next[r.key] = true;
+          changed = true;
+        }
+        if (r.kind === "dbtype" || r.kind === "env" || r.kind === "group") {
+          for (const env of r.children) {
+            if (env.kind === "env" && !userToggledRef.current.has(env.key) && !next[env.key]) {
+              next[env.key] = true;
+              changed = true;
+            }
+          }
+        }
+      }
+      return changed ? next : e;
     });
-    setAutoExpanded(true);
-  }, [roots, autoExpanded]);
+  }, [roots]);
 
   const load = useCallback(async (node: Node) => {
     setLoading((l) => ({ ...l, [node.key]: true }));
@@ -527,6 +530,7 @@ export function Tree(props: TreeProps) {
 
   const onToggle = useCallback(
     (node: Node) => {
+      userToggledRef.current.add(node.key);
       const willExpand = !expanded[node.key];
       setExpanded((e) => ({ ...e, [node.key]: willExpand }));
       // Note: expanding/collapsing via the caret does NOT select the node.
@@ -624,15 +628,6 @@ export function Tree(props: TreeProps) {
         ];
       case "redisdb":
         return [{ type: "item", label: "刷新", onClick: () => refreshNode(node) }];
-      case "rediskey":
-        return [
-          {
-            type: "item",
-            label: "打开键",
-            onClick: () => void props.onBrowseRedisKey(node.connId, node.db, node.name),
-          },
-          { type: "item", label: "复制键名", onClick: () => copy(node.name) },
-        ];
       case "env": {
         if (isSynthetic(node.id))
           return [{ type: "item", label: "刷新连接列表", onClick: () => props.onRefreshConns() }];
@@ -684,8 +679,6 @@ export function Tree(props: TreeProps) {
         return node.label;
       case "table":
         return node.name;
-      case "rediskey":
-        return node.name;
       case "column":
         return node.col.name;
     }
@@ -722,8 +715,6 @@ export function Tree(props: TreeProps) {
     const onRowClick = () => {
       if (node.kind === "conn") props.onSelectConn(node.conn.id);
       if (node.kind === "db") props.onSelectDb?.(node.connId, node.db);
-      if (node.kind === "rediskey")
-        props.onBrowseRedisKey(node.connId, node.db, node.name);
     };
 
     const onLabelClick = (e: React.MouseEvent) => {
@@ -746,7 +737,7 @@ export function Tree(props: TreeProps) {
         : node.kind === "conn"
         ? "单击选中，点左侧箭头展开数据库"
         : node.kind === "db"
-        ? "单击设为 SQL 上下文，点左侧箭头展开"
+        ? "单击选中该数据库"
         : undefined;
 
     return (

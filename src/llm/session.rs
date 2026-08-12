@@ -13,7 +13,8 @@ use crate::llm::tools::{build_registry, ToolContext, ToolRegistry};
 use crate::llm::worker::{classify_step, WorkerKind};
 use crate::mcp::host::McpHostManager;
 use crate::model::{
-    BackendMsg, ChatMessage, ChatRole, ConfirmRequest, SqlReference, TokenUsage, ToolCallBrief,
+    BackendMsg, ChatMessage, ChatRole, ConfirmRequest, ConversationRef, SqlReference, TokenUsage,
+    ToolCallBrief,
 };
 use futures::future::join_all;
 use serde_json::Value;
@@ -129,6 +130,7 @@ impl Agent {
         &mut self,
         history: &[ChatMessage],
         refs: &[SqlReference],
+        conv_ctx: Option<&str>,
         tx: &UnboundedSender<BackendMsg>,
     ) -> Result<()> {
         // 复杂度路由：复杂任务走多智能体（Orchestrator 规划 → 委派 Worker →
@@ -140,16 +142,18 @@ impl Agent {
             .map(|m| m.content.clone())
             .unwrap_or_default();
 
-        // Editor SQL the user attached to this turn. Rendered once and folded
-        // into the *last user message* rather than the system prompt: it is
-        // per-turn evidence, and recency is what keeps the model from
-        // reasoning about SQL that scrolled out of the conversation.
+        // Editor SQL the user attached to this turn, plus the cross-conversation
+        // background block (@-mentions). Rendered once and folded into the
+        // *last user message* rather than the system prompt: they are per-turn
+        // evidence, and recency is what keeps the model from reasoning about
+        // SQL that scrolled out of the conversation.
         let refs_block = render_refs(refs, &self.conns);
+        let block = merge_blocks(refs_block.as_deref(), conv_ctx);
         // The planning heuristic sees the user's own words only — a 40-line
         // pasted statement would otherwise make "解释这段 SQL" look like a
         // multi-step research task and buy the user a needless plan + workers.
         let planning_seed = last_user.clone();
-        let last_user = prepend_refs(&last_user, refs_block.as_deref());
+        let last_user = prepend_refs(&last_user, block.as_deref());
 
         if !needs_planning(&planning_seed, history.len()) {
             let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb).await;
@@ -158,7 +162,7 @@ impl Agent {
                 messages.push(ChatMessage::system(system));
             }
             messages.extend(history.iter().cloned());
-            attach_refs_to_last_user(&mut messages, refs_block.as_deref());
+            attach_refs_to_last_user(&mut messages, block.as_deref());
             self.react(messages, tx).await?;
             return Ok(());
         }
@@ -174,7 +178,7 @@ impl Agent {
                     messages.push(ChatMessage::system(system));
                 }
                 messages.extend(history.iter().cloned());
-                attach_refs_to_last_user(&mut messages, refs_block.as_deref());
+                attach_refs_to_last_user(&mut messages, block.as_deref());
                 self.react(messages, tx).await?;
                 return Ok(());
             }
@@ -437,6 +441,79 @@ fn prepend_refs(text: &str, block: Option<&str>) -> String {
     }
 }
 
+/// Concatenate the editor-SQL block and the cross-conversation block into one
+/// per-turn attachment (docs/chat-conversation-design.md §6.2: the two share
+/// the injection point, each `None` degrades to the other).
+fn merge_blocks(a: Option<&str>, b: Option<&str>) -> Option<String> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(format!("{}\n{}", x, y)),
+        (Some(x), None) => Some(x.to_string()),
+        (None, Some(y)) => Some(y.to_string()),
+        (None, None) => None,
+    }
+}
+
+/// Render cross-conversation references (@-mentions) into one background
+/// context block (docs/chat-conversation-design.md §6.2).
+///
+/// `load` is provided by the command layer: given a reference it returns the
+/// target conversation's title and trailing messages as (role, content) pairs,
+/// ascending by seq. Rendering here — not in the command layer — keeps the
+/// truncation budget in one testable place.
+///
+/// Budget (per design): 8 user/assistant messages per conversation, 2000 chars
+/// per message, 12000 chars total; overruns are truncated, never dropped.
+/// Returns `None` when nothing can be injected (no refs, empty targets).
+pub fn render_conv_refs(
+    conv_refs: &[ConversationRef],
+    mut load: impl FnMut(&ConversationRef) -> Option<(String, Vec<(String, String)>)>,
+) -> Option<String> {
+    const PER_CONV_MSGS: usize = 8;
+    const PER_MSG_CHARS: usize = 2000;
+    const TOTAL_CHARS: usize = 12000;
+    if conv_refs.is_empty() {
+        return None;
+    }
+    let mut p = String::new();
+    for r in conv_refs {
+        let Some((title, pairs)) = load(r) else { continue };
+        // Keep only user/assistant, the most recent PER_CONV_MSGS, chronologically.
+        let msgs: Vec<(String, String)> = pairs
+            .into_iter()
+            .filter(|(role, _)| role == "user" || role == "assistant")
+            .rev()
+            .take(PER_CONV_MSGS)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if msgs.is_empty() {
+            continue;
+        }
+        let header = if r.scope == "message" {
+            format!(
+                "[引用自会话「{}」的一条消息]\n以下内容来自另一会话，仅作背景参考（数据可能已变化）：\n",
+                title
+            )
+        } else {
+            format!(
+                "[引用的历史会话「{}」]\n以下内容来自另一会话，仅作背景参考（数据可能已变化）：\n",
+                title
+            )
+        };
+        p.push_str(&header);
+        for (role, content) in &msgs {
+            let label = if role == "user" { "用户" } else { "AI" };
+            let trimmed: String = content.chars().take(PER_MSG_CHARS).collect();
+            p.push_str(&format!("- {}：{}\n", label, trimmed));
+        }
+    }
+    if p.is_empty() {
+        return None;
+    }
+    Some(p.chars().take(TOTAL_CHARS).collect())
+}
+
 /// Fold the reference block into the most recent user message of an
 /// already-assembled request. Mutating the copy (not the stored history) keeps
 /// references strictly per-turn.
@@ -455,12 +532,16 @@ fn attach_refs_to_last_user(messages: &mut [ChatMessage], block: Option<&str>) {
 ///
 /// `refs` is SQL the user attached from the editor for *this* turn; pass an
 /// empty slice for hosts that have no editor (the TUI).
+///
+/// `conv_ctx` is the rendered cross-conversation background block (@-mentions,
+/// docs/chat-conversation-design.md §6.2); `None` when nothing was referenced.
 pub async fn run_turn(
     cfg: &LlmConfig,
     conns: Vec<ConnectionConfig>,
     mcp: Option<Arc<McpHostManager>>,
     history: &[ChatMessage],
     refs: &[SqlReference],
+    conv_ctx: Option<String>,
     conn_id: &str,
     tx: &UnboundedSender<BackendMsg>,
     ctl: TurnControl,
@@ -470,7 +551,7 @@ pub async fn run_turn(
     let mut agent = Agent::build(cfg.clone(), conns, mcp, conn_id, ctl.clone(), kb, audit).await;
     // ADR-AI-4 决策2: bound a single turn's wall-clock time so a stuck stream
     // or runaway worker can't wedge the turn (and its registry slot) forever.
-    let result = tokio::time::timeout(TURN_TIMEOUT, agent.run(history, refs, tx)).await;
+    let result = tokio::time::timeout(TURN_TIMEOUT, agent.run(history, refs, conv_ctx.as_deref(), tx)).await;
     match result {
         Ok(out) => {
             out?;
@@ -793,5 +874,111 @@ mod tests {
         assert_eq!(msgs[0].content, "第一问");
         assert!(msgs[2].content.starts_with("[BLOCK]"));
         assert!(msgs[2].content.contains("第二问"));
+    }
+
+    fn conv(scope: &str, conv_id: &str) -> ConversationRef {
+        ConversationRef {
+            conv_id: conv_id.into(),
+            scope: scope.into(),
+            message_id: None,
+        }
+    }
+
+    /// A loader that synthesizes a conversation with the given message pairs.
+    fn pairs(msgs: &[(&str, &str)]) -> Vec<(String, String)> {
+        msgs.iter()
+            .map(|(r, c)| (r.to_string(), c.to_string()))
+            .collect()
+    }
+
+    fn fake_load(
+        conv_id: &str,
+        msg_pairs: Vec<(String, String)>,
+    ) -> Box<dyn FnMut(&ConversationRef) -> Option<(String, Vec<(String, String)>)> + '_> {
+        let id = conv_id.to_string();
+        Box::new(move |r: &ConversationRef| {
+            if r.conv_id == id {
+                Some(("订单会话".to_string(), msg_pairs.clone()))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// No references ⇒ None; unknown conversation ⇒ skipped; a referenced
+    /// conversation with no user/assistant messages ⇒ skipped.
+    #[test]
+    fn conv_refs_no_op_when_empty_or_unresolvable() {
+        assert!(render_conv_refs(&[], fake_load("a", vec![])).is_none());
+        let mut load = fake_load("a", pairs(&[("tool", "SELECT 1")]));
+        assert!(render_conv_refs(&[conv("session", "a")], &mut load).is_none());
+        let mut load = fake_load("a", pairs(&[("user", "hi")]));
+        assert!(render_conv_refs(&[conv("session", "ghost")], &mut load).is_none());
+    }
+
+    /// Filters to user/assistant, keeps the most recent 8, renders the
+    /// "数据可能已变化" disclaimer and the title.
+    #[test]
+    fn conv_refs_formats_and_filters() {
+        let mut load = fake_load(
+            "a",
+            pairs(&[
+                ("user", "订单问题"),
+                ("assistant", "我先查一下"),
+                ("tool", "不要出现"),
+                ("assistant", "结论：库存不足"),
+                ("user", "那怎么办"),
+                ("assistant", "补货"),
+            ]),
+        );
+        let block = render_conv_refs(&[conv("session", "a")], &mut load).unwrap();
+        assert!(block.contains("引用的历史会话「订单会话」"));
+        assert!(block.contains("数据可能已变化"));
+        assert!(block.contains("- 用户：订单问题"));
+        assert!(block.contains("- AI：结论：库存不足"));
+        assert!(!block.contains("不要出现"));
+    }
+
+    /// More than 8 user/assistant messages: only the last 8 survive, in order.
+    #[test]
+    fn conv_refs_keeps_last_eight_in_order() {
+        let mut msgs: Vec<(String, String)> = (1..=10)
+            .map(|i| ("user".to_string(), format!("问题{i}")))
+            .collect();
+        msgs.push(("assistant".to_string(), "总结".to_string()));
+        let mut load = fake_load("a", msgs);
+        let block = render_conv_refs(&[conv("session", "a")], &mut load).unwrap();
+        // Only the last 8 survive (4..=10 + 总结). Note: bare "问题1" would
+        // match "问题10" — anchor on the trailing newline instead.
+        assert!(!block.contains("问题1\n"));
+        assert!(!block.contains("问题2\n"));
+        assert!(!block.contains("问题3\n"));
+        assert!(block.contains("问题4\n"));
+        assert!(block.contains("问题10\n"));
+        // Chronological: 问题4 appears before 问题10.
+        assert!(block.find("问题4").unwrap() < block.find("问题10").unwrap());
+    }
+
+    /// Per-message truncation (2000 chars) and total budget (12000 chars).
+    #[test]
+    fn conv_refs_budget_truncates() {
+        let long = "长".repeat(3000);
+        let mut load = fake_load("a", pairs(&[("assistant", &long)]));
+        let block = render_conv_refs(&[conv("session", "a")], &mut load).unwrap();
+        assert!(block.chars().count() <= 12000);
+        // The 3000-char message was cut to 2000 inside the block.
+        assert!(block.contains(&"长".repeat(2000)));
+        assert!(!block.contains(&"长".repeat(2001)));
+    }
+
+    /// Editor-SQL block and conversation block coexist through merge_blocks.
+    #[test]
+    fn merge_blocks_combines_or_degrades() {
+        assert_eq!(merge_blocks(None, None), None);
+        assert_eq!(merge_blocks(Some("A"), None).as_deref(), Some("A"));
+        assert_eq!(merge_blocks(None, Some("B")).as_deref(), Some("B"));
+        let merged = merge_blocks(Some("A"), Some("B")).unwrap();
+        assert!(merged.starts_with("A"));
+        assert!(merged.contains("B"));
     }
 }

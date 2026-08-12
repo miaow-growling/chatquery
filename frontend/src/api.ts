@@ -6,15 +6,20 @@ import type {
   ColumnInfo,
   ConfirmRequest,
   ConnInput,
+  ConversationDetail,
+  ConversationRef,
+  ConversationSummary,
   EditPayload,
   ExplainVisual,
   ForeignKeyInfo,
   ImportResult,
+  KeyMeta,
   KeyStatus,
   KbBindingInput,
   KbDocDto,
   LlmConfigDto,
   LlmConfigInput,
+  NewChatMessage,
   QueryItem,
   QueryOutput,
   Schema,
@@ -25,6 +30,7 @@ import type {
   TokenUsage,
   TreeModel,
   VendorPreset,
+  WriteRisk,
 } from "./types";
 
 const PAGE_SIZE = 200;
@@ -42,7 +48,8 @@ export const api = {
     query: string,
     db?: string | null,
     page?: number,
-    pageSize?: number
+    pageSize?: number,
+    allowRisky?: boolean
   ) =>
     invoke<QueryOutput>("execute_query", {
       connId,
@@ -50,7 +57,13 @@ export const api = {
       db: db ?? "",
       page: page ?? 0,
       pageSize: pageSize ?? PAGE_SIZE,
+      allowRisky: allowRisky ?? false,
     }),
+  /// Pre-execution guardrail: scan `query` for UPDATE/DELETE statements that
+  /// lack a WHERE/LIMIT (whole-table operations). Returns the risky statements
+  /// so the UI can confirm before running; the backend enforces this too.
+  guardWriteSql: (query: string) =>
+    invoke<WriteRisk[]>("guard_write_sql", { query }),
   getSchema: (connId: string, db?: string | null) =>
     invoke<Schema>("get_schema", { connId, db: db ?? null }),
   // Inline AI completion (Copilot-style): ask the LLM for the SQL suffix that
@@ -87,6 +100,15 @@ export const api = {
     }),
   listRedisKeys: (connId: string, db: number, pattern: string, limit: number) =>
     invoke<string[]>("list_redis_keys", { connId, db, pattern, limit }),
+  /// List Redis keys with metadata (type, TTL, memory) in one pipeline call
+  /// (ADR-025 Phase A2).
+  listRedisKeysMeta: (
+    connId: string,
+    db: number,
+    pattern: string,
+    limit: number
+  ) =>
+    invoke<KeyMeta[]>("list_redis_keys_meta", { connId, db, pattern, limit }),
   listColumns: (connId: string, database: string, table: string) =>
     invoke<ColumnInfo[]>("list_columns", { connId, database, table }),
   browseTable: (
@@ -99,6 +121,10 @@ export const api = {
     invoke<QueryOutput>("browse_table", { connId, database, table, page, pageSize }),
   browseRedisKey: (connId: string, db: number, key: string) =>
     invoke<QueryOutput>("browse_redis_key", { connId, db, key }),
+  deleteRedisKey: (connId: string, db: number, key: string) =>
+    invoke<number>("delete_redis_key", { connId, db, key }),
+  phpUnserialize: (data: string) =>
+    invoke<string>("php_unserialize", { data }),
   // Container (environment / group) CRUD (ADR-016). `dbType` binds the new
   // environment to MySQL/Redis so it lands under the correct root (ADR-022).
   createEnvironment: (name: string, dbType: "mysql" | "redis" = "mysql") =>
@@ -179,6 +205,24 @@ export const api = {
   // --- Write-guardrail audit trail (ADR-AI-1 决策3) ---
   listAuditLogs: (limit?: number) =>
     invoke<AuditRow[]>("list_audit_logs", { limit: limit ?? null }),
+  // --- Conversations (docs/chat-conversation-design.md) ---
+  listConversations: () => invoke<ConversationSummary[]>("list_conversations"),
+  createConversation: (connId: string | null, title?: string | null) =>
+    invoke<string>("create_conversation", {
+      connId: connId ?? null,
+      title: title ?? null,
+    }),
+  renameConversation: (id: string, title: string) =>
+    invoke("rename_conversation", { id, title }),
+  deleteConversation: (id: string) => invoke("delete_conversation", { id }),
+  getConversation: (id: string, offset?: number, limit?: number) =>
+    invoke<ConversationDetail>("get_conversation", {
+      id,
+      offset: offset ?? 0,
+      limit: limit ?? 100,
+    }),
+  appendChatMessages: (convId: string, messages: NewChatMessage[]) =>
+    invoke("append_chat_messages", { convId, messages }),
 };
 
 export function onChatToken(cb: (t: string) => void): Promise<UnlistenFn> {
@@ -213,15 +257,22 @@ export function onChatConfirm(
 ///
 /// `refs` is editor SQL attached to *this* turn only (ADR: Chat 引用 SQL); it is
 /// never replayed as history, so a stale reference can't steer a later answer.
+/// `convId` binds the turn to a persisted conversation (P0); `convRefs` carries
+/// cross-conversation @-mentions (P1) whose tail messages the backend injects
+/// as background context. Both are optional — the TUI path omits them.
 export function chatTurn(
   connId: string,
   messages: ChatMessage[],
   refs?: SqlReference[],
+  convId?: string | null,
+  convRefs?: ConversationRef[],
 ): Promise<string> {
   return invoke<string>("chat_turn", {
     connId,
     messages,
     refs: refs && refs.length > 0 ? refs : null,
+    convId: convId ?? null,
+    convRefs: convRefs && convRefs.length > 0 ? convRefs : null,
   });
 }
 export function cancelTurn(turnId: string): Promise<void> {

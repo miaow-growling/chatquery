@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -28,6 +29,8 @@ import type {
   ConfirmRequest,
   ConnInput,
   ConnSummary,
+  ConversationSummary,
+  ConvRefCard,
   ExplainNode,
   ExplainVisual,
   ForeignKeyInfo,
@@ -36,16 +39,20 @@ import type {
   KeyStatus,
   LlmConfigDto,
   LlmConfigInput,
+  NewChatMessage,
   QueryItem,
   QueryOutput,
+  RedisValueView,
   SqlReference,
   StatusInfo,
+  StoredChatMessage,
   TableStructure,
   TokenUsage,
   TreeModel,
   VendorPreset,
 } from "./types";
-import { createEditor, type EditorHandle } from "./editor";
+import { createEditor, splitStatements, type EditorHandle } from "./editor";
+import { RedisBrowser } from "./RedisBrowser";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Tree } from "./Tree";
 import ReactMarkdown from "react-markdown";
@@ -102,6 +109,7 @@ interface DropdownSelectProps {
   value: string;
   options: DropdownOption[];
   onChange: (value: string) => void;
+  disabled?: boolean;
 }
 
 /** 证书/密钥文件选择按钮：点开系统文件框，读取文本内容回填到对应字段。
@@ -145,12 +153,12 @@ function CertPickButton({
   );
 }
 
-function DropdownSelect({ label, value, options, onChange }: DropdownSelectProps) {
+function DropdownSelect({ label, value, options, onChange, disabled }: DropdownSelectProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || disabled) return;
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
         setOpen(false);
@@ -158,18 +166,19 @@ function DropdownSelect({ label, value, options, onChange }: DropdownSelectProps
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, [open]);
+  }, [open, disabled]);
 
   const selected = options.find((o) => o.value === value);
 
   return (
     <label>
       {label}
-      <div className="vendor-select" ref={ref}>
+      <div className={"vendor-select" + (disabled ? " disabled" : "")} ref={ref}>
         <button
           type="button"
           className="vendor-trigger"
-          onClick={() => setOpen((v) => !v)}
+          disabled={disabled}
+          onClick={() => !disabled && setOpen((v) => !v)}
           aria-haspopup="listbox"
           aria-expanded={open}
         >
@@ -211,6 +220,11 @@ interface ConnForm {
   open: boolean;
   editing: boolean;
   cfg: ConnInput;
+  /// When creating a connection from a group's context menu, the db type is
+  /// pinned to that environment's type so you can't accidentally create a
+  /// redis connection under a mysql group (it would silently show up under a
+  /// different top-level category).
+  lockDbType: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -519,6 +533,42 @@ export function App() {
   const [chat, setChat] = useState<ChatItem[]>([]);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [streaming, setStreaming] = useState(false);
+  // --- Conversations (docs/chat-conversation-design.md) ----------------------
+  // `convs` is the cached list backing the selector; `convId` is the active
+  // conversation. Messages themselves live in `chat` (the transcript) and are
+  // appended to the store when a turn finishes (§5.2) — the UI never persists
+  // itself, so TUI/future clients share the same data.
+  const [convs, setConvs] = useState<ConversationSummary[]>([]);
+  const [convId, setConvId] = useState<string | null>(null);
+  /// Live mirror of `chat` for the one-shot chat-done listener (registered
+  /// once on mount, so it must not close over stale state).
+  const chatRef = useRef<ChatItem[]>([]);
+  chatRef.current = chat;
+  const convIdRef = useRef<string | null>(null);
+  convIdRef.current = convId;
+  /// Snapshot of the *current turn's* items (ref card + user + plan + assistant
+  /// placeholder), tagged with the conversation it belongs to. Refilled on
+  /// sendChat, extended by plan/token events, and appended to the store on
+  /// chat-done — exactly the §5.2 persistence window. Tagging the conv id
+  /// stops a mid-stream conversation switch from persisting under the new one.
+  const turnItemsRef = useRef<{ convId: string | null; items: ChatItem[] }>({
+    convId: null,
+    items: [],
+  });
+  /// Pending @-mention cards staged on the composer (P1, §6.1).
+  const [pendingConvRefs, setPendingConvRefs] = useState<ConvRefCard[]>([]);
+  /// Conversation selector dropdown state.
+  const [convOpen, setConvOpen] = useState(false);
+  const [convSearch, setConvSearch] = useState("");
+  const convWrapRef = useRef<HTMLDivElement | null>(null);
+  /// @-mention picker: open flag + filtered list cursor.
+  const [atOpen, setAtOpen] = useState(false);
+  const [atFilter, setAtFilter] = useState("");
+  const [atIdx, setAtIdx] = useState(0);
+  /// Message-level scope picker: after choosing a conversation, the user can
+  /// drill into its messages and reference a single one (§6.1).
+  const [convMsgPick, setConvMsgPick] = useState<ConversationSummary | null>(null);
+  const [convMsgList, setConvMsgList] = useState<StoredChatMessage[]>([]);
   /// SQL staged on the composer, waiting to be sent with the next message
   /// (ADR: Chat 引用 SQL, 方案 B). Held here rather than pasted into the input
   /// box so it stays structured (connection + db travel with it) and reversible
@@ -546,6 +596,7 @@ export function App() {
     open: false,
     editing: false,
     cfg: emptyForm(),
+    lockDbType: false,
   });
   const [formTab, setFormTab] = useState<"basic" | "ssl" | "ssh">("basic");
   const [addOpen, setAddOpen] = useState(false);
@@ -734,6 +785,12 @@ export function App() {
   const [gridSort, setGridSort] = useState<{ col: number; dir: "asc" | "desc" } | null>(null);
   // Per-column filter: op ∈ contains|equals|nequals|empty|notempty|range.
   const [colFilters, setColFilters] = useState<Record<number, { op: string; val: string; val2?: string }>>({});
+  // Export dropdown (CSV / Excel / JSON) — replaces single-button CSV export.
+  const [exportOpen, setExportOpen] = useState(false);
+  // Multi-result-set: when the user runs multiple statements (separated by ;),
+  // each result set is stored here and shown as a sub-tab (③ enhancement).
+  const [multiResults, setMultiResults] = useState<QueryOutput[] | null>(null);
+  const [multiResultIdx, setMultiResultIdx] = useState(0);
 
   // --- Bottom status bar / console (Phase 18) -----------------------------
   // Last operation feedback: timing, affected/returned rows, errors. Replaces
@@ -955,6 +1012,31 @@ export function App() {
     new Promise((res) => setDlg({ kind: "prompt", title, def, resolve: res }));
   const confirmAsync = (message: string, title = "请确认"): Promise<boolean> =>
     new Promise((res) => setDlg({ kind: "confirm", title, message, resolve: res }));
+
+  /// Pre-execution guardrail (whole-table UPDATE/DELETE protection).
+  /// Asks the backend to scan the SQL for UPDATE/DELETE statements lacking a
+  /// top-level WHERE/LIMIT; when any are found, pops a confirm dialog listing
+  /// them. `ok=false` means "user cancelled — do not execute"; `allowRisky`
+  /// must be forwarded to the backend so it accepts the confirmed write.
+  const guardWriteConfirm = async (
+    sql: string
+  ): Promise<{ ok: boolean; allowRisky: boolean }> => {
+    try {
+      const risks = await api.guardWriteSql(sql);
+      if (risks.length === 0) return { ok: true, allowRisky: false };
+      const lines = risks
+        .map((r) => `• ${r.kind === "deleteAll" ? "DELETE" : "UPDATE"}：${r.preview}`)
+        .join("\n");
+      const ok = await confirmAsync(
+        `检测到 ${risks.length} 条无 WHERE/LIMIT 条件的语句，将对整表执行更新/删除操作：\n\n${lines}\n\n确认继续执行？`,
+        "⚠️ 危险操作确认"
+      );
+      return { ok, allowRisky: ok };
+    } catch {
+      // Guard check is best-effort; the backend still rejects risky writes.
+      return { ok: true, allowRisky: false };
+    }
+  };
   const promptEnvType = (
     title: string
   ): Promise<{ name: string; dbType: "mysql" | "redis" } | null> => {
@@ -1188,7 +1270,7 @@ export function App() {
     setCtxMenu({ x, y, rows: eff });
   };
 
-  const copyRowsAs = async (kind: "json" | "insert" | "update") => {
+  const copyRowsAs = async (kind: "json" | "insert" | "update" | "wherein" | "csv") => {
     if (!result || result.kind !== "table") return;
     const eff = ctxMenu?.rows ?? Array.from(selRows);
     const rows = eff
@@ -1207,7 +1289,14 @@ export function App() {
     if (kind === "json") text = rowsToJson(result.columns, rows);
     else if (kind === "insert")
       text = rowsToInsert(table, result.columns, rows);
-    else if (kind === "update") {
+    else if (kind === "csv") text = toCsv(result.columns, rows);
+    else if (kind === "wherein") {
+      // Use the column from context menu (right-clicked column header) or
+      // the currently selected column. Fall back to first column.
+      const ci = ctxMenu?.col ?? selCol ?? 0;
+      const colName = result.columns[ci] ?? `col${ci + 1}`;
+      text = rowsToWhereIn(colName, ci, rows);
+    } else if (kind === "update") {
       // Ad-hoc queries don't carry result.primaryKeys (the server only
       // fills them on the browse path). Resolve a real PK from the DB so
       // an `id`-bearing row produces a proper `WHERE id=...` instead of a
@@ -1256,7 +1345,7 @@ export function App() {
     await copyText(text);
     showToast(
       `已复制 ${rows.length} 行 · ${
-        kind === "json" ? "JSON" : kind === "insert" ? "INSERT" : "UPDATE"
+        kind === "json" ? "JSON" : kind === "insert" ? "INSERT" : kind === "update" ? "UPDATE" : kind === "csv" ? "CSV" : "WHERE IN"
       }`
     );
     setCtxMenu(null);
@@ -1474,6 +1563,13 @@ export function App() {
     [tree]
   );
 
+  /// Redis mode: when the active tab is connected to a Redis instance,
+  /// the center area switches to a key-browser + console UI instead of
+  /// the SQL editor + result grid (ADR-025 Phase A2).
+  const isRedisConn = active?.connId
+    ? findConn(active.connId)?.db_type === "redis"
+    : false;
+
   /// Human labels for a SQL reference. Resolving the connection id here (not
   /// at capture time) means a renamed connection shows its new name, and a
   /// deleted one degrades to "未知连接" instead of a bare uuid.
@@ -1560,6 +1656,14 @@ export function App() {
   ): { kind: "ok" | "err" | "warn" | "info"; text: string } => {
     if (!r) return { kind: "ok", text: `✓ ${ms}ms · 执行完成` };
     if ("rows" in r) {
+      // Write statements (UPDATE/INSERT/DELETE/...): no result set, but the
+      // backend reports rows_affected / last_insert_id — show that instead of
+      // a misleading "返回 0 行".
+      if (r.affected != null) {
+        const id =
+          r.lastInsertId != null && r.lastInsertId > 0 ? ` · 自增ID ${r.lastInsertId}` : "";
+        return { kind: "ok", text: `✓ ${ms}ms · 影响 ${r.affected} 行${id}` };
+      }
       const n = r.rows.length;
       const trunc = "truncated" in r && r.truncated;
       if (r.total != null && r.total > n) {
@@ -1591,17 +1695,61 @@ export function App() {
     const sel = editor.getSelection().trim();
     const q = forceFull ? editor.getDoc() : sel || editor.getDoc();
     if (!q.trim()) return;
+    // Whole-table UPDATE/DELETE guardrail: confirm before running.
+    const g = await guardWriteConfirm(q);
+    if (!g.ok) return;
     clearEditState();
     setResultTab("data");
     setRunInfo(null);
     setRunning(true);
+    setMultiResults(null);
+    setMultiResultIdx(0);
     const t0 = performance.now();
     try {
-      const r = await api.executeQuery(t.connId, q, t.db, 0, pageSize);
-      const ms = Math.round(performance.now() - t0);
-      setActiveTab((tab) => ({ ...tab, sql: q, result: r, browseCtx: null }));
-      void api.logQuery(t.connId, t.db, q);
-      setRunInfo(runStatFor(r, ms));
+      // ③ Multi-result-set: split by `;` and execute each statement. If only
+      // one statement is present, the behaviour is identical to before — no
+      // sub-tabs, no overhead. Multiple statements run sequentially and each
+      // result set gets its own sub-tab.
+      const stmts = splitStatements(q);
+      if (stmts.length > 1) {
+        const results: QueryOutput[] = [];
+        let lastError: string | null = null;
+        for (let si = 0; si < stmts.length; si++) {
+          const stmt = stmts[si];
+          try {
+            const r = await api.executeQuery(t.connId, stmt, t.db, 0, pageSize, g.allowRisky);
+            results.push(r);
+          } catch (e) {
+            results.push(errOut(String(e)));
+            lastError = String(e);
+            // Continue to the next statement — one failure shouldn't abort
+            // the whole batch. The user sees which statement failed in its
+            // sub-tab.
+          }
+          void api.logQuery(t.connId, t.db, stmt);
+        }
+        const ms = Math.round(performance.now() - t0);
+        const first = results[0];
+        setActiveTab((tab) => ({ ...tab, sql: q, result: first, browseCtx: null }));
+        setMultiResults(results);
+        setMultiResultIdx(0);
+        const affected = results.reduce<number>(
+          (s, x) => s + ("affected" in x && x.affected ? x.affected : 0),
+          0
+        );
+        const affText = affected > 0 ? ` · 共影响 ${affected} 行` : "";
+        setRunInfo(
+          lastError
+            ? { kind: "warn", text: `⚠ ${ms}ms · ${results.length} 条语句 · 含错误` }
+            : { kind: "ok", text: `✓ ${ms}ms · ${results.length} 条语句执行完成${affText}` }
+        );
+      } else {
+        const r = await api.executeQuery(t.connId, q, t.db, 0, pageSize, g.allowRisky);
+        const ms = Math.round(performance.now() - t0);
+        setActiveTab((tab) => ({ ...tab, sql: q, result: r, browseCtx: null }));
+        void api.logQuery(t.connId, t.db, q);
+        setRunInfo(runStatFor(r, ms));
+      }
     } catch (e) {
       const ms = Math.round(performance.now() - t0);
       setActiveTab((tab) => ({
@@ -1628,6 +1776,8 @@ export function App() {
     const sz = size ?? pageSize;
     setRunning(true);
     setRunInfo(null);
+    setMultiResults(null);
+    setMultiResultIdx(0);
     const t0 = performance.now();
     try {
       const r = await api.executeQuery(t.connId, q, t.db, page, sz);
@@ -1655,13 +1805,18 @@ export function App() {
         return;
       }
       if (!sql.trim()) return;
+      // Whole-table UPDATE/DELETE guardrail: confirm before running.
+      const g = await guardWriteConfirm(sql);
+      if (!g.ok) return;
       clearEditState();
       setResultTab("data");
       setRunInfo(null);
       setRunning(true);
+      setMultiResults(null);
+      setMultiResultIdx(0);
       const t0 = performance.now();
       try {
-        const r = await api.executeQuery(connId, sql, db, 0, pageSize);
+        const r = await api.executeQuery(connId, sql, db, 0, pageSize, g.allowRisky);
         const ms = Math.round(performance.now() - t0);
         setActiveTab((tab) => ({ ...tab, sql, result: r, browseCtx: null }));
         void api.logQuery(connId, db, sql);
@@ -1864,6 +2019,8 @@ export function App() {
       clearEditState();
       setResultTab("data");
       setSelDb(db);
+      setMultiResults(null);
+      setMultiResultIdx(0);
       const t0 = performance.now();
       try {
         const r = await api.browseTable(connId, db, table, page, pageSize);
@@ -1977,6 +2134,8 @@ export function App() {
     async (connId: string, db: number, key: string) => {
       clearEditState();
       setResultTab("data");
+      setMultiResults(null);
+      setMultiResultIdx(0);
       const t0 = performance.now();
       try {
         const r = await api.browseRedisKey(connId, db, key);
@@ -2155,6 +2314,144 @@ export function App() {
     });
   };
 
+  // --- Redis type-aware value viewer (ADR-025 Phase A1) ------------------
+
+  /// Render a structured Redis value with type-appropriate layout.
+  const RedisValueViewer = (props: {
+    value: RedisValueView;
+    ttl?: number;
+    size?: number;
+  }) => {
+    const { value, ttl, size } = props;
+
+    // Metadata header
+    const metaParts: string[] = [];
+    if (ttl != null) {
+      metaParts.push(ttl < 0 ? "持久" : `TTL ${ttl}s`);
+    }
+    if (size != null) {
+      metaParts.push(
+        size < 1024
+          ? `${size} B`
+          : size < 1024 * 1024
+          ? `${(size / 1024).toFixed(1)} KB`
+          : `${(size / (1024 * 1024)).toFixed(1)} MB`
+      );
+    }
+
+    const metaEl =
+      metaParts.length > 0 ? (
+        <div className="redis-meta">{metaParts.join(" · ")}</div>
+      ) : null;
+
+    switch (value.type) {
+      case "string":
+        return (
+          <div className="redis-view">
+            {metaEl}
+            <div className="redis-head">String</div>
+            <pre className="redis-string-value">{value.value}</pre>
+          </div>
+        );
+
+      case "hash":
+        return (
+          <div className="redis-view">
+            {metaEl}
+            <div className="redis-head">
+              Hash · {value.entries.length} 字段
+            </div>
+            <div className="redis-kv-table">
+              <div className="kv-header">
+                <span className="kv-field">Field</span>
+                <span className="kv-value">Value</span>
+              </div>
+              {value.entries.map((e, i) => (
+                <div key={i} className="kv-row">
+                  <span className="kv-field">{e.field}</span>
+                  <span className="kv-value">{e.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+
+      case "list":
+        return (
+          <div className="redis-view">
+            {metaEl}
+            <div className="redis-head">
+              List · {value.entries.length} 项
+              {value.truncated && "（已截断）"}
+            </div>
+            <div className="redis-list-view">
+              {value.entries.map((e) => (
+                <div key={e.index} className="redis-list-item">
+                  <span className="list-idx">{e.index}</span>
+                  <span className="list-val">{e.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+
+      case "set":
+        return (
+          <div className="redis-view">
+            {metaEl}
+            <div className="redis-head">
+              Set · {value.members.length} 成员
+              {value.truncated && "（已截断）"}
+            </div>
+            <div className="redis-set-grid">
+              {value.members.map((m, i) => (
+                <span key={i} className="redis-set-tag">
+                  {m}
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+
+      case "zset":
+        return (
+          <div className="redis-view">
+            {metaEl}
+            <div className="redis-head">
+              Sorted Set · {value.entries.length} 项
+              {value.truncated && "（已截断）"}
+            </div>
+            <div className="redis-kv-table">
+              <div className="kv-header">
+                <span className="kv-field">Member</span>
+                <span className="kv-value right">Score</span>
+              </div>
+              {value.entries.map((e, i) => (
+                <div key={i} className="kv-row">
+                  <span className="kv-field">{e.member}</span>
+                  <span className="kv-value right">{e.score}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+
+      case "none":
+        return (
+          <div className="redis-view">
+            <div className="redis-note redis-error">键不存在</div>
+          </div>
+        );
+
+      default:
+        return (
+          <div className="redis-view">
+            <div className="redis-note">未知类型: {(value as any).type}</div>
+          </div>
+        );
+    }
+  };
+
   // Render the result grid. When `editable`, cells become double-click-to-edit
   // with dirty highlighting; rows get a delete toggle; and a "new row" is
   // appended at the bottom for INSERT. Otherwise it's a plain read-only table
@@ -2164,6 +2461,18 @@ export function App() {
     if (running) return <div className="empty">执行中…</div>;
     if (!result) return <div className="empty">执行查询以查看结果</div>;
     if (result.kind === "redis") {
+      // ADR-025 Phase A1: when browsing a single key, `value` is populated with
+      // a structured view — render a type-aware viewer.  Fall back to flat lines
+      // for ad-hoc queries (backward-compatible).
+      if (result.value) {
+        return (
+          <RedisValueViewer
+            value={result.value}
+            ttl={result.ttl}
+            size={result.size}
+          />
+        );
+      }
       return (
         <div className="redis-result">
           {result.lines.map((l, i) => (
@@ -2194,8 +2503,36 @@ export function App() {
     const pkSet = new Set(
       Array.isArray(result.primaryKeys) ? result.primaryKeys : []
     );
-    if (cols.length === 0)
+    if (cols.length === 0) {
+      // Write statement: no result set, but the backend reported
+      // rows_affected / last_insert_id — render a completion card instead of
+      // a bare "无结果集".
+      if (result.affected != null) {
+        const id =
+          result.lastInsertId != null && result.lastInsertId > 0
+            ? result.lastInsertId
+            : null;
+        return (
+          <div className="write-done">
+            <div className="write-icon">✓</div>
+            <div className="write-title">写操作执行成功</div>
+            <div className="write-detail">
+              {id != null ? (
+                <>
+                  影响 <b>{result.affected}</b> 行 · 自增ID <b>{id}</b>
+                </>
+              ) : (
+                <>
+                  影响 <b>{result.affected}</b> 行
+                </>
+              )}
+            </div>
+            <div className="write-hint">语句已提交，可执行 SELECT 验证结果</div>
+          </div>
+        );
+      }
       return <div className="empty">无结果集</div>;
+    }
 
     // --- #3: filter / search / sort on the in-memory page only ----------
     // `viewRows` carries the ORIGINAL row index so edits/deletes still map to
@@ -2769,6 +3106,295 @@ export function App() {
     }
   };
 
+  // --- Conversations (docs/chat-conversation-design.md) ----------------------
+
+  /// Persisted messages -> transcript. Plan/ref cards carry their structured
+  /// data in `meta` on the wire and are reconstructed for display here.
+  const storedToChat = (msgs: StoredChatMessage[]): ChatItem[] =>
+    msgs.map((m) => {
+      if (m.role === "plan") {
+        const meta = m.meta as { steps?: string[] } | null;
+        return { role: "plan", content: m.content, steps: meta?.steps ?? [] };
+      }
+      if (m.role === "ref") {
+        const meta = m.meta as { refs?: SqlReference[] } | null;
+        return { role: "ref", content: m.content, refs: meta?.refs ?? [] };
+      }
+      return { role: m.role as ChatMessage["role"], content: m.content };
+    });
+
+  /// Refresh the selector list. With zero conversations (fresh install / all
+  /// deleted) this creates the first "默认会话" so the UI always has a current
+  /// one (§5.3). On the very first load (no active id yet) the most recent
+  /// conversation's transcript is also fetched so the panel isn't empty.
+  const loadConvs = useCallback(async () => {
+    let list = await api.listConversations();
+    if (list.length === 0) {
+      await api.createConversation(selId || null);
+      list = await api.listConversations();
+    }
+    setConvs(list);
+    // Keep the active id valid: after a delete the first (most recently
+    // updated) conversation becomes current; a fresh install gets the default.
+    const cur = convIdRef.current;
+    const next = cur && list.some((c) => c.id === cur) ? cur : (list[0]?.id ?? null);
+    const firstEver = cur === null && next !== null;
+    setConvId(next);
+    if (firstEver) {
+      // Cold start: replay the default conversation so history survives a
+      // window reload (§5.2 回放).
+      try {
+        const d = await api.getConversation(next, 0, 200);
+        setChat(storedToChat(d.messages));
+      } catch {
+        // Fall through with an empty panel; the selector still works.
+      }
+    }
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selId]);
+
+  /// Load one conversation's transcript into the chat panel.
+  const switchConv = useCallback(
+    async (id: string) => {
+      try {
+        convIdRef.current = id;
+        setConvId(id);
+        setConvOpen(false);
+        // A turn still streaming belongs to its old conversation; dropping the
+        // snapshot here prevents it from being persisted under the new one.
+        turnItemsRef.current = { convId: null, items: [] };
+        setChat([]);
+        const d = await api.getConversation(id, 0, 200);
+        setChat(storedToChat(d.messages));
+      } catch (e) {
+        showToast("加载会话失败: " + String(e));
+      }
+    },
+    [showToast],
+  );
+
+  /// Create a fresh conversation bound to the current connection and switch to
+  /// it. The user can rename it later (hover 重命名).
+  const newConv = async () => {
+    try {
+      const id = await api.createConversation(selId || null);
+      // Update the ref *before* loadConvs: setState is async, and loadConvs'
+      // validity check reads convIdRef — a stale value would switch right back
+      // to the old conversation.
+      convIdRef.current = id;
+      setConvId(id);
+      setConvOpen(false);
+      turnItemsRef.current = { convId: null, items: [] };
+      setChat([]);
+      setPendingConvRefs([]);
+      setLastUsage(null);
+      setSessionTokens(0);
+      await loadConvs();
+    } catch (e) {
+      showToast("新建会话失败: " + String(e));
+    }
+  };
+
+  const renameConv = async (c: ConversationSummary) => {
+    const t = await promptAsync("会话标题", c.title || "新会话");
+    if (t == null || !t.trim() || t.trim() === c.title) return;
+    try {
+      await api.renameConversation(c.id, t.trim());
+      await loadConvs();
+    } catch (e) {
+      showToast("重命名失败: " + String(e));
+    }
+  };
+
+  const deleteConv = async (c: ConversationSummary) => {
+    if (!(await confirmAsync(`删除会话「${c.title}」？消息将一并删除。`))) return;
+    try {
+      const wasCurrent = convId === c.id;
+      await api.deleteConversation(c.id);
+      setConvOpen(false);
+      if (wasCurrent) {
+        turnItemsRef.current = { convId: null, items: [] };
+        setChat([]);
+        setPendingConvRefs([]);
+      }
+      const list = await loadConvs();
+      // §5.1: deleting the current conversation falls back to the most recent
+      // one — load its transcript so the panel isn't left empty.
+      if (wasCurrent && list[0]) await switchConv(list[0].id);
+    } catch (e) {
+      showToast("删除失败: " + String(e));
+    }
+  };
+
+  /// First user message of a fresh conversation → auto title from its head
+  /// (§5.2). Only fires for the default "新会话" title so user renames stick.
+  const maybeAutoTitle = async (text: string) => {
+    if (!convId) return;
+    const c = convs.find((x) => x.id === convId);
+    if (!c || c.title !== "新会话" || c.msg_count > 0) return;
+    const head = text.trim().replace(/\s+/g, " ").slice(0, 24);
+    if (!head) return;
+    try {
+      await api.renameConversation(convId, head);
+      await loadConvs();
+    } catch {
+      // Best-effort: the conversation still works untitled.
+    }
+  };
+
+  /// Display title of the active conversation for the selector button.
+  const currentConvTitle = () => {
+    if (!convId) return "—";
+    return convs.find((c) => c.id === convId)?.title ?? "新会话";
+  };
+
+  /// Relative time for the selector rows (e.g. "5 分钟前" / "3 天前").
+  const relTime = (ts: number) => {
+    const s = Math.max(0, Date.now() / 1000 - ts);
+    if (s < 60) return "刚刚";
+    if (s < 3600) return Math.floor(s / 60) + " 分钟前";
+    if (s < 86400) return Math.floor(s / 3600) + " 小时前";
+    return Math.floor(s / 86400) + " 天前";
+  };
+
+  // Close the conversation selector on outside click / Escape.
+  useEffect(() => {
+    if (!convOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (convWrapRef.current && !convWrapRef.current.contains(e.target as Node)) {
+        setConvOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConvOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [convOpen]);
+
+  // Load the conversation list. Runs on mount (fresh install → auto-creates
+  // the default conversation, §5.3) and again when the active connection
+  // changes so new conversations bind to the newly selected one.
+  useEffect(() => {
+    loadConvs().catch((e) => showToast("加载会话失败: " + String(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selId]);
+
+  /// Pick a conversation for an @-mention. `whole` = reference the session
+  /// tail; otherwise open the message drill-down.
+  const pickConvRef = (c: ConversationSummary, whole: boolean) => {
+    setAtOpen(false);
+    setConvMsgPick(null);
+    if (whole) {
+      setPendingConvRefs((prev) => [
+        ...prev,
+        {
+          conv_id: c.id,
+          scope: "session",
+          message_id: null,
+          title: c.title,
+          preview: c.last_preview || c.title,
+        },
+      ]);
+      return;
+    }
+    // Drill into the conversation's messages to pick one.
+    setConvMsgPick(c);
+    setConvMsgList([]);
+    api
+      .getConversation(c.id, 0, 100)
+      .then((d) => setConvMsgList(d.messages))
+      .catch((e) => showToast("加载消息失败: " + String(e)));
+  };
+
+  /// Stage a message-level reference card.
+  const pickMsgRef = (c: ConversationSummary, m: StoredChatMessage) => {
+    setConvMsgPick(null);
+    setPendingConvRefs((prev) => [
+      ...prev,
+      {
+        conv_id: c.id,
+        scope: "message",
+        message_id: m.id,
+        title: c.title,
+        preview: (m.role === "user" ? "用户: " : "AI: ") + m.content.slice(0, 40),
+      },
+    ]);
+  };
+
+  /// Remove an @-mention card.
+  const dropConvRef = (i: number) =>
+    setPendingConvRefs((prev) => prev.filter((_, j) => j !== i));
+
+  /// Selector rows: search-filtered, newest-first.
+  const convFiltered = useMemo(() => {
+    const q = convSearch.trim().toLowerCase();
+    const base = q
+      ? convs.filter(
+          (c) =>
+            c.title.toLowerCase().includes(q) ||
+            (c.conn_name ?? "").toLowerCase().includes(q),
+        )
+      : convs;
+    return [...base].sort((a, b) => b.updated - a.updated);
+  }, [convs, convSearch]);
+
+  /// @-mention candidates: the cached list, filtered by the text after "@".
+  const atList = useMemo(
+    () =>
+      convs
+        .filter((c) => !atFilter || c.title.toLowerCase().includes(atFilter))
+        .sort((a, b) => b.updated - a.updated)
+        .slice(0, 8),
+    [convs, atFilter],
+  );
+
+  /// Composer typing: open the @-picker when a word starts with "@" (the last
+  /// word on the line), close it otherwise.
+  const onChatInput = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    const v = e.target.value;
+    const m = /(?:^|\s)@([^\s@]*)$/.exec(v);
+    if (m) {
+      setAtFilter(m[1].toLowerCase());
+      setAtOpen(true);
+      setAtIdx(0);
+    } else {
+      setAtOpen(false);
+    }
+  };
+
+  /// Composer keys while the @-picker is open: arrows move, Enter picks the
+  /// highlighted conversation as a whole-session reference (stripping the "@…"
+  /// text), Escape closes.
+  const onChatKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (!atOpen) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setAtIdx((i) => Math.min(i + 1, Math.max(atList.length - 1, 0)));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setAtIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      const c = atList[atIdx];
+      if (!c) return;
+      e.preventDefault();
+      pickConvRef(c, true);
+      const ta = e.currentTarget;
+      const m = /(?:^|\s)@[^\s@]*$/.exec(ta.value);
+      if (m) ta.value = ta.value.slice(0, m.index);
+      setAtOpen(false);
+      setAtFilter("");
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setAtOpen(false);
+    }
+  };
+
   const sendChat = async () => {
     const input = document.getElementById("chat-input") as HTMLTextAreaElement;
     const text = input.value;
@@ -2778,6 +3404,12 @@ export function App() {
     // same SQL to the next question.
     const refs = pendingRefs;
     setPendingRefs([]);
+    // Same for @-mentions (P1): they travel with this turn's `conv_refs` and
+    // are never replayed from history.
+    const convRefs = pendingConvRefs;
+    setPendingConvRefs([]);
+    // First user message of a fresh conversation → auto title (§5.2).
+    void maybeAutoTitle(text);
     // The reference card is display-only (`role: "ref"` has no Rust
     // counterpart) and is filtered out of the replayed history below — it
     // exists so the transcript shows what the model actually received.
@@ -2793,6 +3425,9 @@ export function App() {
     setStreaming(true);
     setLastUsage(null);
     setChat((prev) => [...prev, { role: "assistant", content: "" }]);
+    // §5.2 snapshot: everything this turn will append to the store. Plan cards
+    // and token-streamed assistant text extend it via the event listeners.
+    turnItemsRef.current = { convId, items: [...next, { role: "assistant", content: "" }] };
     try {
       // The chat log is a human transcript, not the model's context. Plan and
       // ref cards and tool breadcrumbs are display-only: neither `plan` nor
@@ -2808,13 +3443,15 @@ export function App() {
       );
       // `selId` binds the *agent* (which tools it can reach); each reference
       // carries its own connection, and the backend tells the model to honour
-      // that one when running the referenced SQL.
-      turnIdRef.current = await chatTurn(selId, history, refs);
+      // that one when running the referenced SQL. `convId`/`convRefs` are the
+      // P0/P1 conversation plumbing (docs/chat-conversation-design.md).
+      turnIdRef.current = await chatTurn(selId, history, refs, convId, convRefs);
     } catch (e) {
       setStreaming(false);
       turnIdRef.current = null;
       // Hand the references back so the user can retry without re-selecting.
       setPendingRefs((prev) => (prev.length > 0 ? prev : refs));
+      setPendingConvRefs((prev) => (prev.length > 0 ? prev : convRefs));
       setChat((prev) => [...prev, { role: "tool", content: "错误: " + String(e) }]);
     }
   };
@@ -2934,18 +3571,33 @@ export function App() {
     }
   };
 
-  const openAddSeed = (seed: Partial<ConnInput>) => {
+  const openAddSeed = (seed: Partial<ConnInput>, lockDbType = false) => {
     setAddOpen(false);
     setFormTab("basic");
-    setForm({ open: true, editing: false, cfg: { ...emptyForm(), ...seed } });
+    setForm({
+      open: true,
+      editing: false,
+      cfg: { ...emptyForm(), ...seed },
+      lockDbType,
+    });
   };
 
   const openEditFor = (id: string) => {
     const c = findConn(id);
     if (!c) return;
     setFormTab("basic");
-    setForm({ open: true, editing: true, cfg: { ...emptyForm(), ...c, password: "" } });
+    setForm({
+      open: true,
+      editing: true,
+      cfg: { ...emptyForm(), ...c, password: "" },
+      lockDbType: false,
+    });
   };
+
+  /// db_type of the environment a group belongs to (groups don't carry their
+  /// own type — the environment binds it, ADR-022).
+  const envTypeOfGroup = (groupId: string): "mysql" | "redis" | undefined =>
+    tree.environments.find((e) => e.groups.some((g) => g.id === groupId))?.db_type;
   const saveForm = async () => {
     try {
       if (form.editing) await api.updateConnection(form.cfg);
@@ -3040,6 +3692,16 @@ export function App() {
         }
         return next;
       });
+      // Keep the persistence snapshot in step so chat-done writes the full text.
+      const snap = turnItemsRef.current;
+      const items = [...snap.items];
+      const last = items[items.length - 1];
+      if (last && last.role === "assistant") {
+        items[items.length - 1] = { ...last, content: last.content + t };
+      } else {
+        items.push({ role: "assistant", content: t });
+      }
+      turnItemsRef.current = { convId: snap.convId, items };
     }).then((u) => unsubs.push(u));
     onChatTool((t) => {
       setChat((prev) => [...prev, { role: "tool", content: t }]);
@@ -3052,6 +3714,15 @@ export function App() {
         { role: "plan", content: "", steps },
         { role: "assistant", content: "" },
       ]);
+      const snap = turnItemsRef.current;
+      turnItemsRef.current = {
+        convId: snap.convId,
+        items: [
+          ...snap.items,
+          { role: "plan", content: "", steps },
+          { role: "assistant", content: "" },
+        ],
+      };
     }).then((u) => unsubs.push(u));
     onChatConfirm((req) => {
       setConfirmQueue((prev) => [...prev, req]);
@@ -3066,6 +3737,30 @@ export function App() {
       setStreaming(false);
       turnIdRef.current = null;
       setConfirmQueue([]);
+      // §5.2: persist this turn's snapshot (ref/plan cards + user + assistant)
+      // into the conversation it was sent from, then refresh the selector.
+      const snap = turnItemsRef.current;
+      const convId_ = snap.convId;
+      turnItemsRef.current = { convId: null, items: [] };
+      if (convId_) {
+        const msgs: NewChatMessage[] = snap.items
+          .filter((m) => !(m.role === "assistant" && m.content.trim() === ""))
+          .map((m) => {
+            if (m.role === "plan") {
+              return { role: "plan", content: m.content, meta: { steps: m.steps } };
+            }
+            if (m.role === "ref") {
+              return { role: "ref", content: m.content, meta: { refs: m.refs } };
+            }
+            return { role: m.role, content: m.content };
+          });
+        if (msgs.length > 0) {
+          api
+            .appendChatMessages(convId_, msgs)
+            .then(() => loadConvs())
+            .catch((e) => showToast("消息保存失败: " + String(e)));
+        }
+      }
     }).then((u) => unsubs.push(u));
     onChatError((t) => {
       setStreaming(false);
@@ -3073,6 +3768,7 @@ export function App() {
       setChat((prev) => [...prev, { role: "tool", content: "错误: " + t }]);
     }).then((u) => unsubs.push(u));
     return () => unsubs.forEach((u) => u());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -3147,7 +3843,10 @@ export function App() {
           onInsertText={insertText}
           onRefreshConns={refresh}
           onNewGroup={(envId) => void newGroupUnder(envId)}
-          onNewConnection={(groupId) => openAddSeed({ group_id: groupId })}
+          onNewConnection={(groupId) => {
+            const t = envTypeOfGroup(groupId) ?? "mysql";
+            openAddSeed({ group_id: groupId, db_type: t }, true);
+          }}
           onRenameContainer={(id, name) => void renameContainer(id, name)}
           onDeleteContainer={(id) => void removeContainer(id)}
           onShowStructure={showStructure}
@@ -3166,8 +3865,7 @@ export function App() {
       </aside>
 
       <main className="main">
-        <div className="editor-pane">
-          <div className="tab-bar">
+        <div className="tab-bar">
             {tabs.map((t) => (
               <div
                 key={t.id}
@@ -3194,6 +3892,11 @@ export function App() {
               ＋
             </button>
           </div>
+          {isRedisConn ? (
+            <RedisBrowser connId={active!.connId} db={parseInt(active!.db || "0", 10)} showToast={showToast} />
+          ) : (
+          <>
+          <div className="editor-pane">
           <div className="pane-head">
             <span className="ctx-conn-wrap">
               查询编辑器
@@ -3364,7 +4067,31 @@ export function App() {
                     )}
                   </span>
                   {result && result.kind === "table" && Array.isArray(result.columns) && result.columns.length > 0 && (
-                    <button onClick={() => exportCsv(result, browseCtx)}>导出 CSV</button>
+                    <div className="export-dropdown">
+                      <button
+                        className="export-btn"
+                        onClick={() => setExportOpen((v) => !v)}
+                        title="导出结果"
+                      >
+                        导出 ▾
+                      </button>
+                      {exportOpen && (
+                        <>
+                          <div className="export-mask" onClick={() => setExportOpen(false)} />
+                          <div className="export-menu">
+                            <button onClick={() => { exportCsv(result, browseCtx); setExportOpen(false); }}>
+                              CSV (.csv)
+                            </button>
+                            <button onClick={() => { exportExcel(result, browseCtx); setExportOpen(false); }}>
+                              Excel (.xlsx)
+                            </button>
+                            <button onClick={() => { exportJsonFile(result, browseCtx); setExportOpen(false); }}>
+                              JSON (.json)
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
                   )}
                   {result && "truncated" in result && result.truncated && (
                     <span className="warn">已截断，请加 LIMIT</span>
@@ -3377,6 +4104,30 @@ export function App() {
           </div>
           {runInfo && (
             <div className={"run-banner run-" + runInfo.kind}>{runInfo.text}</div>
+          )}
+          {multiResults && multiResults.length > 1 && resultTab === "data" && (
+            <div className="multi-result-tabs">
+              {multiResults.map((r, i) => {
+                const label = r.kind === "table"
+                  ? `${i + 1} · ${r.columns.length > 0 ? `${r.columns.length} 列` : "无列"}`
+                  : `${i + 1} · Redis`;
+                const isErr = r.kind === "table" && r.columns.length === 1 &&
+                  r.columns[0] === "Error";
+                return (
+                  <button
+                    key={i}
+                    className={"multi-result-tab" + (i === multiResultIdx ? " active" : "") + (isErr ? " err" : "")}
+                    onClick={() => {
+                      setMultiResultIdx(i);
+                      setActiveTab((tab) => ({ ...tab, result: r }));
+                    }}
+                    title={`结果集 ${i + 1}`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           )}
           <ErrorBoundary>
           <div className="result-body">
@@ -3415,6 +4166,8 @@ export function App() {
             <span className="status-db">▦ {active.db}</span>
           )}
         </div>
+        </>
+        )}
       </main>
 
       {chatOpen ? (
@@ -3429,7 +4182,76 @@ export function App() {
             title="拖动调整宽度 · 双击收起 Chat"
           />
           <div className="pane-head">
-            <span>Chat (LLM)</span>
+            <div className="conv-select" ref={convWrapRef}>
+              <button
+                className="conv-btn"
+                title="切换会话"
+                onClick={() => setConvOpen((v) => !v)}
+              >
+                <span className="conv-title">{currentConvTitle()}</span>
+                <span className="conv-caret">▾</span>
+              </button>
+              <button
+                className="conv-new"
+                title="新建会话"
+                onClick={() => void newConv()}
+              >
+                ＋
+              </button>
+              {convOpen && (
+                <div className="conv-pop">
+                  <input
+                    className="conv-search"
+                    placeholder="搜索会话…"
+                    value={convSearch}
+                    autoFocus
+                    onChange={(e) => setConvSearch(e.target.value)}
+                  />
+                  <div className="conv-list">
+                    {convFiltered.map((c) => (
+                      <div
+                        key={c.id}
+                        className={"conv-item" + (c.id === convId ? " active" : "")}
+                        onClick={() => void switchConv(c.id)}
+                      >
+                        <div className="conv-item-main">
+                          <span className="conv-item-title">{c.title}</span>
+                          <span className="conv-item-sub">
+                            {c.conn_name ?? "全部"} · {relTime(c.updated)} ·{" "}
+                            {c.msg_count} 条
+                          </span>
+                        </div>
+                        <span className="conv-item-ops">
+                          <button
+                            type="button"
+                            title="重命名"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void renameConv(c);
+                            }}
+                          >
+                            ✎
+                          </button>
+                          <button
+                            type="button"
+                            title="删除"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void deleteConv(c);
+                            }}
+                          >
+                            🗑
+                          </button>
+                        </span>
+                      </div>
+                    ))}
+                    {convFiltered.length === 0 && (
+                      <div className="dim conv-empty">无匹配会话</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             <span className="chat-status">
             {status.llm_enabled ? "LLM 已配置" : "LLM 未配置"} · 脱敏:
             {status.mask_enabled ? "开" : "关"}
@@ -3604,15 +4426,117 @@ export function App() {
             })}
           </div>
         )}
+        {/* P1 @-mentions (docs/chat-conversation-design.md §6): staged
+            cross-conversation reference cards, sent with this turn's
+            `conv_refs` and never replayed from history. */}
+        {pendingConvRefs.length > 0 && (
+          <div className="convref-tray">
+            {pendingConvRefs.map((r, i) => (
+              <span
+                key={i}
+                className="convref-chip"
+                title={r.preview}
+                onClick={() => pickConvRef(
+                  convs.find((c) => c.id === r.conv_id) ??
+                    { id: r.conv_id, title: r.title, conn_id: null, conn_name: null, created: 0, updated: 0, pinned: false, last_preview: "", msg_count: 0 },
+                  r.scope === "message",
+                )}
+              >
+                <span className="convref-icon">🔗</span>
+                <span className="convref-title">{r.title}</span>
+                <span
+                  className={
+                    "convref-scope " + (r.scope === "session" ? "whole" : "single")
+                  }
+                >
+                  {r.scope === "session" ? "整段" : "单条"}
+                </span>
+                <span className="convref-preview">{r.preview}</span>
+                <button
+                  type="button"
+                  className="ref-chip-x"
+                  title="移除引用"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    dropConvRef(i);
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        {/* @-mention picker: floats above the composer, filtered by what was
+            typed after "@". Enter picks the highlighted conversation (whole
+            tail); clicking an item opens the message drill-down instead. */}
+        {atOpen && atList.length > 0 && (
+          <div className="at-pop">
+            {atList.map((c, i) => (
+              <div
+                key={c.id}
+                className={"at-item" + (i === atIdx ? " active" : "")}
+                onMouseEnter={() => setAtIdx(i)}
+                onClick={() => pickConvRef(c, true)}
+              >
+                <span className="at-title">{c.title}</span>
+                <span className="at-sub">
+                  {c.conn_name ?? "全部"} · {relTime(c.updated)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {convMsgPick && (
+          <div className="conv-msg-pop">
+            <div className="conv-msg-head">
+              <span className="conv-msg-name">{convMsgPick.title}</span>
+              <span className="conv-msg-hint">选择引用哪条消息</span>
+              <button
+                type="button"
+                className="conv-msg-whole"
+                title="引用整段对话（最近 8 条）"
+                onClick={() => pickConvRef(convMsgPick, true)}
+              >
+                整段对话
+              </button>
+              <button
+                type="button"
+                className="ref-chip-x"
+                title="取消"
+                onClick={() => setConvMsgPick(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="conv-msg-list">
+              {convMsgList.map((m, i) => (
+                <div
+                  key={m.id ?? i}
+                  className="conv-msg-item"
+                  onClick={() => pickMsgRef(convMsgPick, m)}
+                >
+                  <span className={"conv-msg-role " + m.role}>{m.role}</span>
+                  <span className="conv-msg-text">{m.content.slice(0, 80) || "…"}</span>
+                </div>
+              ))}
+              {convMsgList.length === 0 && (
+                <div className="dim conv-msg-empty">加载中…</div>
+              )}
+            </div>
+          </div>
+        )}
         <div className="chat-input">
           <textarea
             id="chat-input"
             placeholder={
-              pendingRefs.length > 0
-                ? "就引用的 SQL 提问，例如：帮我优化它"
-                : "问点什么，例如：统计 users 表行数"
+              pendingRefs.length > 0 || pendingConvRefs.length > 0
+                ? "就引用的内容提问，输入 @ 可引用其他会话"
+                : "问点什么，输入 @ 可引用其他会话，例如：统计 users 表行数"
             }
             disabled={streaming}
+            onInput={onChatInput}
+            onKeyDown={onChatKeyDown}
           />
           {streaming ? (
             <button className="danger" onClick={stopChat} title="停止本轮">
@@ -3689,11 +4613,17 @@ export function App() {
                       { value: "mysql", label: "mysql" },
                       { value: "redis", label: "redis" },
                     ]}
+                    disabled={form.lockDbType}
                     onChange={(v) => {
                       const port = v === "redis" ? 6379 : 3306;
                       setForm({ ...form, cfg: { ...form.cfg, db_type: v, port } });
                     }}
                   />
+                  {form.lockDbType && (
+                    <span className="conn-type-lock">
+                      🔒 跟随所属环境（{form.cfg.db_type === "redis" ? "redis" : "mysql"}）
+                    </span>
+                  )}
                   <div className="form-row">
                     <label>
                       主机
@@ -3767,12 +4697,23 @@ export function App() {
                             }))
                           ),
                       ]}
-                      onChange={(v) =>
+                      onChange={(v) => {
+                        const gid = v || null;
+                        const envType = gid ? envTypeOfGroup(gid) : undefined;
+                        const db_type = envType ?? form.cfg.db_type;
+                        // Only touch the port when the type actually flips, so
+                        // editing a connection never resets a custom port.
+                        const port =
+                          db_type !== form.cfg.db_type
+                            ? db_type === "redis"
+                              ? 6379
+                              : 3306
+                            : form.cfg.port;
                         setForm({
                           ...form,
-                          cfg: { ...form.cfg, group_id: v || null },
-                        })
-                      }
+                          cfg: { ...form.cfg, group_id: gid, db_type, port },
+                        });
+                      }}
                     />
                   </div>
                 </>
@@ -4513,6 +5454,12 @@ export function App() {
                   : "（全列定位）"
                 : ""}
             </button>
+            <button onClick={() => void copyRowsAs("wherein")}>
+              复制为 WHERE IN
+            </button>
+            <button onClick={() => void copyRowsAs("csv")}>
+              复制为 CSV
+            </button>
               </>
             ) : null}
           </div>
@@ -4749,6 +5696,51 @@ function exportCsv(r: Extract<QueryOutput, { kind: "table" }>, ctx: BrowseCtx | 
   a.download = `${base}-${Date.now()}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/// Export result as Excel (.xlsx) using the SheetJS library.
+function exportExcel(r: Extract<QueryOutput, { kind: "table" }>, ctx: BrowseCtx | null) {
+  // xlsx is dynamically imported so it doesn't bloat the main bundle.
+  import("xlsx").then((XLSX) => {
+    const ws = XLSX.utils.aoa_to_sheet([r.columns, ...r.rows]);
+    const wb = XLSX.utils.book_new();
+    const base = ctx ? `${ctx.db}.${ctx.table}` : "result";
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    XLSX.writeFile(wb, `${base}-${Date.now()}.xlsx`);
+  });
+}
+
+/// Export result as JSON file download.
+function exportJsonFile(r: Extract<QueryOutput, { kind: "table" }>, ctx: BrowseCtx | null) {
+  const json = rowsToJson(r.columns, r.rows);
+  const blob = new Blob([json], { type: "application/json;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const base = ctx ? `${ctx.db}.${ctx.table}` : "result";
+  a.href = url;
+  a.download = `${base}-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/// Build a WHERE IN clause from the selected rows' values for a specific
+/// column.  Duplicate values are de-duplicated to keep the clause concise.
+function rowsToWhereIn(colName: string, colIndex: number, rows: string[][]): string {
+  const escId = "`" + colName.replace(/`/g, "``") + "`";
+  const seen = new Set<string>();
+  const vals: string[] = [];
+  for (const r of rows) {
+    const v = r[colIndex] ?? "";
+    if (!seen.has(v)) {
+      seen.add(v);
+      vals.push(sqlLit(v));
+    }
+  }
+  // Wrap for readability when there are many values.
+  if (vals.length <= 5) {
+    return `${escId} IN (${vals.join(", ")})`;
+  }
+  return `${escId} IN (\n  ${vals.join(",\n  ")}\n)`;
 }
 
 /// Serialize a value exactly as MySQL would inline it: NULL keyword, TRUE/FALSE,

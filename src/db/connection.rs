@@ -270,6 +270,50 @@ impl ConnectionStore {
         self.storage.list_audits(limit)
     }
 
+    // --- Conversations (docs/chat-conversation-design.md) ------------------
+
+    pub fn list_conversations(
+        &self,
+    ) -> Result<Vec<crate::model::ConversationSummary>> {
+        self.storage.list_conversations()
+    }
+    pub fn create_conversation(
+        &self,
+        conn_id: Option<&str>,
+        title: Option<&str>,
+    ) -> Result<String> {
+        self.storage.create_conversation(conn_id, title)
+    }
+    pub fn rename_conversation(&self, id: &str, title: &str) -> Result<()> {
+        self.storage.rename_conversation(id, title)
+    }
+    pub fn delete_conversation(&mut self, id: &str) -> Result<()> {
+        self.storage.delete_conversation(id)
+    }
+    pub fn get_conversation(
+        &self,
+        id: &str,
+        offset: i64,
+        limit: i64,
+    ) -> Result<(crate::model::ConversationSummary, Vec<crate::model::StoredChatMessage>)> {
+        self.storage.get_conversation(id, offset, limit)
+    }
+    pub fn append_chat_messages(
+        &mut self,
+        conv_id: &str,
+        messages: &[crate::model::NewChatMessage],
+    ) -> Result<()> {
+        self.storage.append_chat_messages(conv_id, messages)
+    }
+    /// Title + trailing messages for cross-conversation injection (#226).
+    pub fn get_recent_conv(
+        &self,
+        conv_id: &str,
+        n: i64,
+    ) -> Result<Option<(String, Vec<crate::model::StoredChatMessage>)>> {
+        self.storage.get_recent_conv(conv_id, n)
+    }
+
     // --- Container CRUD (ADR-016) -----------------------------------------
 
     pub fn create_env(&mut self, name: &str, db_type: Option<DbType>) -> Result<String> {

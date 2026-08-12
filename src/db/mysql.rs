@@ -32,6 +32,12 @@ pub struct QueryResult {
     /// Primary-key column names for the browsed table (browse path only). Lets
     /// the UI locate a row for writes; empty for arbitrary SQL results.
     pub primary_keys: Vec<String>,
+    /// Rows affected by a write statement (UPDATE/INSERT/DELETE/...). Some for
+    /// write queries so the UI can show "N rows affected"; None for read-only
+    /// queries and result-set queries.
+    pub affected: Option<u64>,
+    /// AUTO_INCREMENT id of the last INSERT, when the write produced one.
+    pub last_insert_id: Option<u64>,
 }
 
 /// Execute a SQL string against MySQL and return a bounded, streamed result.
@@ -41,15 +47,55 @@ pub struct QueryResult {
 /// the connection's default database is used — this is how ad-hoc SQL runs when
 /// no specific database is selected in the tree. When set, the query connects
 /// directly to that schema so unqualified table names resolve against it.
+///
+/// `allow_risky` permits UPDATE/DELETE statements without a top-level
+/// WHERE/LIMIT (whole-table operations). The UI only sets it after the user
+/// confirmed the confirm dialog; LLM/TUI callers leave it false so the backend
+/// remains the last line of defense.
 pub async fn query(
     cfg: &ConnectionConfig,
     sql: &str,
     database: Option<&str>,
+    allow_risky: bool,
 ) -> Result<QueryResult> {
     let pool = match database {
         Some(db) if !db.is_empty() => connect_pool_db(cfg, db).await?,
         _ => connect_pool(cfg).await?,
     };
+
+    // Guardrail: refuse unguarded UPDATE/DELETE unless explicitly allowed.
+    // Runs before the read/write routing below so multi-statement scripts are
+    // covered too (SELECT 1; DELETE FROM t; → blocked).
+    if !allow_risky {
+        let risks = crate::sql_guard::analyze_write_sql(sql);
+        if !risks.is_empty() {
+            let previews: Vec<String> = risks.iter().map(|r| r.preview.clone()).collect();
+            return Err(AppError::Msg(format!(
+                "检测到 {} 条无 WHERE/LIMIT 条件的 UPDATE/DELETE 语句（将操作整表数据），已阻止执行：{}。若确需执行，请在确认弹窗中放行。",
+                risks.len(),
+                previews.join(" ；")
+            )));
+        }
+    }
+
+    // Write statements (INSERT/UPDATE/DELETE/DDL...) return no result set but
+    // DO report rows_affected / last_insert_id. Route them through `execute`
+    // so the UI gets real feedback ("影响 N 行 · 自增ID …") instead of a
+    // silent 0-row table. Multi-statement scripts keep the legacy fetch path
+    // (frontend already splits them, so this only guards direct callers).
+    if !is_read_query(sql) && !has_unquoted_semicolon(sql.trim().trim_end_matches(';')) {
+        let done = sqlx::query(sql).execute(&pool).await.map_err(AppError::Sqlx)?;
+        return Ok(QueryResult {
+            columns: vec![],
+            rows: vec![],
+            truncated: false,
+            total: None,
+            primary_keys: vec![],
+            affected: Some(done.rows_affected()),
+            last_insert_id: Some(done.last_insert_id()),
+        });
+    }
+
     let mut stream = sqlx::query(sql).fetch(&pool);
     let mut columns: Vec<String> = Vec::new();
     let mut rows: Vec<Vec<String>> = Vec::new();
@@ -81,6 +127,8 @@ pub async fn query(
         truncated,
         total: None,
         primary_keys: vec![],
+        affected: None,
+        last_insert_id: None,
     })
 }
 
@@ -103,12 +151,13 @@ pub async fn query_paged(
     database: Option<&str>,
     page: usize,
     page_size: usize,
+    allow_risky: bool,
 ) -> Result<QueryResult> {
     // Only single SELECT statements can safely be wrapped with COUNT(*)
     // and LIMIT/OFFSET. SHOW/EXPLAIN/INSERT/UPDATE/DELETE or multi-statement
     // scripts must run through the plain query path (no pager, no rewrite).
     if !is_select_query(sql) {
-        return query(cfg, sql, database).await;
+        return query(cfg, sql, database, allow_risky).await;
     }
 
     let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
@@ -163,6 +212,8 @@ pub async fn query_paged(
         truncated: false,
         total,
         primary_keys: vec![],
+        affected: None,
+        last_insert_id: None,
     })
 }
 
@@ -211,6 +262,25 @@ fn is_select_query(sql: &str) -> bool {
         return false;
     }
     !has_unquoted_semicolon(no_tail)
+}
+
+/// True for statements that return a result set or otherwise read state —
+/// everything else (INSERT/UPDATE/DELETE/REPLACE/CREATE/ALTER/DROP/TRUNCATE/
+/// GRANT/SET/CALL/...) is a write and should be executed via `execute` so the
+/// caller learns rows_affected / last_insert_id.
+fn is_read_query(sql: &str) -> bool {
+    let no_tail = sql.trim().trim_end_matches(';').trim();
+    let body = skip_leading_inline_comment(no_tail);
+    let up = body.to_ascii_uppercase();
+    up == "SELECT"
+        || up.starts_with("SELECT ")
+        || up.starts_with("WITH ")
+        || up.starts_with("SHOW ")
+        || up.starts_with("EXPLAIN ")
+        || up.starts_with("DESC ")
+        || up.starts_with("DESCRIBE ")
+        || up.starts_with("PRAGMA ")
+        || up.starts_with("HELP ")
 }
 
 /// Skip a leading `-- ` or `#` comment line so that `-- comment\nSELECT ...`
@@ -352,10 +422,11 @@ fn pool_cache() -> &'static std::sync::Mutex<PoolCache> {
 /// 不含 id/group（同物理库多配置共享池无害）；password 变化 → key 变 → 自动换新池。
 /// 含 ssh_host：直连与经不同跳板机的隧道不能共用同一池。
 fn pool_key(cfg: &ConnectionConfig, database: &str) -> String {
-    let db = if database.is_empty() { "mysql" } else { database };
+    // 空 database 直接用空串占位。绝不用 "mysql" 系统库兜底：托管账号（阿里云
+    // RDS 等）通常无权访问 mysql 库，硬连会报 Access denied。
     format!(
         "{}:{}:{}:{}:{}:{}",
-        cfg.host, cfg.port, cfg.user, cfg.password, db, cfg.ssh_host
+        cfg.host, cfg.port, cfg.user, cfg.password, database, cfg.ssh_host
     )
 }
 
@@ -368,7 +439,9 @@ fn pool_key(cfg: &ConnectionConfig, database: &str) -> String {
 ///   127.0.0.1:本地端口（`#5` MVP）。隧道进程随连接池缓存长期存活，LRU 淘汰池时
 ///   一并 kill。
 async fn connect_raw(cfg: &ConnectionConfig, database: &str) -> Result<MySqlPool> {
-    let db = if database.is_empty() { "mysql" } else { database };
+    // 空 database 时不指定默认库（MySQL 协议允许无当前库连接），避免无权访问
+    // mysql 系统库的托管账号报 Access denied。
+    let db = if database.is_empty() { None } else { Some(database) };
 
     // SSH 隧道：把逻辑目标 (cfg.host:cfg.port) 替换为本地转发端口。
     let (host, port) = if !cfg.ssh_host.is_empty() {
@@ -384,8 +457,10 @@ async fn connect_raw(cfg: &ConnectionConfig, database: &str) -> Result<MySqlPool
         .port(port)
         .username(&cfg.user)
         .password(&cfg.password)
-        .database(db)
         .charset("utf8mb4");
+    if let Some(db) = db {
+        opts = opts.database(db);
+    }
 
     // SSL/TLS（#4）：ssl_mode 为空时退化为 MySQL 默认（Preferred，即“能加密就加密”）。
     if !cfg.ssl_mode.is_empty() {
@@ -632,10 +707,10 @@ async fn get_pool(cfg: &ConnectionConfig, database: &str) -> Result<MySqlPool> {
     Ok(pool)
 }
 
-/// 默认库连接池（缓存）。
+/// 默认库连接池（缓存）。连接配置里填了默认库就用它，否则连接不带当前库
+/// （不再兜底 "mysql" 系统库）。
 async fn connect_pool(cfg: &ConnectionConfig) -> Result<MySqlPool> {
-    let db = if cfg.database.is_empty() { "mysql" } else { &cfg.database };
-    get_pool(cfg, db).await
+    get_pool(cfg, &cfg.database).await
 }
 
 /// 指定库连接池（缓存），用于 schema 浏览任意 database。
@@ -687,6 +762,7 @@ pub async fn schema(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Sc
                     key,
                     nullable,
                     default,
+                    comment: None,
                 });
                 continue;
             }
@@ -699,6 +775,7 @@ pub async fn schema(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Sc
                 key,
                 nullable,
                 default,
+                comment: None,
             }],
         });
     }
@@ -723,6 +800,9 @@ pub struct ColumnInfo {
     pub nullable: String,
     /// Raw default expression, or None when no default.
     pub default: Option<String>,
+    /// Column comment from INFORMATION_SCHEMA (ADR-025+ completion enhancement).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -746,7 +826,9 @@ pub struct TableMeta {
 
 /// List non-system databases on the server (Navicat's "database" level).
 pub async fn list_databases(cfg: &ConnectionConfig) -> Result<Vec<String>> {
-    let pool = connect_pool_db(cfg, "mysql").await?;
+    // 只查 INFORMATION_SCHEMA，无需（也不应）连接 mysql 系统库——托管账号往往
+    // 对 mysql 库无权限。走默认连接（空库或无库连接均可）。
+    let pool = connect_pool(cfg).await?;
     // CAST SCHEMA_NAME to CHAR: INFORMATION_SCHEMA columns use a binary charset
     // and would decode as SQL type BINARY, incompatible with Rust String.
     let rows = sqlx::query(
@@ -848,7 +930,8 @@ pub async fn list_columns(
 ) -> Result<Vec<ColumnInfo>> {
     let pool = connect_pool_db(cfg, database).await?;
     let rows = sqlx::query(
-        "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_KEY, IS_NULLABLE, COLUMN_DEFAULT \
+        "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_KEY, IS_NULLABLE, COLUMN_DEFAULT, \
+                CAST(COLUMN_COMMENT AS CHAR) AS COLUMN_COMMENT \
          FROM INFORMATION_SCHEMA.COLUMNS \
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
     )
@@ -864,12 +947,17 @@ pub async fn list_columns(
         let key: String = row.try_get("COLUMN_KEY").map_err(AppError::Sqlx)?;
         let nullable: String = row.try_get("IS_NULLABLE").map_err(AppError::Sqlx)?;
         let default: Option<String> = row.try_get("COLUMN_DEFAULT").ok().flatten();
+        let comment_raw: Option<String> = row.try_get("COLUMN_COMMENT").ok().flatten();
+        let comment = comment_raw
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty());
         out.push(ColumnInfo {
             name,
             data_type,
             key,
             nullable,
             default,
+            comment,
         });
     }
     Ok(out)
@@ -944,6 +1032,8 @@ pub async fn browse(
         truncated: false,
         total: Some(total.max(0) as usize),
         primary_keys,
+        affected: None,
+        last_insert_id: None,
     })
 }
 
@@ -1535,6 +1625,8 @@ mod tests {
             truncated: false,
             total: None,
             primary_keys: vec![],
+            affected: None,
+            last_insert_id: None,
         };
         let csv = to_csv(&r);
         assert!(csv.contains("\"a,b\""));
@@ -1568,6 +1660,31 @@ mod tests {
         assert!(!is_select_query("SELECT * FROM t; SHOW CREATE TABLE t"));
         assert!(is_select_query("SELECT * FROM t;"));
         assert!(!is_select_query("SELECT * FROM t; SHOW CREATE TABLE t"));
+    }
+
+    #[test]
+    fn is_read_query_classifies_reads_vs_writes() {
+        // Reads: result-set / state statements keep the fetch path.
+        assert!(is_read_query("SELECT * FROM t"));
+        assert!(is_read_query("-- c\nSELECT id FROM t"));
+        assert!(is_read_query("WITH x AS (SELECT 1) SELECT * FROM x"));
+        assert!(is_read_query("SHOW TABLES"));
+        assert!(is_read_query("SHOW CREATE TABLE t;"));
+        assert!(is_read_query("EXPLAIN SELECT * FROM t"));
+        assert!(is_read_query("DESC t"));
+        assert!(is_read_query("DESCRIBE t"));
+        assert!(is_read_query("SELECT * FROM t WHERE a = ';'")); // 分号在字符串内不算多语句
+        // Writes: must go through execute to expose rows_affected.
+        assert!(!is_read_query("UPDATE t SET a = 1"));
+        assert!(!is_read_query("INSERT INTO t VALUES (1)"));
+        assert!(!is_read_query("DELETE FROM t WHERE id = 1"));
+        assert!(!is_read_query("REPLACE INTO t VALUES (1)"));
+        assert!(!is_read_query("CREATE TABLE t (id INT)"));
+        assert!(!is_read_query("DROP TABLE t"));
+        assert!(!is_read_query("ALTER TABLE t ADD COLUMN x INT"));
+        assert!(!is_read_query("TRUNCATE TABLE t"));
+        assert!(!is_read_query("SET @x = 1"));
+        assert!(!is_read_query("CALL sp()"));
     }
 
     #[test]

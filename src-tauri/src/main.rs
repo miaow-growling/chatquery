@@ -53,6 +53,7 @@ fn main() {
             rename_container,
             delete_container,
             test_connection,
+            guard_write_sql,
             execute_query,
             explain_query,
             log_query,
@@ -73,9 +74,12 @@ fn main() {
             list_tables,
             search_tables,
             list_redis_keys,
+            list_redis_keys_meta,
             list_columns,
             browse_table,
             browse_redis_key,
+            delete_redis_key,
+            php_unserialize,
             apply_edit,
             insert_row,
             delete_row,
@@ -93,6 +97,12 @@ fn main() {
             delete_kb_doc,
             set_kb_bindings,
             list_audit_logs,
+            list_conversations,
+            create_conversation,
+            rename_conversation,
+            delete_conversation,
+            get_conversation,
+            append_chat_messages,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ChatQuery");

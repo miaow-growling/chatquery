@@ -34,6 +34,12 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "active": true
+    "active": true,
+    "targets": ["app", "dmg"],
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "frameworks": [],
+      "signingIdentity": null
+    }
   }
 }

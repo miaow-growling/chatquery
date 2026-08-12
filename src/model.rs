@@ -150,6 +150,52 @@ impl ChatMessage {
     }
 }
 
+/// 会话列表条目（docs/chat-conversation-design.md §3.2）。`conn_name` 是
+/// join 连接名，仅供 UI 展示标签；`last_preview` 为最后一条消息前 60 字。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationSummary {
+    pub id: String,
+    pub title: String,
+    pub conn_id: Option<String>,
+    pub conn_name: Option<String>,
+    pub created: i64,
+    pub updated: i64,
+    pub pinned: bool,
+    pub last_preview: String,
+    pub msg_count: i64,
+}
+
+/// 追加消息的入参。`id`/`seq` 由后端生成（前端只负责展示与加载），
+/// `role` 走白名单：user/assistant/tool/system/plan/ref。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewChatMessage {
+    pub role: String,
+    pub content: String,
+    /// 装饰卡片的结构化数据：ref→refs[]；plan→steps[]；assistant→usage。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
+}
+
+/// 已落盘的消息（回读用），`seq` 保证会话内顺序。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredChatMessage {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
+    pub ts: i64,
+}
+
+/// 跨会话引用（docs/chat-conversation-design.md §6）。`scope` 为
+/// "session"（整段对话）或 "message"（单条消息）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationRef {
+    pub conv_id: String,
+    pub scope: String,
+    pub message_id: Option<String>,
+}
+
 pub fn role_str(r: ChatRole) -> &'static str {
     match r {
         ChatRole::User => "user",
