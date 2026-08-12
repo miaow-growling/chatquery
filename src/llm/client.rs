@@ -109,6 +109,11 @@ async fn stream_chat_openai(
         "model": cfg.model,
         "messages": msgs,
         "stream": true,
+        // OpenAI streams omit `usage` by default; this asks the provider to
+        // append a final `usage` chunk so the token strip shows real numbers
+        // (honoured by OpenAI / DeepSeek / Kimi / Qwen / vLLM / Ollama …;
+        // services that ignore it just keep streaming normally). 2026-08-12.
+        "stream_options": { "include_usage": true },
     });
     if !tools.is_empty() {
         body["tools"] = json!(tools);

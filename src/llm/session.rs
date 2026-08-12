@@ -568,7 +568,14 @@ pub async fn run_turn(
     match result {
         Ok(out) => {
             out?;
-            let _ = tx.send(BackendMsg::ChatUsage(agent.usage));
+            // Only forward usage the provider actually measured: a stream that
+            // never emitted a `usage` chunk (or a provider that doesn't report
+            // one) leaves a zero accumulator, and emitting it would show a
+            // misleading "0 tokens" in the footer. The frontend falls back to a
+            // character-based estimate in that case. 2026-08-12.
+            if agent.usage.total_tokens > 0 {
+                let _ = tx.send(BackendMsg::ChatUsage(agent.usage));
+            }
             if ctl.is_cancelled() {
                 let _ = tx.send(BackendMsg::ChatToken("\n⏹ 已取消。\n".to_string()));
             }

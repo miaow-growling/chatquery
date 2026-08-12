@@ -589,6 +589,9 @@ export function App() {
   /// deliberately distinct from a reported zero.
   const [lastUsage, setLastUsage] = useState<TokenUsage | null>(null);
   const [sessionTokens, setSessionTokens] = useState(0);
+  /// True when `lastUsage` is a char-based estimate because the provider never
+  /// reported real usage — the footer then shows "约 N tokens".
+  const [usageEstimated, setUsageEstimated] = useState(false);
   /// Write-guardrail audit trail (ADR-AI-1 决策3), loaded on demand.
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
@@ -3730,8 +3733,13 @@ export function App() {
     // Cost lands just before `chat-done`. Providers that stay silent leave
     // `lastUsage` at null, so the footer shows nothing rather than a fake 0.
     onChatUsage((u) => {
+      // Zero total = the provider never emitted a `usage` chunk for this
+      // stream; showing "0 tokens" is misleading, so ignore it and let
+      // chat-done fall back to a char-based estimate instead (2026-08-12).
+      if (!u.total_tokens) return;
+      setUsageEstimated(false);
       setLastUsage(u);
-      setSessionTokens((prev) => prev + (u.total_tokens || 0));
+      setSessionTokens((prev) => prev + u.total_tokens);
     }).then((u) => unsubs.push(u));
     onChatDone(() => {
       setStreaming(false);
@@ -3761,6 +3769,32 @@ export function App() {
             .catch((e) => showToast("消息保存失败: " + String(e)));
         }
       }
+      // Provider never reported usage (lastUsage stayed null): estimate from
+      // this turn's actual text — user/ref/plan feed the prompt, assistant is
+      // the output — and mark it as an estimate ("约") in the footer.
+      setLastUsage((cur) => {
+        if (cur) return cur;
+        const inText = snap.items
+          .filter(
+            (m) => m.role === "user" || m.role === "plan" || m.role === "ref",
+          )
+          .map((m) => {
+            if (m.role === "plan") return (m.steps || []).join("\n");
+            if (m.role === "ref") return (m.refs || []).map((r) => r.sql).join("\n");
+            return m.content;
+          })
+          .join("\n");
+        const outText = snap.items
+          .filter((m) => m.role === "assistant")
+          .map((m) => m.content)
+          .join("\n");
+        if (!inText.trim() && !outText.trim()) return cur;
+        const p = estimateTokens(inText);
+        const c = estimateTokens(outText);
+        setUsageEstimated(true);
+        setSessionTokens((prev) => prev + p + c);
+        return { prompt_tokens: p, completion_tokens: c, total_tokens: p + c };
+      });
     }).then((u) => unsubs.push(u));
     onChatError((t) => {
       setStreaming(false);
@@ -4366,10 +4400,20 @@ export function App() {
           <div ref={chatEndRef} />
         </div>
         {(lastUsage || sessionTokens > 0) && (
-          <div className="chat-usage" title="LLM token 用量（ADR-AI-4）">
+          <div
+            className="chat-usage"
+            title={
+              usageEstimated
+                ? "provider 未上报用量，按字符估算（约）"
+                : "LLM token 用量（ADR-AI-4）"
+            }
+          >
             {lastUsage ? (
               <>
-                <span>⚡ 本轮 {fmtNum(lastUsage.total_tokens)} tokens</span>
+                <span>
+                  ⚡ 本轮{usageEstimated ? " 约" : ""}{" "}
+                  {fmtNum(lastUsage.total_tokens)} tokens
+                </span>
                 <span className="dim">
                   （入 {fmtNum(lastUsage.prompt_tokens)} / 出{" "}
                   {fmtNum(lastUsage.completion_tokens)}）
@@ -5882,6 +5926,16 @@ function roleLabel(r: string) {
 /// unreadable unsegmented.
 function fmtNum(n: number): string {
   return n.toLocaleString("en-US");
+}
+
+/// Rough char→token estimate for providers that don't report usage: CJK text
+/// ≈ 1 token/char, other text ≈ 1 token per 4 chars. Fallback only — the real
+/// numbers come from the provider's `usage` chunk (2026-08-12).
+function estimateTokens(s: string): number {
+  if (!s) return 0;
+  const cjk = (s.match(/[\u4e00-\u9fff\u3400-\u4dbf]/g) || []).length;
+  const rest = s.length - cjk;
+  return Math.max(1, Math.ceil(cjk * 1.2 + rest / 4));
 }
 
 /// Collapse a SQL reference to a single chip-sized line. Whitespace is
