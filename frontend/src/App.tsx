@@ -3683,7 +3683,18 @@ export function App() {
 
   // Streaming chat event listeners.
   useEffect(() => {
-    const unsubs: (() => void)[] = [];
+    // Tauri's `listen` resolves its unlisten fn asynchronously. If the effect
+    // is torn down first (StrictMode double-mount in dev, HMR), the unlisten
+    // would land in a dead array and the listener leaks — every subsequent
+    // chat token then gets appended once per leaked listener ("你好你好你好…"),
+    // and a leaked chat-done handler re-saves the turn's messages. `disposed`
+    // makes a late-resolving unlisten unregister itself immediately. 2026-08-12.
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    const safe = (u: () => void) => {
+      if (disposed) u();
+      else unlisteners.push(u);
+    };
     onChatToken((t) => {
       setChat((prev) => {
         const next = [...prev];
@@ -3705,10 +3716,10 @@ export function App() {
         items.push({ role: "assistant", content: t });
       }
       turnItemsRef.current = { convId: snap.convId, items };
-    }).then((u) => unsubs.push(u));
+    }).then(safe);
     onChatTool((t) => {
       setChat((prev) => [...prev, { role: "tool", content: t }]);
-    }).then((u) => unsubs.push(u));
+    }).then(safe);
     // The plan arrives as its own card, then a fresh assistant bubble takes
     // over so the worker output doesn't get appended onto the plan.
     onChatPlan((steps) => {
@@ -3726,10 +3737,10 @@ export function App() {
           { role: "assistant", content: "" },
         ],
       };
-    }).then((u) => unsubs.push(u));
+    }).then(safe);
     onChatConfirm((req) => {
       setConfirmQueue((prev) => [...prev, req]);
-    }).then((u) => unsubs.push(u));
+    }).then(safe);
     // Cost lands just before `chat-done`. Providers that stay silent leave
     // `lastUsage` at null, so the footer shows nothing rather than a fake 0.
     onChatUsage((u) => {
@@ -3740,7 +3751,7 @@ export function App() {
       setUsageEstimated(false);
       setLastUsage(u);
       setSessionTokens((prev) => prev + u.total_tokens);
-    }).then((u) => unsubs.push(u));
+    }).then(safe);
     onChatDone(() => {
       setStreaming(false);
       turnIdRef.current = null;
@@ -3795,13 +3806,16 @@ export function App() {
         setSessionTokens((prev) => prev + p + c);
         return { prompt_tokens: p, completion_tokens: c, total_tokens: p + c };
       });
-    }).then((u) => unsubs.push(u));
+    }).then(safe);
     onChatError((t) => {
       setStreaming(false);
       turnIdRef.current = null;
       setChat((prev) => [...prev, { role: "tool", content: "错误: " + t }]);
-    }).then((u) => unsubs.push(u));
-    return () => unsubs.forEach((u) => u());
+    }).then(safe);
+    return () => {
+      disposed = true;
+      unlisteners.forEach((u) => u());
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

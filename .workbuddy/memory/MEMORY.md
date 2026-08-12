@@ -11,6 +11,7 @@ Tauri v2 + React + Vite + TS 桌面 SQL 客户端;Rust library(sqlx MySQL)。
 - WKWebView 合成崩溃(macOS 致命,窗口瞬关无 JS 报错):诱因(A)objc FFI 回调裸 msg_send! 致 panic_cannot_unwind;(B)滚动容器 sticky-left 单元格 + 大量 backdrop-filter 叠加。规则:结果表禁 sticky-left;sticky 背景必须不透明。
 - 事件桥接:`BackendMsg→emit` 的 match 有 `_ => {}` 兜底,新变体被静默吞。新增须三处同步:model.rs 定义 / commands.rs arm / src/main.rs TUI arm。
 - 测试并行污染:`std::env::set_var` 进程级,并行测试互覆盖 XDG_CONFIG_HOME → Storage::open 开错库、随机 flaky。修:模块级 static ENV_LOCK + env_lock()(守卫活到测试结束),且与 temp_store() 分离(否则死锁)。验证须连跑 5 次。
+- Tauri `listen` 的 unlisten 异步 resolve(08-12):StrictMode 双挂载/HMR 下 effect cleanup 先执行、unlisten 落入已作废数组 → 监听器泄漏叠加,流式 token 被 N 个监听器各 append 一次(输出"你好你好你好"),泄漏的 chat-done 还重复落库。修:disposed 标志 + late-resolving unlisten 立即自注销(safe helper),禁止裸 `.then(u => arr.push(u))`。
 
 ## 架构约定
 - 环境/组一等实体(ADR-016);环境绑定单一 db_type(ADR-022),树按环境自身 db_type 归类。
