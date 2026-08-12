@@ -77,3 +77,22 @@ Chat 面板历史全混在一个数组里、刷新即丢，无法按连接/主�
 
 ## 验证
 `cargo check`（lib + src-tauri）✅ · `cargo test --lib` 69 全过（新增 5 个 planner 单测）✅ · `tauri dev` 已重启 ✅
+
+---
+
+# token 用量全 0 修复 (2026-08-12)
+
+用户反馈：AI 回复后 footer 显示「本轮 0 tokens（入 0 / 出 0）· 会话累计 0」。
+
+## 根因
+OpenAI 流式请求体只有 `stream: true`，没带 `stream_options.include_usage` —— OpenAI 官方与多数兼容服务（DeepSeek/Kimi/Qwen/vLLM/Ollama）**流式默认不返回 usage chunk**，导致 client.rs 提取不到、`agent.usage` 累加保持 0，`run_turn` 又无条件把全 0 emit 给前端，最终展示骗人的 0。
+
+## 改动（commit `25e94d0`）
+| 位置 | 改动 |
+|------|------|
+| `client.rs` | OpenAI 流请求加 `stream_options: {"include_usage": true}`（根治；不支持的 provider 忽略该字段，无副作用） |
+| `session.rs` | `agent.usage.total_tokens > 0` 才 emit `ChatUsage`（provider 没报就不造假数据） |
+| `App.tsx` | `onChatUsage` 忽略全 0；`chat-done` 时 provider 未报则按字符估算（CJK 1 字≈1.2 token、其他 4 字符≈1 token），footer 标注「约」+ title 注明是估算 |
+
+## 验证
+`cargo check`（lib + src-tauri）✅ · `cargo test --lib` 69 全过 ✅ · `tsc --noEmit` ✅ · `tauri dev` 已重启 ✅
