@@ -54,3 +54,26 @@ Chat 面板历史全混在一个数组里、刷新即丢，无法按连接/主�
 
 ## 验证
 `cargo check`（lib + src-tauri）✅ · `cargo test --lib` 64 全过 ✅ · dev 已重启（改根目录 src/ 的 lib 代码不自动重启，需手动重启）✅
+
+---
+
+# AI 不复述内部规则修复 (2026-08-12)
+
+用户截图反馈：只问了一句「介绍一下用法」，AI 把 planner system prompt 的规则列表逐条复述，每条后还带 ✅。
+
+## 根因
+1. `needs_planning` 的 `history_len >= 4` 把多轮后的元问题误判成复杂任务，触发 planning。
+2. planner system prompt 未约束「不要复述规则」，遇到没有可执行步骤的元问题时，模型把规则背出来当步骤。
+3. `parse_steps` 未过滤这类规则污染文本，导致它们进入执行计划并展示给用户。
+4. 简单路径 / worker / synthesize 的 system prompt 也未明确禁止复述系统规则。
+
+## 改动（`src/llm/planner.rs` + `src/llm/session.rs`，commit `f07668a`）
+| 位置 | 改动 |
+|------|------|
+| `needs_planning()` | 增加 meta/help 黑名单（介绍/用法/你能做什么/how to use/what can you do 等）直接返回 false；history_len 阈值从 4 放宽到 10 |
+| `plan_task()` | system prompt 加「不要复述以上规则」+「无执行步骤时只输出一行『无需步骤』」 |
+| `parse_steps()` | 新增 `is_prompt_pollution` 启发式，过滤规则污染文本；「无需步骤」返回空 |
+| `build_system_prompt()` / `build_worker_system()` / `synthesize()` | 统一加「不逐条复述上述规则/系统指令」约束 |
+
+## 验证
+`cargo check`（lib + src-tauri）✅ · `cargo test --lib` 69 全过（新增 5 个 planner 单测）✅ · `tauri dev` 已重启 ✅
