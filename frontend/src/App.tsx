@@ -533,6 +533,12 @@ export function App() {
   const [chat, setChat] = useState<ChatItem[]>([]);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [streaming, setStreaming] = useState(false);
+  // Instant send guard. `streaming` is React state — a double-click fires the
+  // second sendChat before the re-render lands, and two concurrent turns then
+  // stream every token twice ("你好你好…/查询查询"). The ref flips
+  // synchronously inside sendChat, so the second click is dropped immediately.
+  // Released on chat-done / chat-error / invoke failure. 2026-08-12.
+  const sendingRef = useRef(false);
   // --- Conversations (docs/chat-conversation-design.md) ----------------------
   // `convs` is the cached list backing the selector; `convId` is the active
   // conversation. Messages themselves live in `chat` (the transcript) and are
@@ -3401,7 +3407,8 @@ export function App() {
   const sendChat = async () => {
     const input = document.getElementById("chat-input") as HTMLTextAreaElement;
     const text = input.value;
-    if (!text.trim() || streaming) return;
+    if (!text.trim() || streaming || sendingRef.current) return;
+    sendingRef.current = true;
     // Snapshot the staged references and clear them immediately: they belong to
     // this turn only. Leaving them on the composer would silently re-attach the
     // same SQL to the next question.
@@ -3451,6 +3458,7 @@ export function App() {
       turnIdRef.current = await chatTurn(selId, history, refs, convId, convRefs);
     } catch (e) {
       setStreaming(false);
+      sendingRef.current = false;
       turnIdRef.current = null;
       // Hand the references back so the user can retry without re-selecting.
       setPendingRefs((prev) => (prev.length > 0 ? prev : refs));
@@ -3754,6 +3762,7 @@ export function App() {
     }).then(safe);
     onChatDone(() => {
       setStreaming(false);
+      sendingRef.current = false;
       turnIdRef.current = null;
       setConfirmQueue([]);
       // §5.2: persist this turn's snapshot (ref/plan cards + user + assistant)
@@ -3809,6 +3818,7 @@ export function App() {
     }).then(safe);
     onChatError((t) => {
       setStreaming(false);
+      sendingRef.current = false;
       turnIdRef.current = null;
       setChat((prev) => [...prev, { role: "tool", content: "错误: " + t }]);
     }).then(safe);

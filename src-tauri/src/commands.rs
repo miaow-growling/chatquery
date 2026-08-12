@@ -16,7 +16,7 @@ use chatquery::model::{
     StoredChatMessage,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::time::timeout;
@@ -1342,6 +1342,14 @@ fn next_turn_id() -> String {
     format!("t{}-{}", ms, n)
 }
 
+/// Serializes turns on the desktop path. The frontend also guards double-sends
+/// with a synchronous ref, but the backend stays idempotent even if a race
+/// (double-click before the re-render, a future caller) fires two `chat_turn`s
+/// — two concurrent turns would stream every token twice ("你好你好…"). Set at
+/// the top of `chat_turn`, cleared once the event bridge has drained the
+/// turn's channel (i.e. the turn is truly over). 2026-08-12.
+static TURN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
 /// Run one LLM turn. The model streams tokens (and emits tool notices) which
 /// we forward to the frontend as Tauri events — mirroring the old TUI's
 /// `BackendMsg` channel, but over the webview's event bus. Results sent to the
@@ -1370,6 +1378,12 @@ pub async fn chat_turn(
     conv_id: Option<String>,
     conv_refs: Option<Vec<ConversationRef>>,
 ) -> Result<String, String> {
+    // One turn at a time: a second `chat_turn` while one is streaming would
+    // double every token on the wire. The flag is reset by the event bridge
+    // once the turn's channel drains (see below). 2026-08-12.
+    if TURN_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return Err("上一条对话还在进行中，请先等它结束或点「停止」。".to_string());
+    }
     let refs = refs.unwrap_or_default();
     // P1 跨会话引用（@-mention）：从 store 读取目标会话的尾部消息，渲染成
     // 背景上下文块后随本轮注入（docs/chat-conversation-design.md §6.2）。
@@ -1496,12 +1510,14 @@ pub async fn chat_turn(
             }
         }
         // Channel closed => the turn is over. Drop its control handle so the
-        // registry doesn't grow across a long session.
+        // registry doesn't grow across a long session, and free the serial
+        // turn lock for the next request.
         app.state::<AppState>()
             .turns
             .lock()
             .unwrap()
             .remove(&bridge_turn_id);
+        TURN_IN_FLIGHT.store(false, Ordering::SeqCst);
     });
 
     Ok(turn_id)
