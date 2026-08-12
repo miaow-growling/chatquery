@@ -198,8 +198,10 @@ impl Agent {
                 return Ok(());
             }
             let role = classify_step(step);
+            // 标题行以空格结尾：worker 输出不再流式展示，完成后在行尾补 ✅/❌
+            // 作为进度反馈（降噪 2026-08-12）。
             let _ = tx.send(BackendMsg::ChatToken(format!(
-                "\n— 步骤 {}：{}\n",
+                "\n— 步骤 {}：{} ",
                 idx + 1,
                 step
             )));
@@ -220,7 +222,16 @@ impl Agent {
                 wmsg.push(ChatMessage::system(wsys));
             }
             wmsg.push(ChatMessage::user(&last_user));
-            if let Some(result) = worker.react(wmsg, tx).await? {
+            let wres = worker.react(wmsg, tx).await;
+            match &wres {
+                Ok(_) => {
+                    let _ = tx.send(BackendMsg::ChatToken("✅\n".to_string()));
+                }
+                Err(_) => {
+                    let _ = tx.send(BackendMsg::ChatToken("❌\n".to_string()));
+                }
+            }
+            if let Some(result) = wres? {
                 shared_context.push_str(&format!(
                     "步骤 {}（{}）：{}\n\n",
                     idx + 1,
@@ -252,9 +263,6 @@ impl Agent {
         tx: &UnboundedSender<BackendMsg>,
     ) -> Result<Option<String>> {
         let mut last_assistant: Option<String> = None;
-        // Tag a worker's first streamed token with its role so the transcript
-        // shows who is talking (the Orchestrator's own text stays untagged).
-        let mut tagged = false;
         let role = self.role;
         let ctl = self.ctl.clone();
 
@@ -266,10 +274,11 @@ impl Agent {
             // schema vec and the delta sink need real bindings (not temporaries).
             let schemas = self.registry.schemas();
             let mut on_delta = |d: &str| {
-                if role != WorkerKind::Orchestrator && !tagged {
-                    let _ = tx.send(BackendMsg::ChatToken(format!("[{}] {}", role.label(), d)));
-                    tagged = true;
-                } else {
+                // 降噪（2026-08-12）：简单任务的 Orchestrator 输出直接流给用户；
+                // 复杂任务里 Worker 的流式输出只是喂给 Orchestrator 的中间产物，
+                // 不直接展示——否则用户会看到每步的探索过程长文刷屏，最终又有
+                // 一条综合结论，信息重复。进度由 run() 的「— 步骤 N」+ ✅ 标记承担。
+                if role == WorkerKind::Orchestrator {
                     let _ = tx.send(BackendMsg::ChatToken(d.to_string()));
                 }
             };
@@ -364,8 +373,12 @@ impl Agent {
         p.push_str(&format!("\n## 用户原始问题：\n{}\n", user_query));
         p.push_str(&format!("\n## Worker 产出结果：\n{}\n", shared_context));
         p.push_str(
-            "\n请综合以上结果，用中文给用户一个清晰、面向结论的回答。说明关键发现、数据规模、\
-             以及任何需要注意的点。不要重复完整 SQL，除非对结论必要。\n",
+            "\n请综合以上结果，用中文直接给用户最终答案。硬性要求（降噪 2026-08-12）：\n\
+             - 结论先行：第一句就正面回答用户的问题；\n\
+             - 关键数据给具体数字（行数/金额/占比等），不要写\"数据量较大\"这类空话；\n\
+             - 注意点只在确实需要时才提（口径差异、表缺失、风险提示），不必面面俱到；\n\
+             - 禁止：复述用户问题、罗列执行步骤、复述 Worker 的探索过程、任何客套话与总结语；\n\
+             - 长度：一般 3~6 句话、250 字以内，能短则短；不要重复完整 SQL，除非对结论必要。\n",
         );
         let messages = vec![ChatMessage::system(p)];
         let mut on_delta = |d: &str| {
@@ -667,6 +680,8 @@ async fn build_system_prompt(
         "\n规则：\n\
          - 只使用 execute_query 工具，并指定已知连接名。\n\
          - 优先只读查询；不要臆造表名或列名。\n\
+         - 回答简洁（降噪 2026-08-12）：直接给结论与关键数据，不复述问题、不客套、\
+         不输出思考过程；能用三句话说清就不要用五句。\n\
          - 当前库若绑定了知识库，相关内容已包含在上方上下文中；如需更具体的片段，可用 search_knowledge 工具按关键词检索。\n\
          - 写操作（INSERT/UPDATE/DELETE/REPLACE）会先弹窗请用户确认，确认后才真正执行；\
          写之前请先用只读查询确认影响范围，并且必须带精确的 WHERE 条件。\n\
@@ -711,7 +726,9 @@ async fn build_worker_system(
         "\n规则：只使用 execute_query 工具；优先只读查询；不要臆造表名或列名；\
          当前库若绑定了知识库，相关内容已包含在上下文里，需要更具体的片段可用 search_knowledge 检索；\
          写操作会先请用户确认（写前先查清影响范围并带精确 WHERE）；\
-         DDL 与破坏性语句会被护栏拦截，请告知用户手动执行。\n",
+         DDL 与破坏性语句会被护栏拦截，请告知用户手动执行。\n\
+         输出要求（降噪 2026-08-12）：你的产出只被 Orchestrator 综合，不直接展示给用户——\
+         只给结论与关键数据（行数/字段/范围/结果要点），不要叙述过程、不要复述题目、不要客套，200 字内。\n",
     );
     p
 }
