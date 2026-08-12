@@ -34,3 +34,23 @@ Chat 面板历史全混在一个数组里、刷新即丢，无法按连接/主�
 
 ## 待办（P2 未做）
 会话内搜索、导出（MD/JSON）、按连接自动归组、AI 摘要标题、置顶、会话共享。
+
+---
+
+# AI 回复降噪 (2026-08-12)
+
+用户反馈：AI 回复冗长、无效信息多。根因在后端信息架构——复杂任务的 Worker 中间产物被直接展示，且提示词无简洁约束。
+
+## 改动（`src/llm/session.rs`，commit `4ebd092`）
+| 位置 | 改动 |
+|------|------|
+| `react()` | 非 Orchestrator 的流式 token 不再推给用户（Worker 输出静默收集，仅进 `shared_context` 供综合） |
+| `run()` | 步骤标题行尾补 ✅/❌，隐藏 Worker 输出后保持进度可见 |
+| `synthesize()` | 结论先行 + 关键数据给具体数字 + 250 字内 + 禁止复述问题/罗列步骤/复述 Worker 过程/客套 |
+| `build_system_prompt()` | 加「回答简洁：直接给结论与关键数据」规则（简单问答路径） |
+| `build_worker_system()` | 输出只给结论与关键数据、200 字内（面向 Orchestrator 综合） |
+
+新的信息架构：**进度提示（步骤标题 + ✅）+ 唯一综合结论**；工具面包屑（`execute_query → 连接: N 行`）本就简短，保留。
+
+## 验证
+`cargo check`（lib + src-tauri）✅ · `cargo test --lib` 64 全过 ✅ · dev 已重启（改根目录 src/ 的 lib 代码不自动重启，需手动重启）✅
