@@ -36,6 +36,8 @@ fn main() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(AppState {
             store: Arc::new(Mutex::new(store)),
             schema_cache: Mutex::new(HashMap::new()),
@@ -69,6 +71,10 @@ fn main() {
             get_llm_config,
             get_vendor_presets,
             save_llm_config,
+            list_vendor_profiles,
+            save_vendor_profile,
+            delete_vendor_profile,
+            apply_vendor_profile,
             list_databases,
             list_redis_dbs,
             list_tables,

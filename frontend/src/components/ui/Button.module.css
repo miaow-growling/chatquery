@@ -1,0 +1,106 @@
+/* Button — token-styled atom.
+ * Geometry: 32px md / 26px sm (close to ChatQuery's 28px icon-btn / 32px
+ *   sidebar-actions button to feel native). radius-md (8px) to match the
+ *   existing pill-free Apple HIG rhythm — dsh uses full capsule (r=18px);
+ *   we deliberately soften that for visual consistency.
+ * Tokens: directly reference ChatQuery's palette so this drops in without
+ *   touching style.css. To migrate to a pure dsw-alias layer later, swap
+ *   each var() to its --dsw-alias-* counterpart. */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  font-weight: var(--fw-medium);
+  color: var(--text-primary);
+  background: transparent;
+  padding: 0 12px;
+  white-space: nowrap;
+  user-select: none;
+  transition:
+    background var(--t-fast),
+    color var(--t-fast),
+    border-color var(--t-fast),
+    box-shadow var(--t-fast),
+    transform var(--t-fast);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.md { height: 32px; font-size: var(--fs-sm); }
+.sm { height: 26px; font-size: var(--fs-xs); padding: 0 10px; }
+
+/* --- primary: brand-filled (dsh maps to "fill = black", we use --brand) --- */
+.primary {
+  background: var(--brand);
+  color: var(--text-on-brand);
+  box-shadow: var(--shadow-sm);
+}
+.primary:hover:not(:disabled) {
+  background: var(--brand-hover);
+  box-shadow: var(--shadow-md);
+}
+.primary:active:not(:disabled) {
+  transform: translateY(0.5px);
+  box-shadow: var(--shadow-sm);
+}
+
+/* --- ghost: transparent → hover tint (dsh "ghost" = default variant) --- */
+.ghost:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+}
+.ghost:active:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+/* --- outline: bordered capsule on transparent fill (dsh dialog "Cancel") --- */
+.outline {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.outline:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+}
+.outline:active:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+/* --- toolbar: subtle raised fill (dsh "tool-bar" = sub-nav pills) --- */
+.toolbar {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+}
+.toolbar:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.toolbar:active:not(:disabled) {
+  background: var(--border-soft);
+}
+
+.icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}

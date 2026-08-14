@@ -96,7 +96,26 @@ async fn stream_chat_openai(
             o.insert("role".into(), json!(role_str(m.role)));
             o.insert("content".into(), json!(m.content));
             if let Some(tcs) = &m.tool_calls {
-                o.insert("tool_calls".into(), json!(tcs));
+                // OpenAI protocol requires assistant tool_calls to be wrapped
+                // as `{id, type:"function", function:{name, arguments}}`.
+                // `ToolCallBrief` is a flat `{id, name, arguments}` for our own
+                // bookkeeping, so we re-shape it here at the wire boundary.
+                // (Anthropic path has its own converter further down — it
+                // never goes through this branch.) 2026-08-14.
+                let wire: Vec<Value> = tcs
+                    .iter()
+                    .map(|t| {
+                        json!({
+                            "id": t.id,
+                            "type": "function",
+                            "function": {
+                                "name": t.name,
+                                "arguments": t.arguments,
+                            }
+                        })
+                    })
+                    .collect();
+                o.insert("tool_calls".into(), Value::Array(wire));
             }
             if let Some(id) = &m.tool_call_id {
                 o.insert("tool_call_id".into(), json!(id));

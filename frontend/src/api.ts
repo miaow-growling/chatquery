@@ -13,6 +13,8 @@ import type {
   ExplainVisual,
   ForeignKeyInfo,
   ImportResult,
+  ModelEntryDto,
+  VendorProfileDto,
   KeyMeta,
   KeyStatus,
   KbBindingInput,
@@ -76,6 +78,16 @@ export const api = {
   getVendorPresets: () => invoke<VendorPreset[]>("get_vendor_presets"),
   saveLlmConfig: (cfg: LlmConfigInput) =>
     invoke("save_llm_config", { input: cfg }),
+  // User-defined model aliases (Phase: model aliases, layered on top of
+  // the single LlmConfig). Switching an alias applies it as the active
+  // vendor/base_url/model; api_key is preserved from the current LlmConfig.
+  listModelAliases: () => invoke<VendorProfileDto[]>("list_vendor_profiles"),
+  saveModelAlias: (input: { id?: string; name: string; vendor: string; base_url: string; model: string; api_key?: string; api_format?: string; models?: ModelEntryDto[] }) =>
+    invoke<VendorProfileDto>("save_vendor_profile", { input }),
+  deleteModelAlias: (id: string) =>
+    invoke<void>("delete_vendor_profile", { id }),
+  applyModelAlias: (id: string, model: string) =>
+    invoke<void>("apply_vendor_profile", { id, model }),
   // Schema tree navigation (lazy).
   listDatabases: (connId: string) =>
     invoke<string[]>("list_databases", { connId }),

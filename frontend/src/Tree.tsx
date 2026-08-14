@@ -3,6 +3,9 @@ import { api } from "./api";
 import type { ColumnInfo, ConnSummary, TreeModel } from "./types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { ScrollArea } from "./ScrollArea";
+import { Icon, type IconName } from "./components/ui";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
 
 /// Rows fetched per page when browsing a table.
 const PAGE_SIZE = 200;
@@ -259,30 +262,35 @@ async function loader(node: Node): Promise<LoadResult | null> {
   }
 }
 
-function badge(n: Node): { icon: string; cls: string } {
+// Tree node badge: returns IconName + brand color class. We deliberately
+// don't try to match each icon shape to its old emoji meaning — color
+// (mysql-500 / redis-500 / text-secondary) is the primary visual cue, the
+// shape is just a category marker.
+function badge(n: Node): { icon: IconName; cls: string } {
   switch (n.kind) {
     case "dbtype":
       return n.name === "Redis"
-        ? { icon: "🔴", cls: "b-redis" }
-        : { icon: "🐬", cls: "b-mysql" };
+        ? { icon: "circle", cls: "b-redis" }
+        : { icon: "cylinder", cls: "b-mysql" };
     case "env":
-      return { icon: "🌐", cls: "b-env" };
+      return { icon: "globe", cls: "b-env" };
     case "group":
-      return { icon: "📁", cls: "b-group" };
+      return { icon: "folder", cls: "b-group" };
     case "conn":
       return n.conn.db_type === "redis"
-        ? { icon: "🔴", cls: "b-redis" }
-        : { icon: "🐬", cls: "b-mysql" };
+        ? { icon: "circle", cls: "b-redis" }
+        : { icon: "cylinder", cls: "b-mysql" };
     case "db":
-      return { icon: "🗄", cls: "b-db" };
+      return { icon: "database", cls: "b-db" };
     case "folder":
-      return { icon: n.folder === "views" ? "👁" : "📂", cls: "b-folder" };
+      return { icon: n.folder === "views" ? "eye" : "folder", cls: "b-folder" };
     case "table":
-      return { icon: n.isView ? "👁" : "⊞", cls: n.isView ? "b-view" : "b-table" };
+      return { icon: n.isView ? "eye" : "table", cls: n.isView ? "b-view" : "b-table" };
     case "column":
-      return { icon: "▏", cls: "b-col" };
+      // Column gets a small dot rendered via ::before — no icon needed
+      return { icon: "circle", cls: "b-col" };
     case "redisdb":
-      return { icon: "🗄", cls: "b-db" };
+      return { icon: "database", cls: "b-db" };
   }
 }
 
@@ -309,7 +317,7 @@ function FolderView(props: {
     : kids;
   const visible = filtered.slice(0, shown);
   // Align the filter/empty/more rows with the child table rows below them.
-  const indent = (depth + 1) * 16 + 6;
+  const indent = (depth + 1) * 10 + 4;
   return (
     <>
       <div
@@ -317,7 +325,9 @@ function FolderView(props: {
         style={{ paddingLeft: `${indent}px` }}
         onClick={(e) => e.stopPropagation()}
       >
-        <span className="tree-filter-icon">🔍</span>
+        <span className="tree-filter-icon" aria-hidden="true">
+          <Icon name="search" size={11} />
+        </span>
         <input
           className="tree-filter-input"
           placeholder="过滤表名…"
@@ -421,14 +431,15 @@ export function Tree(props: TreeProps) {
   }, [cipherOpen]);
 
   // Trigger a browser download of `text` as `filename`.
-  const download = (filename: string, text: string) => {
-    const blob = new Blob([text], { type: "text/yaml;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+  // Tauri 2: 用官方 dialog plugin 弹系统保存对话框 + fs plugin 写文件。
+  // 旧实现靠 <a download> 在 webview 里被静默拦截，用户感觉"点完没反应"。
+  const download = async (filename: string, text: string) => {
+    const path = await save({
+      defaultPath: filename,
+      filters: [{ name: "YAML", extensions: ["yaml", "yml"] }],
+    });
+    if (!path) return; // 用户取消
+    await writeTextFile(path, text);
   };
 
   // Export all connections. `cipher` decides whether passwords are encrypted
@@ -707,7 +718,7 @@ export function Tree(props: TreeProps) {
       node.kind === "dbtype" || node.kind === "env" || node.kind === "group"
         ? node.children
         : cache[node.key] ?? [];
-    const pad = { paddingLeft: `${depth * 16 + 6}px` };
+    const pad = { paddingLeft: `${depth * 10 + 4}px` };
     const cnt = counts[node.key];
 
     // Clicking the row selects the node (connection/database/key). It does NOT
@@ -763,7 +774,9 @@ export function Tree(props: TreeProps) {
           >
             {hasChildren ? "▸" : ""}
           </span>
-          <span className={"badge " + b.cls}>{b.icon}</span>
+          <span className={"badge " + b.cls}>
+            <Icon name={b.icon} size={b.cls === "b-col" ? 6 : 14} />
+          </span>
           <span className="tree-label">
             {nodeLabel(node)}
             {node.kind === "column" && node.col.key === "PRI" && (

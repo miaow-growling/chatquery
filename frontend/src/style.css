@@ -516,6 +516,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
   display: flex;
   align-items: center;
   gap: 5px;
+  border-radius: var(--r-md);
+  transition: background var(--t-fast);
+}
+.tree-filter:focus-within {
+  background: var(--bg-subtle);
 }
 .tree-filter-icon {
   flex: 0 0 auto;
@@ -581,13 +586,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
   display: flex;
   align-items: center;
   gap: 5px;
-  min-height: 31px;
-  padding: 3px 8px;
-  margin: 1px 4px;
+  min-height: 26px;
+  padding: 2px 8px;
+  margin: 0 4px;
   width: max-content;
   min-width: calc(100% - 8px);
   cursor: pointer;
-  border-radius: 7px;
+  border-radius: 6px;
   color: var(--text-primary);
   font-size: var(--fs-sm);
   transition: background var(--t-fast), color var(--t-fast);
@@ -596,17 +601,19 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .tree-row:hover:not(.active) {
   background: var(--bg-hover);
 }
-/* Solid accent capsule, no stripe, no shift */
+/* Subtle active state — macOS source-list style: tinted background, primary
+ * text, brand color only on the caret + count badge. Avoids the heavy
+ * "indigo gradient + glow" feel, plays better with the dense tree. */
 .tree-row.active {
-  background: var(--brand-grad);
-  color: #fff;
-  box-shadow: var(--glow-sm);
+  background: var(--brand-soft);
+  color: var(--text-primary);
+  box-shadow: none;
 }
-.tree-row.active .tw { color: rgb(255 255 255 / 0.85); }
-.tree-row.active .badge { opacity: 1; filter: none; }
+.tree-row.active .tw { color: var(--brand); }
+.tree-row.active .badge { opacity: 1; }
 .tree-row.active .tree-count {
-  background: rgb(255 255 255 / 0.22);
-  color: #fff;
+  background: var(--brand);
+  color: var(--text-on-brand);
 }
 
 /* Expand/collapse caret */
@@ -667,17 +674,17 @@ button, input, select, textarea { font: inherit; color: inherit; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
-  line-height: 1;
+  width: 16px;
+  height: 16px;
   flex: 0 0 auto;
-  /* Gentle blend so emoji sit naturally without harsh contrast */
-  filter: saturate(0.88) brightness(1.03);
+  color: var(--text-tertiary);
 }
-.b-env, .b-group, .b-db, .b-folder, .b-table, .b-view { opacity: 0.9; }
-.b-col { font-size: 11px; }
+.b-mysql { color: var(--mysql-500); }
+.b-redis { color: var(--redis-500); }
+.b-env { color: var(--text-tertiary); }
+.b-group, .b-db, .b-folder, .b-table, .b-view { color: var(--text-secondary); }
+.b-col { color: var(--text-disabled); }
 .b-key { color: var(--warning-500); }
-.tree-row .badge.b-mysql { filter: none; }
-.tree-row .badge.b-redis { filter: none; }
 
 /* PK / column-type chips inside tree */
 .pk {
@@ -730,12 +737,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-4);
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
   font-weight: var(--fw-semibold);
-  min-height: 42px;
+  min-height: 38px;
 }
 .pane-head .ctx-db-btn { font-weight: var(--fw-regular); }
 
@@ -743,7 +750,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .pane-actions {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
+  flex-shrink: 0;
 }
 
 /* ---- Unified button system (bezel secondary vs blue primary) ---- */
@@ -753,13 +761,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
   align-items: center;
   justify-content: center;
   gap: var(--sp-1);
-  height: 30px;
-  padding: 0 13px;
+  height: 28px;
+  padding: 0 10px;
   border-radius: var(--r-md);
   border: 1px solid var(--border);
   background: var(--bg-subtle);
   color: var(--text-secondary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
   cursor: pointer;
   white-space: nowrap;
@@ -801,18 +809,79 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .warn { color: var(--warning-500); font-weight: var(--fw-regular); font-size: var(--fs-xs); }
 
+/* ---- "More actions" dropdown (⋯) inside pane-actions -------------------- */
+.menu-anchor { position: relative; display: inline-flex; }
+.menu-trigger {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text-secondary);
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.menu-trigger:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-strong); }
+.menu-trigger:focus-visible { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+.menu-trigger[aria-expanded="true"] { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-strong); }
+
+.menu-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  min-width: 140px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  animation: pop-in var(--t-fast);
+}
+.menu-item {
+  display: block;
+  padding: 6px 10px;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.menu-item:hover:not(.disabled) { background: var(--brand-soft); color: var(--brand); }
+.menu-item.disabled { color: var(--text-disabled); cursor: not-allowed; }
+
 /* Editor host */
 .editor {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--bg-surface);
 }
 .editor .cm-editor { height: 100%; }
 .editor .cm-editor.cm-focused { outline: none; }
 
 /* Database-context chip in editor header */
-.ctx-conn-wrap { display: inline-flex; align-items: center; gap: 2px; min-width: 0; }
+.ctx-conn-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
+.ctx-conn-wrap > * { min-width: 0; }
+.ctx-conn-wrap .conn-name,
+.ctx-conn-wrap .conn-addr,
+.ctx-conn-wrap .conn-user { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-conn-wrap .conn-db { flex: 0 0 auto; }
+.ctx-conn-wrap .hint { display: none; }
 .ctx-db-btn {
   display: inline-flex;
   align-items: center;
@@ -848,24 +917,26 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--bg-canvas);
   border-bottom: 1px solid var(--border);
   padding: 0 var(--sp-2);
-  overflow-x: auto;
+  overflow-x: hidden;
+  min-width: 0;
+  flex-shrink: 0;
 }
 .tab {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-2);
-  height: 34px;
-  padding: 0 var(--sp-2) 0 var(--sp-3);
+  gap: 4px;
+  height: 32px;
+  padding: 0 6px 0 10px;
   border: 1px solid transparent;
   border-bottom: none;
   border-radius: var(--r-md) var(--r-md) 0 0;
   background: transparent;
   color: var(--text-tertiary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
   cursor: pointer;
   white-space: nowrap;
-  max-width: 180px;
+  max-width: 150px;
   transition: background var(--t-fast), color var(--t-fast);
 }
 .tab:hover { background: var(--bg-subtle); color: var(--text-secondary); }
@@ -881,7 +952,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border: none;
   color: var(--text-tertiary);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1;
   padding: 0 2px;
   border-radius: var(--r-xs);
@@ -893,8 +964,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border: none;
   color: var(--text-tertiary);
   cursor: pointer;
-  font-size: 16px;
-  padding: 0 8px;
+  font-size: 14px;
+  padding: 0 6px;
   border-radius: var(--r-sm);
   transition: background var(--t-fast), color var(--t-fast);
 }
@@ -2883,6 +2954,704 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .chat-input button.danger { background: var(--danger-500); color: #fff; }
 .chat-input button.danger:hover:not(:disabled) { background: var(--danger-500); filter: brightness(1.08); }
 
+/* =====================  MODEL ALIASES (settings list)  ===================== */
+.alias-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
+  margin-bottom: 4px;
+}
+.alias-name { font-weight: var(--fw-medium); }
+.alias-meta { color: var(--text-tertiary); font-size: var(--fs-xs); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alias-del {
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  color: var(--text-tertiary);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.alias-del:hover { background: var(--danger-soft); color: var(--danger-500); }
+
+.alias-add {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr 1.2fr 1fr auto;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+}
+.alias-add input,
+.alias-add select {
+  height: 30px;
+  padding: 0 8px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  outline: none;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.alias-add input:focus,
+.alias-add select:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+.alias-add button {
+  height: 30px;
+  padding: 0 14px;
+}
+
+/* =====================  VENDOR PROFILES (settings two-pane)  ===================== */
+.vendor-profiles {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  padding: 12px;
+}
+.vendor-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid var(--border-soft);
+  padding-right: 12px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.vendor-list-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  transition: background var(--t-fast);
+}
+.vendor-list-item:hover { background: var(--bg-subtle); }
+.vendor-list-item.editing { background: var(--brand-soft); color: var(--brand); }
+.vendor-list-item.vendor-list-add { color: var(--text-tertiary); }
+.vendor-list-item.vendor-list-add:hover { color: var(--brand); }
+.vendor-list-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--fw-medium); }
+.vendor-list-meta { font-size: var(--fs-2xs); color: var(--text-tertiary); flex: 0 0 auto; }
+/* Per-row delete button — the top-right X in the form was removed in
+ * favor of a delete affordance on every list row (matches user
+ * expectation from file-manager UIs). Faint by default, danger on
+ * hover. Click stops propagation so the row's onClick (which would
+ * re-select the just-deleted vendor) doesn't fire. */
+.vendor-list-del {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-tertiary);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+.vendor-list-item:hover .vendor-list-del { opacity: 1; }
+.vendor-list-del:hover {
+  background: var(--danger-soft);
+  color: var(--danger-500);
+}
+.vendor-list-del:focus-visible {
+  opacity: 1;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+.vendor-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.vendor-dot.ok { background: var(--success-500); }
+.vendor-dot.off { background: var(--text-disabled); }
+
+.vendor-edit {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.vendor-edit-actions {
+  /* Legacy: the top-right "×" delete button in the edit pane. The
+   * delete affordance has moved to the LEFT list (one button per
+   * row, see `.vendor-list-del`). This rule is kept for now in case
+   * any old markup still references it. */
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+.vendor-edit-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.vendor-edit-fields input,
+.vendor-edit-fields select {
+  height: 32px;
+  padding: 0 10px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  font-family: var(--font-ui);
+  text-transform: none;
+  letter-spacing: normal;
+  outline: none;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.vendor-edit-fields input:focus,
+.vendor-edit-fields select:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+
+/* --- Field (the reusable label + input atom used by the vendor form) --- */
+/* The form factors that previously used `.vendor-edit-fields label` were
+ * all migrated to the <Field> component, so the old rule is removed and
+ * `.field` takes over. The visual remains consistent (uppercase mini
+ * header, 32px-tall input, brand-soft focus ring). */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.field-label {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  line-height: 1.2;
+}
+.field-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
+}
+.field-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  font-family: var(--font-ui);
+  text-transform: none;
+  letter-spacing: normal;
+  outline: none;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.field-input.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.field-input::placeholder { color: var(--text-disabled); }
+.field-input:hover:not(:disabled) { border-color: var(--border-strong); }
+.field-input:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+.field-input:disabled { opacity: 0.5; cursor: not-allowed; }
+.field-adornment {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  border-radius: var(--r-sm);
+  white-space: nowrap;
+}
+
+/* --- <select> rendered via Field's `children` slot --- */
+/* The native chevron is hidden via `appearance: none` and replaced
+ * with a CSS background-image chevron (a clean `v` shape in current
+ * text-tertiary color). This is more reliable than an absolutely
+ * positioned Icon inside a flex parent — the previous Icon-based
+ * chevron was biased upward by the label height, making it look like
+ * an up-arrow at small sizes. */
+.field-input-select,
+select.field-input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  height: 38px;
+  padding-top: 0;
+  padding-bottom: 0;
+  padding-right: 30px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%2399' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3e%3cpath d='M2.5 4.5 6 8 9.5 4.5'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 12px;
+}
+select.field-input::-ms-expand { display: none; }  /* IE/Edge legacy */
+select.field-input:disabled {
+  background: var(--bg-subtle);
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%23bbb' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3e%3cpath d='M2.5 4.5 6 8 9.5 4.5'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 12px;
+}
+/* (`.field-chevron` was the previous adornment-based chevron wrapper.
+ * It's no longer used; the select uses a CSS background-image chevron
+ * instead — see `.field-input-select` / `select.field-input` above. */
+/* The Field wrapper is a <label> — we need position: relative for the
+ * absolutely positioned chevron to anchor correctly. We also need
+ * overflow: visible so the popover (when used as a child) can escape. */
+.field { position: relative; }
+
+/* When a Field is followed by a sibling popover (e.g. the preset
+ * dropdown in the vendor form), the popover needs an ancestor with
+ * `position: relative` to anchor under that field rather than the
+ * whole settings content. Wrap the field + popover in `.field-wrap`
+ * to provide that anchor. */
+.field-wrap { position: relative; }
+
+/* --- Read-only display (used by the 供应商 field in EDIT mode) --- */
+.field-display {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 4px 10px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.field-display-name {
+  flex: 1 1 auto;
+  font-weight: var(--fw-medium);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.field-display-hint {
+  flex: 0 0 auto;
+  font-size: var(--fs-2xs);
+  color: var(--text-tertiary);
+}
+
+/* --- Preset shortcut (the "预设" button in the 供应商 field's
+ *     adornment slot, used in CREATE mode only). */
+.field-preset-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  padding: 0 10px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: var(--font-ui);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.field-preset-trigger:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.field-preset-trigger[aria-expanded="true"] {
+  background: var(--brand-soft);
+  color: var(--brand);
+  border-color: var(--brand);
+}
+.field-preset-trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+
+/* --- Preset popover (rendered inline below the 供应商 field in
+ *     CREATE mode). The list is positioned absolutely under the
+ *     field so it overlays the next field rather than pushing the
+ *     layout down. */
+.field-preset-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px;
+  background: var(--panel-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-pop);
+  max-height: 240px;
+  overflow-y: auto;
+  animation: pop-in var(--t-fast);
+}
+.field-preset-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 6px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+.field-preset-item:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-soft);
+}
+.field-preset-item:focus-visible {
+  outline: none;
+  background: var(--bg-hover);
+  border-color: var(--brand);
+}
+.field-preset-item-name {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+.field-preset-item-meta {
+  font-size: var(--fs-2xs);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* --- API-key status indicator (decorates the API Key Field). --- */
+
+/* --- API-key status indicator (decorates the API Key Field). --- */
+.vendor-key-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  user-select: none;
+}
+.vendor-key-state.ok {
+  background: var(--success-soft);
+  color: var(--success-500);
+}
+.vendor-key-state.off {
+  background: var(--bg-subtle);
+  color: var(--text-tertiary);
+}
+
+/* --- Bottom "add new vendor" action row. Only shown when the user has
+ *     clicked "+ 添加供应商" (editingVendor === null). For existing
+ *     vendors, every field auto-saves on blur so a manual save button
+ *     is redundant.
+ *
+ *     The hint sits on the LEFT and the primary CTA on the RIGHT, which
+ *     matches the macOS settings convention (destructive / secondary on
+ *     the left, primary action on the right). */
+.vendor-edit-create {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 14px 4px 4px;
+  border-top: 1px solid var(--border-soft);
+}
+.vendor-edit-hint {
+  font-size: var(--fs-2xs);
+  color: var(--text-tertiary);
+  line-height: 1.5;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* --- The CTA itself — slightly larger than the default .btn (36px vs
+ *     32px) and uses the unified bezel system (.btn.primary) so it
+ *     gets the brand gradient + glow + hover-lift out of the box. */
+.vendor-edit-cta {
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 18px;
+  font-size: var(--fs-sm);
+  letter-spacing: 0.01em;
+}
+.vendor-edit-cta:not(:disabled):hover { transform: translateY(-1px); }
+.vendor-edit-cta:not(:disabled):active { transform: translateY(0); }
+
+/* --- Tiny inline spinner used while the create request is in flight.
+ *     Pure CSS (no extra dependency) — a 12px ring with a 270deg arc
+ *     that rotates 360deg every 0.7s. Honours prefers-reduced-motion
+ *     via the global guard at the bottom of the file. */
+.vendor-edit-cta-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  vertical-align: -1px;
+  animation: vendor-cta-spin 0.7s linear infinite;
+  opacity: 0.85;
+}
+@keyframes vendor-cta-spin {
+  to { transform: rotate(360deg); }
+}
+
+.vendor-models { margin-top: 8px; }
+.vendor-models-title {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+.composer-model-bare { opacity: 0.6; cursor: not-allowed; }
+
+/* =====================  CHAT COMPOSER (dsh-style toolbar)  ===================== */
+/* Two-row composer: textarea on top, toolbar below. The toolbar mirrors the
+ * dsh chat layout (left: + · think · model · send) so the affordances
+ * line up visually. */
+
+.chat-composer {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+.chat-composer-input {
+  display: flex;
+  padding: 10px 12px 6px;
+}
+.chat-composer-input textarea {
+  flex: 1;
+  resize: none;
+  height: 56px;
+  max-height: 160px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  outline: none;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.chat-composer-input textarea:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+.chat-composer-input textarea:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* --- Toolbar --- */
+.chat-toolbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 10px;
+}
+.chat-toolbar-spacer { flex: 1 1 auto; }
+
+.composer-plus,
+.composer-model,
+.composer-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.composer-plus { width: 28px; padding: 0; }
+.composer-plus:hover,
+.composer-model:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.composer-plus[aria-expanded="true"],
+.composer-model[aria-expanded="true"] {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.composer-plus:focus-visible,
+.composer-model:focus-visible,
+.composer-send:focus-visible {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+.composer-send {
+  padding: 0 14px;
+  background: var(--brand);
+  color: var(--text-on-brand);
+  border-color: transparent;
+  box-shadow: var(--shadow-sm);
+  font-weight: var(--fw-semibold);
+}
+.composer-send:hover:not(:disabled) {
+  background: var(--brand-hover);
+  box-shadow: var(--shadow-md);
+}
+.composer-send:disabled { opacity: 0.45; cursor: not-allowed; }
+.composer-send.danger {
+  background: var(--danger-500);
+  color: #fff;
+}
+.composer-send.danger:hover:not(:disabled) { filter: brightness(1.08); }
+
+.composer-model-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.composer-caret { color: var(--text-tertiary); font-size: 10px; }
+
+/* --- + popover --- */
+.composer-plus-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  min-width: 240px;
+  padding: 4px;
+  background: var(--panel-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  animation: pop-in var(--t-fast);
+}
+.composer-plus-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--text-primary);
+  border: none;
+  border-radius: var(--r-sm);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t-fast);
+}
+.composer-plus-item:hover:not(:disabled) { background: var(--brand-soft); }
+.composer-plus-item:disabled { opacity: 0.45; cursor: not-allowed; }
+.composer-plus-item-title { font-size: var(--fs-sm); font-weight: var(--fw-medium); }
+.composer-plus-item-sub { font-size: var(--fs-2xs); color: var(--text-tertiary); }
+
+/* --- model dropdown --- */
+.model-anchor { position: relative; }
+.composer-model-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  min-width: 220px;
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  animation: pop-in var(--t-fast);
+}
+.composer-model-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--t-fast);
+}
+.composer-model-item:hover { background: var(--brand-soft); }
+.composer-model-item.active { background: var(--brand-soft); color: var(--brand); font-weight: var(--fw-medium); }
+.composer-model-section {
+  padding: 6px 10px 4px;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-tertiary);
+}
+.composer-model-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-model-item-vendor { font-size: var(--fs-2xs); color: var(--text-tertiary); }
+.composer-model-empty,
+.composer-model-item-sub { color: var(--text-tertiary); font-size: var(--fs-xs); }
+.composer-model-empty { padding: 10px; text-align: center; }
+.composer-model-manage { border-top: 1px solid var(--border-soft); margin-top: 4px; padding-top: 8px; }
+.composer-model-manage .composer-model-item-sub { display: block; }
+
 /* Per-message copy button — appears on hover, top-right of the bubble. */
 .msg-actions {
   position: absolute;
@@ -3265,9 +4034,10 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-sm);
   margin: 2px 0 4px;
+  animation: pop-in var(--t-fast);
 }
-.cfg-msg.ok { background: var(--success-soft); color: var(--success-500); }
-.cfg-msg.err { background: var(--danger-soft); color: var(--danger-500); }
+.cfg-msg.ok { background: var(--success-soft); color: var(--success-500); border-left: 3px solid var(--success-500); }
+.cfg-msg.err { background: var(--danger-soft); color: var(--danger-500); border-left: 3px solid var(--danger-500); }
 .cfg-check {
   display: flex;
   align-items: flex-start;
@@ -3632,6 +4402,11 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   background: var(--bg-subtle);
   box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.12);
 }
+.field-file-btn:focus-visible {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
 .key-card { background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-3); margin-top: var(--sp-3); }
 .key-status { font-size: var(--fs-sm); padding: var(--sp-1) var(--sp-2); border-radius: var(--r-sm); margin-bottom: var(--sp-2); }
 .key-status.on { color: #1a7f37; background: rgba(26,127,55,.12); }
@@ -3864,6 +4639,13 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 /* --- Knowledge base (ADR-AI-6) --- */
 /* Widen the settings modal so the KB two-pane layout has enough room. */
 .settings-modal.kb-wide { width: 880px; max-width: 96vw; }
+
+/* --- Model providers (settings → model) --- */
+/* The two-pane vendor list + form is tight at 720px (the list eats 220px
+ * of the content area, leaving the form ~460px). Widen to 840px so the
+ * right form has room for full URL + key + the "+ 添加" button without
+ * being clipped on common laptop widths. */
+.settings-modal.model-wide { width: 860px; max-width: 96vw; }
 
 /* ===== PHP UNSERIALIZER TOOL ===== */
 .php-tool-modal {

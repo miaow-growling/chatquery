@@ -1329,6 +1329,203 @@ pub fn save_llm_config(
     Ok(())
 }
 
+// =============================================================================
+// Vendor profiles — user-managed list of LLM providers, each with its own
+// base_url / api_key / api_format / model list. Replacing the older
+// ModelAlias scheme which had a single shared LlmConfig api_key. The
+// composer dropdown now lists "vendor → model" pairs from these profiles.
+// =============================================================================
+
+#[derive(Serialize, Deserialize)]
+pub struct ModelEntryDto {
+    pub name: String,
+}
+
+#[derive(Serialize)]
+pub struct VendorProfileDto {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    /// Always empty in DTOs (we never round-trip the secret over the bridge).
+    #[serde(default)]
+    pub api_key_hint: String,
+    pub api_format: String,
+    pub enabled: bool,
+    pub models: Vec<ModelEntryDto>,
+}
+
+#[derive(Deserialize)]
+pub struct VendorProfileInput {
+    /// Empty for new profiles, set for updates.
+    #[serde(default)]
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    /// Empty on update = keep the previously stored key. Frontend should
+    /// pre-load the existing key when editing and send the same value back.
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_format")]
+    pub api_format: String,
+    #[serde(default)]
+    pub models: Vec<ModelEntryDto>,
+}
+
+fn default_format() -> String {
+    "openai".to_string()
+}
+
+fn dto_from_profile(p: &chatquery::config::VendorProfile) -> VendorProfileDto {
+    let hint = if p.api_key.is_empty() {
+        String::new()
+    } else {
+        let len = p.api_key.chars().count();
+        if len <= 4 {
+            "•".repeat(len)
+        } else {
+            let head: String = p.api_key.chars().take(2).collect();
+            let tail: String = p
+                .api_key
+                .chars()
+                .rev()
+                .take(2)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            format!("{}{}{}", head, "•".repeat(len - 4), tail)
+        }
+    };
+    VendorProfileDto {
+        id: p.id.clone(),
+        name: p.name.clone(),
+        base_url: p.base_url.clone(),
+        api_key_hint: hint,
+        api_format: p.api_format.clone(),
+        enabled: p.enabled,
+        models: p.models.iter().map(|m| ModelEntryDto { name: m.name.clone() }).collect(),
+    }
+}
+
+#[tauri::command]
+pub fn list_vendor_profiles(state: State<AppState>) -> Vec<VendorProfileDto> {
+    // First-run migration: if profiles.json is empty but the legacy
+    // LlmConfig has a vendor, copy it into a single default profile.
+    let legacy = state.llm.lock().unwrap().clone();
+    chatquery::config::migrate_legacy_llm_config(&legacy);
+    chatquery::config::load_vendor_profiles()
+        .iter()
+        .map(dto_from_profile)
+        .collect()
+}
+
+#[tauri::command]
+pub fn save_vendor_profile(input: VendorProfileInput) -> Result<VendorProfileDto, String> {
+    if input.name.trim().is_empty() {
+        return Err("名称不能为空".into());
+    }
+    let mut profiles = chatquery::config::load_vendor_profiles();
+    let models: Vec<chatquery::config::ModelEntry> = input
+        .models
+        .iter()
+        .map(|m| chatquery::config::ModelEntry { name: m.name.clone() })
+        .collect();
+    if input.id.is_empty() {
+        // Insert — refuse to clobber a profile with the same name to keep
+        // the user's mental model stable. They can edit by saving with the
+        // same id.
+        if profiles.iter().any(|p| p.name == input.name) {
+            return Err(format!("已存在同名供应商「{}」", input.name));
+        }
+        let enabled = !input.api_key.is_empty();
+        let p = chatquery::config::VendorProfile {
+            id: chatquery::config::new_vendor_profile_id(),
+            name: input.name,
+            base_url: input.base_url,
+            api_key: input.api_key,
+            api_format: input.api_format,
+            enabled,
+            models,
+        };
+        profiles.push(p.clone());
+        chatquery::config::save_vendor_profiles(&profiles)?;
+        Ok(dto_from_profile(&p))
+    } else {
+        let pos = profiles
+            .iter()
+            .position(|p| p.id == input.id)
+            .ok_or_else(|| format!("未找到 id={} 的供应商", input.id))?;
+        let existing = profiles[pos].clone();
+        // Empty api_key in update payload = "keep the stored key" (UX parity
+        // with the LlmConfigInput form where users type to replace and
+        // leave blank to keep).
+        let key_changed = !input.api_key.is_empty();
+        let api_key = if key_changed {
+            input.api_key
+        } else {
+            existing.api_key
+        };
+        let p = chatquery::config::VendorProfile {
+            id: input.id,
+            name: input.name,
+            base_url: input.base_url,
+            api_key,
+            api_format: input.api_format,
+            enabled: !profiles[pos].api_key.is_empty() || key_changed,
+            models,
+        };
+        profiles[pos] = p.clone();
+        chatquery::config::save_vendor_profiles(&profiles)?;
+        Ok(dto_from_profile(&p))
+    }
+}
+
+#[tauri::command]
+pub fn delete_vendor_profile(id: String) -> Result<(), String> {
+    let mut profiles = chatquery::config::load_vendor_profiles();
+    let before = profiles.len();
+    profiles.retain(|p| p.id != id);
+    if profiles.len() == before {
+        return Err(format!("未找到 id={} 的供应商", id));
+    }
+    chatquery::config::save_vendor_profiles(&profiles)
+}
+
+/// Apply a vendor profile + chosen model to the active LlmConfig. The
+/// profile's api_key is copied into LlmConfig (overwriting any prior key).
+/// The provider enum is derived from `api_format` — no need to look up
+/// VENDOR_PRESETS.
+#[tauri::command]
+pub fn apply_vendor_profile(
+    state: State<AppState>,
+    id: String,
+    model: String,
+) -> Result<(), String> {
+    let profiles = chatquery::config::load_vendor_profiles();
+    let p = profiles
+        .iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("未找到 id={} 的供应商", id))?;
+    if model.trim().is_empty() {
+        return Err("model 不能为空".into());
+    }
+    if !p.models.iter().any(|m| m.name == model) {
+        return Err(format!("该供应商没有名为「{}」的 model", model));
+    }
+    let mut current = state.llm.lock().unwrap();
+    current.vendor = p.id.clone();
+    current.base_url = p.base_url.clone();
+    current.api_key = p.api_key.clone();
+    current.model = model;
+    current.provider = if p.api_format == "anthropic" {
+        chatquery::config::LlmProvider::Anthropic
+    } else {
+        chatquery::config::LlmProvider::OpenAi
+    };
+    current.save()?;
+    Ok(())
+}
+
 /// Monotonic turn counter. Combined with the process-start instant this gives
 /// ids that are unique for the lifetime of the app without a uuid dependency.
 static TURN_SEQ: AtomicU64 = AtomicU64::new(1);

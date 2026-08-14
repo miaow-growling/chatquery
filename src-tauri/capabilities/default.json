@@ -3,5 +3,12 @@
   "identifier": "default",
   "description": "Default capability for the main ChatQuery window",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "dialog:allow-save",
+    "fs:default",
+    "fs:allow-write-text-file",
+    "fs:allow-write-file"
+  ]
 }

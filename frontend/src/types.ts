@@ -185,6 +185,28 @@ export interface VendorPreset {
   model: string;
 }
 
+/// User-defined model alias — a (vendor, base_url, model) shortcut that
+/// can be applied to the active LlmConfig in one click. Created in the
+/// settings → models panel; surfaced in the composer model dropdown.
+export interface ModelEntryDto {
+  name: string;
+}
+
+/// User-managed vendor profile — independent base_url / api_key / protocol /
+/// model list, persisted in `vendor_profiles.json`. Each profile can be
+/// applied to the active LlmConfig via the composer dropdown.
+export interface VendorProfileDto {
+  id: string;
+  name: string;
+  base_url: string;
+  /// Short hint of the api_key (e.g. "sk-••••abcd") so the UI can show
+  /// whether a key is set without ever round-tripping the secret.
+  api_key_hint: string;
+  api_format: "openai" | "anthropic" | string;
+  enabled: boolean;
+  models: ModelEntryDto[];
+}
+
 /// Settings form payload sent to `save_llm_config`. `api_key` empty = keep
 /// the stored key.
 export interface LlmConfigInput {

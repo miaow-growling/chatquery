@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, type FormEvent } from "react";
 import { api } from "./api";
 import type { KeyMeta, QueryOutput, RedisValueView } from "./types";
+import { Icon } from "./components/ui";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -261,7 +262,9 @@ export function RedisBrowser({ connId, db: initialDb, showToast }: RedisBrowserP
   const renderValueViewer = () => {
     if (!selectedKey) return (
       <div className="rb-empty">
-        <div className="rb-empty-icon">🔍</div>
+        <div className="rb-empty-icon" aria-hidden="true">
+          <Icon name="search" size={20} />
+        </div>
         ← 选中左侧键以查看内容
       </div>
     );

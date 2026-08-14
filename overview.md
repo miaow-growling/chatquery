@@ -96,3 +96,21 @@ OpenAI 流式请求体只有 `stream: true`，没带 `stream_options.include_usa
 
 ## 验证
 `cargo check`（lib + src-tauri）✅ · `cargo test --lib` 69 全过 ✅ · `tsc --noEmit` ✅ · `tauri dev` 已重启 ✅
+
+---
+
+# 流式逐词重复（第二轮）→ 双击双发修复 (2026-08-12)
+
+用户反馈「你好你好，，有什么有什么需要需要查询查询」仍在。上一轮监听器泄漏（四连）已修复，本轮现象是**每 token 恰好 2 遍**——排查逐层排除监听器/渲染/SSE/桥接后，锁定发送链路。
+
+## 根因
+`sendChat` 的 `streaming` 守卫是 React state：**双击发送按钮时第二次调用还没 re-render，闭包里的 `streaming` 仍为 false → 通过守卫 → `chatTurn` 被 invoke 两次** → 两个并发 turn 各自流 token，每个词被追加两遍。
+
+## 改动（双保险，commit 待推）
+| 位置 | 改动 |
+|------|------|
+| `App.tsx` | 新增 `sendingRef`（同步 ref 守卫，不依赖 re-render），sendChat 开头拦截；释放点 = onChatDone / onChatError / invoke catch（chatTurn 返回后**不**释放——流式还在跑） |
+| `commands.rs` | `static TURN_IN_FLIGHT: AtomicBool` 串行化 `chat_turn`（swap 检查，占用则 Err「上一条对话还在进行中…」；bridge 事件循环 drain 完后释放）。防御纵深：即使未来某调用方双发，后端也只跑一个 turn |
+
+## 验证
+`cargo check`（lib + src-tauri）✅ · `cargo test --lib` 69 全过 ✅ · `tsc --noEmit` ✅ · `vite build` ✅ · `tauri dev` 已重启实测

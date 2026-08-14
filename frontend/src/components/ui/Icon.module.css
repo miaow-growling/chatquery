@@ -1,0 +1,10 @@
+/* Icon — visual baseline only. Sizing is controlled via the `size` prop
+ * (renders as width/height attributes), not via CSS, so the SVG can never
+ * unexpectedly scale with parent font-size. Color follows currentColor so
+ * `color: var(--text-secondary)` on the parent renders correctly. */
+
+.icon {
+  display: inline-block;
+  flex: 0 0 auto;
+  vertical-align: -2px;
+}

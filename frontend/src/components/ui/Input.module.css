@@ -1,0 +1,65 @@
+/* Input — wrapper + native <input> pair.
+ * Height 32px to match Button.md, radius-md (8px) for HIG consistency.
+ * dsh variant uses 8px radius too, so the only adjustment is height (32 vs
+ * 32 — same) and surface color (we use --bg-elevated instead of dsh's
+ * "bg-layer-1" alias). */
+
+.wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  transition:
+    border-color var(--t-fast),
+    box-shadow var(--t-fast),
+    background var(--t-fast);
+}
+
+.wrap:hover:not(:focus-within) {
+  border-color: var(--border-strong);
+}
+
+.wrap:focus-within {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+
+.wrap:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  flex: 0 0 auto;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--text-primary);
+}
+
+.input::placeholder {
+  color: var(--text-disabled);
+}
+
+.input:disabled {
+  cursor: not-allowed;
+}

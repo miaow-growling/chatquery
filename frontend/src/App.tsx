@@ -38,7 +38,7 @@ import type {
   KbDocDto,
   KeyStatus,
   LlmConfigDto,
-  LlmConfigInput,
+  VendorProfileDto,
   NewChatMessage,
   QueryItem,
   QueryOutput,
@@ -55,6 +55,9 @@ import { createEditor, splitStatements, type EditorHandle } from "./editor";
 import { RedisBrowser } from "./RedisBrowser";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Tree } from "./Tree";
+import { Icon } from "./components/ui";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -145,9 +148,10 @@ function CertPickButton({
         type="button"
         className="field-file-btn"
         title={title ?? "从文件选择"}
+        aria-label={title ?? "从文件选择"}
         onClick={() => ref.current?.click()}
       >
-        📁
+        <Icon name="folder" size={13} />
       </button>
     </>
   );
@@ -624,6 +628,22 @@ export function App() {
     },
   ]);
   const [activeTabId, setActiveTabId] = useState<string>(INITIAL_TAB);
+  // "More actions" dropdown (格式化 / 问 AI / 存为片段 / 历史 / 执行计划).
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (moreRef.current && !moreRef.current.contains(e.target as Node)) setMoreOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMoreOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [moreOpen]);
   // Current page size for query results / table browse. Selectable 100..1000.
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE);
   // Raw text of the "jump to page" input (kept as string for controlled input).
@@ -635,6 +655,16 @@ export function App() {
   // through this popup (not by clicking the tree) to avoid accidental context
   // switches between queries.
   const [dbPickerOpen, setDbPickerOpen] = useState(false);
+  // Per-opener callback for the db picker. The same modal is used from
+  // two places with different intents:
+  //   • SQL editor area → wants to update the active tab's context
+  //   • Chat + menu     → wants to update the chat's own context
+  // (without disturbing the SQL tab, which is what the original
+  // behaviour did — picking from the chat "jumped" to the query area).
+  // When null we fall back to the SQL-editor default (changeTabContext).
+  const [dbPickerCallback, setDbPickerCallback] = useState<
+    ((connId: string, db: string | null) => void) | null
+  >(null);
 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<QueryItem[]>([]);
@@ -871,13 +901,124 @@ export function App() {
   >("model");
   const [presets, setPresets] = useState<VendorPreset[]>([]);
   const [llmCfg, setLlmCfg] = useState<LlmConfigDto | null>(null);
-  const [cfgForm, setCfgForm] = useState<LlmConfigInput>({
-    vendor: "openai",
-    base_url: "",
-    model: "",
+  const [vendorProfiles, setVendorProfiles] = useState<VendorProfileDto[]>([]);
+  // Composer toolbar state — + menu, model dropdown.
+  const [plusOpen, setPlusOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!plusOpen && !modelOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (plusOpen && plusMenuRef.current && !plusMenuRef.current.contains(t) &&
+          !(e.target as HTMLElement | null)?.closest?.(".composer-plus")) {
+        setPlusOpen(false);
+      }
+      if (modelOpen && modelMenuRef.current && !modelMenuRef.current.contains(t) &&
+          !(e.target as HTMLElement | null)?.closest?.(".composer-model")) {
+        setModelOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setPlusOpen(false);
+        setModelOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [plusOpen, modelOpen]);
+  // Display label for the current model: "<供应商名> · <model>" when
+  // configured, "选择模型" otherwise. The supplier name is resolved
+  // in this order:
+  //   1. user vendor profile (vendorProfiles[].name) — the user-defined
+  //      name like "腾讯 TokenHub"
+  //   2. preset label (presets[].label) — the built-in "OpenAI" /
+  //      "阿里云通义千问" / etc. (in case some legacy config still
+  //      points at a preset id)
+  //   3. raw llmCfg.provider or vendor id as a last-resort fallback
+  // Previously this used `llmCfg.provider` (the protocol name like
+  // "openai" / "anthropic") which gave a confusing label like
+  // "openai · hy3" for a user vendor that's actually called 腾讯 TokenHub.
+  const currentModelLabel = () => {
+    if (!llmCfg?.model) return "选择模型";
+    const userVendor = vendorProfiles.find((p) => p.id === llmCfg.vendor);
+    if (userVendor) return `${userVendor.name} · ${llmCfg.model}`;
+    const preset = presets.find((p) => p.id === llmCfg.vendor);
+    if (preset) return `${preset.label || preset.provider} · ${llmCfg.model}`;
+    return `${llmCfg.provider || llmCfg.vendor} · ${llmCfg.model}`;
+  };
+  // Vendor-profile management state. `editingVendor` is the id of the
+  // currently selected profile in the settings list, or null when the
+  // user is creating a new one. `vendorDraft` is the in-progress form.
+  const [editingVendor, setEditingVendor] = useState<string | null>(null);
+  // The auto-pick effect below would otherwise steal back the selection
+  // every time the user clicks "+ 添加供应商" (which sets editingVendor to
+  // null). This ref is the "I really want to create, don't auto-pick"
+  // latch. It's reset to false whenever the user explicitly picks an
+  // existing vendor from the list (or after a successful add / delete).
+  const userWantsCreate = useRef(false);
+  // When the user opens the model tab without a selection, auto-pick the
+  // first vendor so the right pane is never blank after the list loads.
+  useEffect(() => {
+    if (userWantsCreate.current) return;
+    if (editingVendor === null && vendorProfiles.length > 0) {
+      setEditingVendor(vendorProfiles[0].id);
+      setVendorDraft({
+        name: vendorProfiles[0].name,
+        base_url: vendorProfiles[0].base_url,
+        api_key: "",
+        api_format: (vendorProfiles[0].api_format as "openai" | "anthropic") || "openai",
+        models: vendorProfiles[0].models.map((m) => ({ name: m.name })),
+        newModel: "",
+      });
+    }
+  }, [editingVendor, vendorProfiles]);
+  const [vendorDraft, setVendorDraft] = useState<{
+    name: string;
+    base_url: string;
+    api_key: string;
+    api_format: "openai" | "anthropic";
+    /** In-progress model list — the source of truth for the 模型列表
+     * section in BOTH edit and create mode. In edit mode it's synced
+     * from `vendorProfiles[i].models` on select; in create mode it
+     * starts as `[]` and grows as the user types. Each add/delete
+     * updates this list locally; in edit mode we also persist via
+     * `saveModelAlias`; in create mode the list is included in the
+     * final "添加供应商" save. */
+    models: { name: string }[];
+    /** Current value of the "添加 model" input. */
+    newModel: string;
+  }>({
+    name: "",
+    base_url: "https://api.openai.com/v1",
     api_key: "",
+    api_format: "openai",
+    models: [],
+    newModel: "",
   });
-  const [cfgMsg, setCfgMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // Preset popover open state — only used in CREATE mode. The presets are
+  // loaded once when the settings dialog opens and live in `presets`.
+  const [presetMenuOpen, setPresetMenuOpen] = useState(false);
+  // In-flight state for the "添加供应商" button — prevents double
+  // submission and drives the "添加中…" label + spinner.
+  const [creating, setCreating] = useState(false);
+  // Close the preset popover when the user clicks outside of it.
+  useEffect(() => {
+    if (!presetMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest(".field-preset-trigger, .field-preset-menu")) return;
+      setPresetMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [presetMenuOpen]);
 
   // --- Connection encryption key K (#0) ---
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({ configured: false });
@@ -900,54 +1041,167 @@ export function App() {
 
   // Load vendor presets + current config when the settings dialog opens.
   const openSettings = useCallback(async () => {
-    setCfgMsg(null);
     try {
-      const [ps, cfg, ks] = await Promise.all([
+      const [ps, cfg, ks, profiles] = await Promise.all([
         api.getVendorPresets(),
         api.getLlmConfig(),
         api.getKeyStatus(),
+        api.listModelAliases(),
       ]);
       setPresets(ps);
       setLlmCfg(cfg);
       setKeyStatus(ks);
-      setCfgForm({
-        vendor: cfg.vendor || "openai",
-        base_url: cfg.base_url,
-        model: cfg.model,
-        api_key: "",
-      });
+      setVendorProfiles(profiles);
     } catch (e) {
-      setCfgMsg({ ok: false, text: String(e) });
+      showToast("加载设置失败: " + String(e));
     }
     setSettingsTab("model");
     setSettingsOpen(true);
   }, []);
 
-  // Picking a vendor prefills base_url/model from its preset defaults.
-  const onVendorChange = useCallback(
-    (vendor: string) => {
-      const p = presets.find((x) => x.id === vendor);
-      setCfgForm((f) => ({
-        ...f,
-        vendor,
-        base_url: p ? p.base_url : f.base_url,
-        model: p ? p.model : f.model,
-      }));
+  /// Auto-save the current vendor draft. Only safe to call when an
+  /// existing vendor is being edited (`editingVendor` truthy) — for new
+  /// vendors the user must still click the explicit "添加供应商" button
+  /// to provide a stable id. We deep-compare the draft against the stored
+  /// vendor to avoid round-tripping on no-op onBlur.
+  const autoSaveVendor = useCallback(
+    async (overrides?: Partial<typeof vendorDraft>) => {
+      if (!editingVendor) return;
+      const current = vendorProfiles.find((p) => p.id === editingVendor);
+      if (!current) return;
+      const draft = { ...vendorDraft, ...(overrides || {}) };
+      if (
+        draft.name === current.name &&
+        draft.base_url === current.base_url &&
+        draft.api_format === current.api_format &&
+        // api_key is only "changed" if the user typed a non-empty value.
+        // Empty = keep stored key.
+        (draft.api_key === "" || draft.api_key === current.api_key_hint)
+      ) {
+        return; // nothing to save
+      }
+      try {
+        await api.saveModelAlias({
+          id: current.id,
+          name: draft.name.trim(),
+          vendor: current.id,
+          base_url: draft.base_url.trim(),
+          model: "",
+          api_key: draft.api_key,
+          api_format: draft.api_format,
+          models: current.models,
+        });
+        setVendorProfiles(await api.listModelAliases());
+        setVendorDraft({ ...draft, api_key: "" });
+        showToast?.("已自动保存");
+      } catch (e) {
+        showToast?.("保存失败: " + String(e));
+      }
     },
-    [presets]
+    // We deliberately keep this callback's deps small — the draft is read
+    // fresh on each call to avoid stale-closure overwrites. eslint-disable
+    // for the dep array to keep this concise.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editingVendor, vendorProfiles]
   );
 
-  const saveSettings = useCallback(async () => {
-    setCfgMsg(null);
-    try {
-      await api.saveLlmConfig(cfgForm);
-      setStatus(await api.getStatus());
-      setCfgMsg({ ok: true, text: "已保存" });
-      setTimeout(() => setSettingsOpen(false), 600);
-    } catch (e) {
-      setCfgMsg({ ok: false, text: String(e) });
-    }
-  }, [cfgForm]);
+  // -------------------------------------------------------------------
+  // Add a model to the in-progress draft. In edit mode also persists
+  // via saveModelAlias (the backend keeps the vendor's identity); in
+  // create mode the list stays local until the "添加供应商" save.
+  // -------------------------------------------------------------------
+  const addModel = useCallback(
+    (rawName: string) => {
+      const newName = rawName.trim();
+      if (!newName) return;
+      // Compute the next list from the DRAFT (the local source of
+      // truth) rather than from `v.models` (the backend snapshot).
+      // This avoids a race where two rapid adds/deletes would each
+      // base their save on a stale vendorProfiles snapshot.
+      if (vendorDraft.models.some((m) => m.name === newName)) return;
+      const nextModels = [...vendorDraft.models, { name: newName }];
+      setVendorDraft({ ...vendorDraft, models: nextModels, newModel: "" });
+      // Persist in edit mode. The non-vendor fields are taken from
+      // the SAVED profile (v.*) so an in-progress but unblurred
+      // name/base_url edit doesn't accidentally get baked in here.
+      if (editingVendor) {
+        const v = vendorProfiles.find((p) => p.id === editingVendor);
+        if (!v) return;
+        api
+          .saveModelAlias({
+            id: v.id,
+            name: v.name,
+            vendor: v.id,
+            base_url: v.base_url,
+            model: "",
+            api_key: "",
+            api_format: v.api_format,
+            models: nextModels,
+          })
+          .then(() => api.listModelAliases())
+          .then((list) => setVendorProfiles(list))
+          .catch((e) => showToast("添加 model 失败: " + String(e)));
+      }
+    },
+    [editingVendor, vendorProfiles, vendorDraft]
+  );
+
+  // -------------------------------------------------------------------
+  // Field — labeled single-line input used by the vendor-edit form.
+  // The label is a small uppercase mini-header (matches the macOS
+  // settings aesthetic). Adornment is rendered to the right of the
+  // input (e.g. the API-key "已配/未配" status indicator, or a
+  // chevron for a <select> rendered via `children`).
+  // -------------------------------------------------------------------
+  type FieldProps = {
+    label: string;
+    value?: string;
+    onChange?: (v: string) => void;
+    onBlur?: () => void;
+    placeholder?: string;
+    type?: "text" | "password";
+    /** Use the monospace font for the input (URLs / model names). */
+    mono?: boolean;
+    /** Right-side decoration (e.g. status badge, chevron). */
+    adornment?: React.ReactNode;
+    disabled?: boolean;
+    /** When provided, this replaces the default <input> with custom
+     * content (e.g. a <select>). Use this when the field needs a
+     * non-text control that still benefits from the Field layout. */
+    children?: React.ReactNode;
+  };
+  function Field({
+    label,
+    value,
+    onChange,
+    onBlur,
+    placeholder,
+    type = "text",
+    mono,
+    adornment,
+    disabled,
+    children,
+  }: FieldProps) {
+    return (
+      <label className="field">
+        <span className="field-label">{label}</span>
+        <span className="field-row">
+          {children ?? (
+            <input
+              className={"field-input" + (mono ? " mono" : "")}
+              type={type}
+              value={value ?? ""}
+              placeholder={placeholder}
+              disabled={disabled}
+              onChange={(e) => onChange?.(e.target.value)}
+              onBlur={onBlur}
+            />
+          )}
+          {adornment && <span className="field-adornment">{adornment}</span>}
+        </span>
+      </label>
+    );
+  }
 
   /// Clear all edit overlays (edits + deletes + inserts + active cell). Called
   /// on tab switch, re-query, page change, save, and undo.
@@ -3019,11 +3273,29 @@ export function App() {
   // connection hierarchy (env → group → conn) and fetches a connection's
   // database list only when the connection is expanded — nothing is cached
   // globally.
-  const openDbPicker = () => {
+  const openDbPicker = (onSelect?: (connId: string, db: string | null) => void) => {
+    setDbPickerCallback(() => onSelect ?? null);
     setDbPickerOpen(true);
   };
   const changeTabContext = (connId: string, db: string | null) => {
     setActiveTab((t) => ({ ...t, connId, db }));
+    setDbPickerOpen(false);
+  };
+  // Chat's own conn / db context, independent of the active SQL tab.
+  // The composer + menu's "选择数据库" updates this state without
+  // touching the SQL tab's context at all (the original behaviour
+  // routed the picker's onSelect through changeTabContext, which made
+  // the SQL tab's title bar / status bar jump on every pick).
+  // Initialized lazily from `selId` on first render so the chat starts
+  // pointed at the same connection the user has in the tree.
+  const [chatConnId, setChatConnId] = useState<string | null>(null);
+  const [chatDb, setChatDb] = useState<string | null>(null);
+  useEffect(() => {
+    if (chatConnId === null && selId) setChatConnId(selId);
+  }, [selId, chatConnId]);
+  const onChatConnChange = (connId: string, db: string | null) => {
+    setChatConnId(connId);
+    setChatDb(db);
     setDbPickerOpen(false);
   };
 
@@ -3376,6 +3648,21 @@ export function App() {
       setAtOpen(false);
     }
   };
+  /// Toolbar "+ → 引用会话": append "@" to the composer and focus it, so the
+  /// existing onChatInput regex opens the at-picker. Avoids re-implementing
+  /// the picker UI in the + menu.
+  const triggerAtPicker = () => {
+    const ta = document.getElementById("chat-input") as HTMLTextAreaElement | null;
+    if (!ta) return;
+    const needsSpace = ta.value.length > 0 && !ta.value.endsWith(" ") && !ta.value.endsWith("\n");
+    const next = ta.value + (needsSpace ? " @" : "@");
+    // Mutate the native input value, then fire React's onInput so its
+    // onChatInput regex picks up the new trailing "@".
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    setter?.call(ta, next);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    ta.focus();
+  };
 
   /// Composer keys while the @-picker is open: arrows move, Enter picks the
   /// highlighted conversation as a whole-session reference (stripping the "@…"
@@ -3451,11 +3738,14 @@ export function App() {
           m.role === "user" ||
           (m.role === "assistant" && m.content.trim() !== ""),
       );
-      // `selId` binds the *agent* (which tools it can reach); each reference
-      // carries its own connection, and the backend tells the model to honour
-      // that one when running the referenced SQL. `convId`/`convRefs` are the
-      // P0/P1 conversation plumbing (docs/chat-conversation-design.md).
-      turnIdRef.current = await chatTurn(selId, history, refs, convId, convRefs);
+      // The chat's conn context lives in `chatConnId` (independent of
+      // the SQL tab). Fall back to `selId` if the user hasn't picked
+      // anything via the + menu yet. `selId` still binds the *agent*
+      // (which tools it can reach); each reference carries its own
+      // connection, and the backend tells the model to honour that
+      // one when running the referenced SQL. `convId`/`convRefs` are
+      // the P0/P1 conversation plumbing.
+      turnIdRef.current = await chatTurn(chatConnId ?? selId, history, refs, convId, convRefs);
     } catch (e) {
       setStreaming(false);
       sendingRef.current = false;
@@ -4009,27 +4299,62 @@ export function App() {
               <span className="hint"> (Ctrl/Cmd+Enter 执行)</span>
             </span>
             <div className="pane-actions">
-              <button
-                onClick={() => editorRef.current?.formatSql()}
-                disabled={!active?.connId}
-              >
-                格式化
-              </button>
-              <button
-                onClick={() => attachSqlRef("statement")}
-                disabled={!active?.connId}
-                title="把光标所在语句（或选中部分，按 ; 补全边界）引用到 Chat"
-              >
-                问 AI
-              </button>
-              <button onClick={saveCurrentAsSnippet}>存为片段</button>
-              <button onClick={openHistory}>历史</button>
-              <button onClick={explainQuery} disabled={!active?.connId}>
-                执行计划
-              </button>
-              <button className="primary" onClick={() => void runQuery()}>
+              <button className="primary" onClick={() => void runQuery()} title="执行查询 (Ctrl/Cmd+Enter)">
                 执行
               </button>
+              <div className="menu-anchor" ref={moreRef}>
+                <button
+                  className="menu-trigger"
+                  aria-haspopup="menu"
+                  aria-expanded={moreOpen}
+                  title="更多操作"
+                  onClick={() => setMoreOpen((v) => !v)}
+                >
+                  <span aria-hidden="true">⋯</span>
+                </button>
+                {moreOpen && (
+                  <ul className="menu-pop" role="menu">
+                    <li
+                      role="menuitem"
+                      className="menu-item"
+                      onClick={() => { setMoreOpen(false); editorRef.current?.formatSql(); }}
+                    >
+                      格式化
+                    </li>
+                    <li
+                      role="menuitem"
+                      className={"menu-item" + (active?.connId ? "" : " disabled")}
+                      aria-disabled={!active?.connId}
+                      title="把光标所在语句（或选中部分，按 ; 补全边界）引用到 Chat"
+                      onClick={() => { if (!active?.connId) return; setMoreOpen(false); attachSqlRef("statement"); }}
+                    >
+                      问 AI
+                    </li>
+                    <li
+                      role="menuitem"
+                      className="menu-item"
+                      onClick={() => { setMoreOpen(false); saveCurrentAsSnippet(); }}
+                    >
+                      存为片段
+                    </li>
+                    <li
+                      role="menuitem"
+                      className="menu-item"
+                      onClick={() => { setMoreOpen(false); openHistory(); }}
+                    >
+                      历史
+                    </li>
+                    <li
+                      role="menuitem"
+                      className={"menu-item" + (active?.connId ? "" : " disabled")}
+                      aria-disabled={!active?.connId}
+                      onClick={() => { if (!active?.connId) return; setMoreOpen(false); explainQuery(); }}
+                    >
+                      执行计划
+                    </li>
+                  </ul>
+                )}
+              </div>
             </div>
           </div>
           <div
@@ -4594,27 +4919,182 @@ export function App() {
             </div>
           </div>
         )}
-        <div className="chat-input">
-          <textarea
-            id="chat-input"
-            placeholder={
-              pendingRefs.length > 0 || pendingConvRefs.length > 0
-                ? "就引用的内容提问，输入 @ 可引用其他会话"
-                : "问点什么，输入 @ 可引用其他会话，例如：统计 users 表行数"
-            }
-            disabled={streaming}
-            onInput={onChatInput}
-            onKeyDown={onChatKeyDown}
-          />
-          {streaming ? (
-            <button className="danger" onClick={stopChat} title="停止本轮">
-              停止
+        <div className="chat-composer">
+          <div className="chat-composer-input">
+            <textarea
+              id="chat-input"
+              placeholder={
+                pendingRefs.length > 0 || pendingConvRefs.length > 0
+                  ? "就引用的内容提问，输入 @ 可引用其他会话"
+                  : "问点什么，输入 @ 可引用其他会话，例如：统计 users 表行数"
+              }
+              disabled={streaming}
+              onInput={onChatInput}
+              onKeyDown={onChatKeyDown}
+            />
+          </div>
+          <div className="chat-toolbar">
+            <button
+              className="composer-plus"
+              aria-haspopup="menu"
+              aria-expanded={plusOpen}
+              title="添加引用 / 选库 / 附加文件"
+              onClick={() => setPlusOpen((v) => !v)}
+            >
+              <Icon name="plus" size={14} />
             </button>
-          ) : (
-            <button onClick={sendChat} disabled={!status.llm_enabled}>
-              发送
-            </button>
-          )}
+            {plusOpen && (
+              <div className="composer-plus-menu" ref={plusMenuRef} role="menu">
+                <button
+                  className="composer-plus-item"
+                  onClick={() => {
+                    setPlusOpen(false);
+                    attachSqlRef("statement");
+                  }}
+                >
+                  <span className="composer-plus-item-title">引用 SQL</span>
+                  <span className="composer-plus-item-sub">把编辑器光标所在语句加到本轮</span>
+                </button>
+                <button
+                  className="composer-plus-item"
+                  onClick={() => {
+                    setPlusOpen(false);
+                    triggerAtPicker();
+                  }}
+                >
+                  <span className="composer-plus-item-title">引用会话</span>
+                  <span className="composer-plus-item-sub">跨会话 @ 引用一条上下文</span>
+                </button>
+                <button
+                  className="composer-plus-item"
+                  onClick={() => {
+                    setPlusOpen(false);
+                    // Open the same db picker but route the selection
+                    // to the chat's own conn/db state — NOT the SQL
+                    // tab. The original behaviour made the SQL tab's
+                    // title / status bar jump every time the user
+                    // picked something from here, which is misleading
+                    // since the chat's LLM context actually came from
+                    // `selId`, not the SQL tab.
+                    openDbPicker(onChatConnChange);
+                  }}
+                  disabled={!selId}
+                >
+                  <span className="composer-plus-item-title">选择数据库</span>
+                  <span className="composer-plus-item-sub">切到当前连接的另一个库</span>
+                </button>
+                <button
+                  className="composer-plus-item"
+                  onClick={() => {
+                    setPlusOpen(false);
+                    // File attach hook — future home for Tauri file picker
+                    showToast?.("附加文件: 待接入 Tauri dialog");
+                  }}
+                >
+                  <span className="composer-plus-item-title">附加文件</span>
+                  <span className="composer-plus-item-sub">.md / .txt 文本文件</span>
+                </button>
+              </div>
+            )}
+            <div className="chat-toolbar-spacer" />
+            <div className="model-anchor" ref={modelMenuRef}>
+              <button
+                className="composer-model"
+                aria-haspopup="menu"
+                aria-expanded={modelOpen}
+                title="选择模型"
+                onClick={() => setModelOpen((v) => !v)}
+              >
+                <span className="composer-model-name">{currentModelLabel()}</span>
+                <span className="composer-caret" aria-hidden="true">▾</span>
+              </button>
+              {modelOpen && (
+                <ul className="composer-model-menu" role="menu">
+                  {vendorProfiles.length === 0 && (
+                    <li className="composer-model-empty">
+                      还没配置模型 — 去「设置 → 模型」添加
+                    </li>
+                  )}
+                  {vendorProfiles.length > 0 && (
+                    <li className="composer-model-section">我的供应商</li>
+                  )}
+                  {vendorProfiles.flatMap((p) =>
+                    p.models.length === 0
+                      ? [
+                          <li
+                            key={"p:" + p.id + ":bare"}
+                            className="composer-model-item composer-model-bare"
+                            role="menuitem"
+                            onClick={() => setModelOpen(false)}
+                          >
+                            <span className="composer-model-item-name">{p.name}</span>
+                            <span className="composer-model-item-vendor">该供应商还没有 model，去设置添加</span>
+                          </li>,
+                        ]
+                      : p.models.map((m) => {
+                          const active = p.id === llmCfg?.vendor && m.name === llmCfg?.model;
+                          return (
+                            <li
+                              key={"p:" + p.id + ":" + m.name}
+                              className={"composer-model-item" + (active ? " active" : "")}
+                              role="menuitem"
+                              onClick={async () => {
+                                setModelOpen(false);
+                                try {
+                                  await api.applyModelAlias(p.id, m.name);
+                                  setLlmCfg(await api.getLlmConfig());
+                                  showToast?.("已切到 " + p.name + " · " + m.name);
+                                } catch (e) {
+                                  showToast?.("切换失败: " + String(e));
+                                }
+                              }}
+                            >
+                              <span className="composer-model-item-name">{m.name}</span>
+                              <span className="composer-model-item-vendor">{p.name} · {p.api_format}</span>
+                            </li>
+                          );
+                        })
+                  )}
+                  {/* Presets are intentionally NOT shown here. They live
+                   * in `src/config.rs` as quick-select templates for the
+                   * "添加供应商" form's [预设] button (they auto-fill
+                   * name + base_url when the user picks one) — they are
+                   * NOT pre-wired LLM endpoints and cannot be used
+                   * directly. Showing them in the composer dropdown made
+                   * it look like they were selectable models, which they
+                   * aren't. */}
+                  <li
+                    className="composer-model-item composer-model-manage"
+                    role="menuitem"
+                    onClick={() => {
+                      setModelOpen(false);
+                      // Jump straight to the 模型 tab (the parent
+                      // `openSettings` re-loads the latest vendor /
+                      // preset data and lands on that tab by default).
+                      void openSettings();
+                    }}
+                  >
+                    <span>管理供应商…</span>
+                    <span className="composer-model-item-sub">在「设置 → 模型」配置</span>
+                  </li>
+                </ul>
+              )}
+            </div>
+            {streaming ? (
+              <button className="danger composer-send" onClick={stopChat} title="停止本轮">
+                停止
+              </button>
+            ) : (
+              <button
+                className="primary composer-send"
+                onClick={sendChat}
+                disabled={!status.llm_enabled}
+                title="发送 (Enter / Cmd+Enter)"
+              >
+                发送
+              </button>
+            )}
+          </div>
         </div>
         </section>
       ) : (
@@ -5083,7 +5563,9 @@ export function App() {
         <div className="modal-mask" onClick={() => setSettingsOpen(false)}>
           <div
             className={
-              "modal settings-modal" + (settingsTab === "kb" ? " kb-wide" : "")
+              "modal settings-modal" +
+              (settingsTab === "kb" ? " kb-wide" : "") +
+              (settingsTab === "model" ? " model-wide" : "")
             }
             onClick={(e) => e.stopPropagation()}
           >
@@ -5119,59 +5601,392 @@ export function App() {
               {/* --- 模块一：模型设置（LLM） --- */}
               {settingsTab === "model" && (
                 <div className="settings-page">
-                  <h3>模型设置</h3>
-                  <div className="settings-group">
-                  <DropdownSelect
-                    label="模型厂商"
-                    value={cfgForm.vendor}
-                    options={presets.map((p) => ({
-                      value: p.id,
-                      label: p.label,
-                      tag: p.provider === "anthropic" ? "Anthropic" : undefined,
-                    }))}
-                    onChange={onVendorChange}
-                  />
-                  <label>
-                    API Base URL
-                    <input
-                      value={cfgForm.base_url}
-                      placeholder="https://api.openai.com/v1"
-                      onChange={(e) =>
-                        setCfgForm({ ...cfgForm, base_url: e.target.value })
-                      }
-                    />
-                  </label>
-                  <label>
-                    模型名称
-                    <input
-                      value={cfgForm.model}
-                      placeholder="gpt-4o-mini"
-                      onChange={(e) =>
-                        setCfgForm({ ...cfgForm, model: e.target.value })
-                      }
-                    />
-                  </label>
-                  <label>
-                    API Key
-                    <input
-                      type="password"
-                      value={cfgForm.api_key}
-                      placeholder={llmCfg?.enabled ? "已保存（留空保持不变）" : "输入密钥"}
-                      onChange={(e) =>
-                        setCfgForm({ ...cfgForm, api_key: e.target.value })
-                      }
-                    />
-                  </label>
-                  {cfgMsg && (
-                    <div className={"cfg-msg " + (cfgMsg.ok ? "ok" : "err")}>
-                      {cfgMsg.text}
-                    </div>
-                  )}
+                  <h3>供应商列表</h3>
+                  <div className="dim" style={{ fontSize: "var(--fs-xs)", marginBottom: 12 }}>
+                    左侧选供应商，右侧编辑。点 + 添加新供应商；composer 里的「我的供应商」段会同步出现。
                   </div>
-                  <div className="modal-actions">
-                    <button className="primary" onClick={() => void saveSettings()}>
-                      保存
-                    </button>
+
+                  {/* Vendor profiles — the single source of truth for
+                   * model configuration. The list on the left is the
+                   * "vendor manager"; the form on the right edits the
+                   * selected one (or a new one when "+ 添加供应商" is active). */}
+                  <div className="settings-group">
+
+                    <div className="vendor-profiles">
+                      <ul className="vendor-list">
+                        {vendorProfiles.map((p) => {
+                          const isEditing = editingVendor === p.id;
+                          return (
+                            <li
+                              key={p.id}
+                              className={"vendor-list-item" + (isEditing ? " editing" : "")}
+                              onClick={() => {
+                                userWantsCreate.current = false;
+                                setPresetMenuOpen(false);
+                                setEditingVendor(p.id);
+                                setVendorDraft({
+                                  name: p.name,
+                                  base_url: p.base_url,
+                                  api_key: "",
+                                  api_format: (p.api_format as "openai" | "anthropic") || "openai",
+                                  models: p.models.map((m) => ({ name: m.name })),
+                                  newModel: "",
+                                });
+                              }}
+                            >
+                              <span className={"vendor-dot " + (p.enabled ? "ok" : "off")} />
+                              <span className="vendor-list-name">{p.name}</span>
+                              <span className="vendor-list-meta">
+                                {p.models.length} 个 model
+                              </span>
+                              <button
+                                type="button"
+                                className="vendor-list-del"
+                                title="删除该供应商"
+                                aria-label={"删除供应商 " + p.name}
+                                onClick={async (e) => {
+                                  // Don't let the click bubble up to the
+                                  // <li> (which would also re-select this
+                                  // vendor just before we delete it).
+                                  e.stopPropagation();
+                                  if (!confirm("删除供应商「" + p.name + "」？")) return;
+                                  try {
+                                    await api.deleteModelAlias(p.id);
+                                    setVendorProfiles(await api.listModelAliases());
+                                    userWantsCreate.current = false;
+                                    // If the deleted vendor was the one being edited,
+                                    // clear the selection so the auto-pick effect lands
+                                    // on the first remaining vendor. If it wasn't, stay
+                                    // on whatever the user was looking at.
+                                    if (editingVendor === p.id) setEditingVendor(null);
+                                  } catch (err) {
+                                    showToast("删除失败: " + String(err));
+                                  }
+                                }}
+                              >
+                                <Icon name="close" size={11} />
+                              </button>
+                            </li>
+                          );
+                        })}
+                        <li
+                          className={"vendor-list-item vendor-list-add" + (editingVendor === null ? " editing" : "")}
+                          onClick={() => {
+                            userWantsCreate.current = true;
+                            setEditingVendor(null);
+                            setVendorDraft({
+                              name: "",
+                              base_url: "https://api.openai.com/v1",
+                              api_key: "",
+                              api_format: "openai",
+                              models: [],
+                              newModel: "",
+                            });
+                          }}
+                        >
+                          <span className="vendor-list-name">+ 添加供应商</span>
+                        </li>
+                      </ul>
+                      <div className="vendor-edit">
+                        {/* The top-right X was removed — the delete affordance
+                         * now lives in the LEFT list (one delete button per
+                         * vendor row), which is where the user expects to
+                         * find it. */}
+                        <div className="vendor-edit-fields">
+                          {/* The 供应商 Field + the preset popover are wrapped
+                           * in a `position: relative` container so the
+                           * popover anchors to the field rather than the
+                           * entire settings content area (the previous
+                           * sibling layout pushed the popover to the very
+                           * bottom of the modal). */}
+                          <div className="field-wrap">
+                            {editingVendor === null ? (
+                              // CREATE mode: editable name + preset shortcut
+                              <Field
+                                label="供应商"
+                                value={vendorDraft.name}
+                                placeholder="自定义名称 或 点右边选预设"
+                                onChange={(v) => setVendorDraft({ ...vendorDraft, name: v })}
+                                adornment={
+                                  <button
+                                    type="button"
+                                    className="field-preset-trigger"
+                                    onClick={() => setPresetMenuOpen(!presetMenuOpen)}
+                                    aria-expanded={presetMenuOpen}
+                                    title="从预设 vendor 模板填充"
+                                  >
+                                    预设
+                                    <Icon name="chevron-down" size={10} style={{ marginLeft: 2 }} />
+                                  </button>
+                                }
+                              />
+                            ) : (
+                              // EDIT mode: the vendor's name is its identity
+                              // (used as the `id` for the API). It cannot be
+                              // changed without breaking the saved config, so
+                              // we render it as a read-only display.
+                              <div className="field">
+                                <span className="field-label">供应商</span>
+                                <div className="field-display">
+                                  <span className="field-display-name">{vendorDraft.name || "(无名称)"}</span>
+                                  <span className="field-display-hint">名称不可修改</span>
+                                </div>
+                              </div>
+                            )}
+                            {/* Preset popover — only meaningful in CREATE mode */}
+                            {editingVendor === null && presetMenuOpen && (
+                              <div className="field-preset-menu">
+                                {presets.length === 0 ? (
+                                  <div className="dim" style={{ padding: 8, fontSize: "var(--fs-xs)" }}>
+                                    暂无可用预设
+                                  </div>
+                                ) : (
+                                  presets.map((p) => (
+                                    <button
+                                      key={p.id}
+                                      type="button"
+                                      className="field-preset-item"
+                                      onClick={() => {
+                                        setVendorDraft({
+                                          ...vendorDraft,
+                                          name: p.label,
+                                          base_url: p.base_url,
+                                          api_format: "openai",
+                                        });
+                                        setPresetMenuOpen(false);
+                                      }}
+                                    >
+                                      <span className="field-preset-item-name">{p.label}</span>
+                                      <span className="field-preset-item-meta">
+                                        {p.provider} · {p.base_url}
+                                      </span>
+                                    </button>
+                                  ))
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          <Field
+                            label="接口地址"
+                            value={vendorDraft.base_url}
+                            placeholder="https://api.openai.com/v1"
+                            mono
+                            onChange={(v) => setVendorDraft({ ...vendorDraft, base_url: v })}
+                            onBlur={editingVendor ? () => void autoSaveVendor() : undefined}
+                          />
+                          <Field
+                            label="API 密钥"
+                            type="password"
+                            value={vendorDraft.api_key}
+                            placeholder={
+                              editingVendor && vendorProfiles.find((p) => p.id === editingVendor)?.enabled
+                                ? "已保存（" + (vendorProfiles.find((p) => p.id === editingVendor)!.api_key_hint || "••••") + "），留空保持不变"
+                                : "输入密钥"
+                            }
+                            onChange={(v) => setVendorDraft({ ...vendorDraft, api_key: v })}
+                            onBlur={editingVendor ? () => void autoSaveVendor() : undefined}
+                            adornment={(() => {
+                              const v = editingVendor ? vendorProfiles.find((p) => p.id === editingVendor) : null;
+                              if (!v) return undefined;
+                              return (
+                                <span
+                                  className={"vendor-key-state " + (v.enabled ? "ok" : "off")}
+                                  title={v.enabled ? "已配置 API Key" : "未配置 API Key（保存后可填）"}
+                                >
+                                  <Icon
+                                    name={v.enabled ? "check" : "circle"}
+                                    size={12}
+                                    variant={v.enabled ? "stroke" : "fill"}
+                                    style={{ marginRight: 4, verticalAlign: "-1px" }}
+                                  />
+                                  {v.enabled ? "已配" : "未配"}
+                                </span>
+                              );
+                            })()}
+                          />
+                          {/* 接口协议 — vertical layout (label above select)
+                           * via the Field component's `children` slot. The
+                           * native select arrow is hidden via `appearance: none`
+                           * and replaced by a CSS background-image chevron
+                           * (a small `v` shape, see style.css). The Icon-
+                           * based chevron from the previous iteration had
+                           * positioning issues (the absolute wrapper was
+                           * taller than the row, biasing the icon upward and
+                           * making it look like an up-arrow at small sizes). */}
+                          <Field label="接口协议">
+                            <select
+                              className="field-input field-input-select"
+                              value={vendorDraft.api_format}
+                              onChange={(e) => {
+                                setVendorDraft({
+                                  ...vendorDraft,
+                                  api_format: e.target.value as "openai" | "anthropic",
+                                });
+                                if (editingVendor)
+                                  void autoSaveVendor({
+                                    api_format: e.target.value as "openai" | "anthropic",
+                                  });
+                              }}
+                            >
+                              <option value="openai">OpenAI 兼容 · /v1/chat/completions</option>
+                              <option value="anthropic">Anthropic Messages · /v1/messages</option>
+                            </select>
+                          </Field>
+                        </div>
+                        {/* Model list — always visible. The list source is
+                         * `vendorDraft.models` in BOTH edit and create mode:
+                         *   • edit mode: synced from `vendorProfiles[i].models`
+                         *     on select; each add/delete also persists via
+                         *     `saveModelAlias` so the backend stays in sync.
+                         *   • create mode: starts as `[]`; each add/delete just
+                         *     mutates the draft. The list is included in the
+                         *     "添加供应商" save at the bottom. */}
+                        <div className="vendor-models">
+                          <div className="vendor-models-title">模型列表</div>
+                          {vendorDraft.models.length === 0 && (
+                            <div className="dim" style={{ fontSize: "var(--fs-xs)" }}>
+                              还没有 model
+                            </div>
+                          )}
+                          {vendorDraft.models.map((m) => (
+                            <div key={m.name} className="alias-row">
+                              <span className="alias-name">{m.name}</span>
+                              <span className="alias-meta" />
+                              <button
+                                className="alias-del"
+                                title="删除"
+                                onClick={async () => {
+                                  const next = vendorDraft.models.filter((x) => x.name !== m.name);
+                                  setVendorDraft({ ...vendorDraft, models: next });
+                                  // Edit mode: persist the change. Create mode:
+                                  // the list is just local until "添加供应商".
+                                  if (editingVendor) {
+                                    const v = vendorProfiles.find((p) => p.id === editingVendor);
+                                    if (!v) return;
+                                    try {
+                                      await api.saveModelAlias({
+                                        id: v.id,
+                                        name: v.name,
+                                        vendor: v.id,
+                                        base_url: v.base_url,
+                                        model: "",
+                                        api_key: "",
+                                        api_format: v.api_format,
+                                        models: next,
+                                      });
+                                      setVendorProfiles(await api.listModelAliases());
+                                    } catch (e) {
+                                      showToast("删除 model 失败: " + String(e));
+                                    }
+                                  }
+                                }}
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                          <div className="alias-add" style={{ gridTemplateColumns: "1fr auto" }}>
+                            <input
+                              placeholder="添加 model（例：gpt-4o-mini）"
+                              value={vendorDraft.newModel}
+                              onChange={(e) => setVendorDraft({ ...vendorDraft, newModel: e.target.value })}
+                              onKeyDown={(e) => {
+                                // Pressing Enter in the input submits the new model —
+                                // matches the "click + 添加" flow without leaving the
+                                // keyboard. Trim and dedupe like the button.
+                                if (e.key !== "Enter") return;
+                                e.preventDefault();
+                                const newName = vendorDraft.newModel.trim();
+                                if (!newName) return;
+                                if (vendorDraft.models.some((m) => m.name === newName)) return;
+                                addModel(newName);
+                              }}
+                            />
+                            <button
+                              className="primary"
+                              disabled={
+                                !vendorDraft.newModel.trim() ||
+                                vendorDraft.models.some((m) => m.name === vendorDraft.newModel.trim())
+                              }
+                              onClick={() => {
+                                const newName = vendorDraft.newModel.trim();
+                                if (!newName) return;
+                                addModel(newName);
+                              }}
+                            >
+                              + 添加
+                            </button>
+                          </div>
+                        </div>
+                        {/* The bottom action row only shows when creating a new
+                         * vendor. For existing vendors, every field auto-saves
+                         * on blur and the api_format select saves on change, so
+                         * a manual "保存" button is redundant (user feedback).
+                         *
+                         * The create-mode save now includes the in-progress
+                         * model list (vendorDraft.models), so the user can add
+                         * models BEFORE clicking 添加供应商 — one save instead
+                         * of three. */}
+                        {editingVendor === null && (
+                          <div className="vendor-edit-create">
+                            <span className="vendor-edit-hint">
+                              名称和接口地址必填；密钥可以稍后再填
+                            </span>
+                            <button
+                              className="btn primary vendor-edit-cta"
+                              disabled={!vendorDraft.name.trim() || !vendorDraft.base_url.trim() || creating}
+                              onClick={async () => {
+                                if (creating) return;
+                                setCreating(true);
+                                try {
+                                  const next = await api.saveModelAlias({
+                                    id: undefined,
+                                    name: vendorDraft.name.trim(),
+                                    vendor: "custom",
+                                    base_url: vendorDraft.base_url.trim(),
+                                    model: "",
+                                    api_key: vendorDraft.api_key,
+                                    api_format: vendorDraft.api_format,
+                                    models: vendorDraft.models,
+                                  });
+                                  setVendorProfiles(await api.listModelAliases());
+                                  // Successful add — clear the create latch so a future
+                                  // click on the first vendor doesn't get ignored.
+                                  userWantsCreate.current = false;
+                                  setPresetMenuOpen(false);
+                                  setEditingVendor(next.id);
+                                  setVendorDraft({
+                                    ...vendorDraft,
+                                    api_key: "",
+                                    // After create, the saved vendor is the source of
+                                    // truth for the model list — sync the draft so the
+                                    // next "+ 添加" works against the right baseline.
+                                    models: next.models.map((m) => ({ name: m.name })),
+                                  });
+                                  showToast("已添加供应商");
+                                } catch (e) {
+                                  showToast("添加失败: " + String(e));
+                                } finally {
+                                  setCreating(false);
+                                }
+                              }}
+                            >
+                              {creating ? (
+                                <>
+                                  <span className="vendor-edit-cta-spinner" aria-hidden />
+                                  添加中…
+                                </>
+                              ) : (
+                                <>
+                                  <Icon name="plus" size={14} style={{ marginRight: 6 }} />
+                                  添加供应商
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -5546,10 +6361,16 @@ export function App() {
       {dbPickerOpen && (
         <DbPicker
           tree={tree}
-          activeConnId={active?.connId ?? ""}
-          activeDb={active?.db ?? null}
-          onSelect={changeTabContext}
-          onClose={() => setDbPickerOpen(false)}
+          // Highlight the row that matches whichever context the
+          // picker was opened from: chat's own state when the chat
+          // + menu opened it, otherwise the active SQL tab.
+          activeConnId={dbPickerCallback ? (chatConnId ?? "") : (active?.connId ?? "")}
+          activeDb={dbPickerCallback ? chatDb : (active?.db ?? null)}
+          onSelect={dbPickerCallback ?? changeTabContext}
+          onClose={() => {
+            setDbPickerOpen(false);
+            setDbPickerCallback(null);
+          }}
         />
       )}
 
@@ -5754,41 +6575,48 @@ function toCsv(columns: string[], rows: string[][]): string {
   return lines.join("\r\n");
 }
 
-function exportCsv(r: Extract<QueryOutput, { kind: "table" }>, ctx: BrowseCtx | null) {
+/// Export result as CSV. Tauri 2: open system Save dialog and write the file
+/// via the fs plugin. Web's `<a download>` is silently intercepted in the
+/// Tauri webview, so we must use the official dialog/fs plugins instead.
+async function exportCsv(r: Extract<QueryOutput, { kind: "table" }>, ctx: BrowseCtx | null) {
   const csv = toCsv(r.columns, r.rows);
-  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
   const base = ctx ? `${ctx.db}.${ctx.table}` : "result";
-  a.href = url;
-  a.download = `${base}-${Date.now()}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+  const path = await save({
+    defaultPath: `${base}-${Date.now()}.csv`,
+    filters: [{ name: "CSV", extensions: ["csv"] }],
+  });
+  if (!path) return; // user cancelled
+  await writeTextFile(path, "\uFEFF" + csv);
 }
 
 /// Export result as Excel (.xlsx) using the SheetJS library.
-function exportExcel(r: Extract<QueryOutput, { kind: "table" }>, ctx: BrowseCtx | null) {
+async function exportExcel(r: Extract<QueryOutput, { kind: "table" }>, ctx: BrowseCtx | null) {
   // xlsx is dynamically imported so it doesn't bloat the main bundle.
-  import("xlsx").then((XLSX) => {
-    const ws = XLSX.utils.aoa_to_sheet([r.columns, ...r.rows]);
-    const wb = XLSX.utils.book_new();
-    const base = ctx ? `${ctx.db}.${ctx.table}` : "result";
-    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
-    XLSX.writeFile(wb, `${base}-${Date.now()}.xlsx`);
+  const XLSX = await import("xlsx");
+  const ws = XLSX.utils.aoa_to_sheet([r.columns, ...r.rows]);
+  const wb = XLSX.utils.book_new();
+  const base = ctx ? `${ctx.db}.${ctx.table}` : "result";
+  XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+  // Get binary as ArrayBuffer; cast to Uint8Array for fs plugin's writeFile.
+  const ab = XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
+  const path = await save({
+    defaultPath: `${base}-${Date.now()}.xlsx`,
+    filters: [{ name: "Excel", extensions: ["xlsx"] }],
   });
+  if (!path) return;
+  await writeFile(path, new Uint8Array(ab));
 }
 
-/// Export result as JSON file download.
-function exportJsonFile(r: Extract<QueryOutput, { kind: "table" }>, ctx: BrowseCtx | null) {
+/// Export result as JSON. Tauri 2: same dialog+fs pattern as CSV.
+async function exportJsonFile(r: Extract<QueryOutput, { kind: "table" }>, ctx: BrowseCtx | null) {
   const json = rowsToJson(r.columns, r.rows);
-  const blob = new Blob([json], { type: "application/json;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
   const base = ctx ? `${ctx.db}.${ctx.table}` : "result";
-  a.href = url;
-  a.download = `${base}-${Date.now()}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  const path = await save({
+    defaultPath: `${base}-${Date.now()}.json`,
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (!path) return;
+  await writeTextFile(path, json);
 }
 
 /// Build a WHERE IN clause from the selected rows' values for a specific
