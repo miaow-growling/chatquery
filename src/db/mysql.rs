@@ -40,6 +40,67 @@ pub struct QueryResult {
     pub last_insert_id: Option<u64>,
 }
 
+/// True when the error looks like a half-closed connection the server
+/// dropped while the client thought it was still alive. Wraps the
+/// "expected to read 4 bytes, got 0 bytes at EOF" symptom of stale
+/// idle connections whose `test_before_acquire` ping raced the
+/// server-side close.
+///
+/// 漏一次 EOF 不要紧——重连一次通常就好。sqlx 的 `test_before_acquire`
+/// 本来该拦住，但时序上偶尔会漏（连接刚被 server 关，ping 还没发）。
+/// 把这种错误重试一次能让长闲置后的首次查询自然恢复。
+pub fn is_stale_connection_err(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Io(io) => matches!(
+            io.kind(),
+            std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+        ),
+        // sqlx 把协议层的错误也包成 IoError(UnexpectedEof)，但有些
+        // 版本会归到 Database 里并以 "expected to read N bytes" 形式出现。
+        sqlx::Error::Database(db) => {
+            let m = db.message();
+            m.contains("got 0 bytes at EOF")
+                || m.contains("expected to read")
+                || m.contains("connection reset")
+        }
+        _ => false,
+    }
+}
+
+/// Wrap an async DB op with one-shot retry on stale-connection errors.
+///
+/// sqlx 的 `test_before_acquire` ping 本应把死连接挡在 `acquire` 阶段，
+/// 但它跟 server 端的 `wait_timeout` 关闭存在时序 race，ping 刚刚成功
+/// 紧接着 server 就把 socket 关了——`fetch` / `execute` 就在管道里
+/// 撞到 `got 0 bytes at EOF`。再 `acquire` 一次会拿到新连接（或被
+/// sqlx 自动重连），这一次就能跑通。两次重试之上就不再叠——继续 retry
+/// 只会掩盖真正的网络/权限问题。
+///
+/// 用法：把所有公共 DB 入口的 body 包进闭包，复用 `is_stale_connection_err`：
+/// ```ignore
+/// with_stale_retry("mysql.browse", || async {
+///     let pool = connect_pool_db(cfg, db).await?;
+///     sqlx::query(...).fetch_all(&pool).await.map_err(AppError::Sqlx)
+/// }).await
+/// ```
+async fn with_stale_retry<F, Fut, T>(label: &str, mut op: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    match op().await {
+        Ok(v) => Ok(v),
+        Err(AppError::Sqlx(e)) if is_stale_connection_err(&e) => {
+            eprintln!("{label}: stale connection ({}); retrying once", e);
+            op().await
+        }
+        Err(other) => Err(other),
+    }
+}
+
 /// Execute a SQL string against MySQL and return a bounded, streamed result.
 /// Only up to PAGE_LIMIT rows are retained in memory.
 ///
@@ -53,6 +114,22 @@ pub struct QueryResult {
 /// confirmed the confirm dialog; LLM/TUI callers leave it false so the backend
 /// remains the last line of defense.
 pub async fn query(
+    cfg: &ConnectionConfig,
+    sql: &str,
+    database: Option<&str>,
+    allow_risky: bool,
+) -> Result<QueryResult> {
+    // Stale-connection retry wrapper (2026-08-17). Long-idle pools
+    // occasionally hand back a connection the server has already closed;
+    // sqlx's `test_before_acquire` ping sometimes races the close and
+    // EOF leaks through. One retry on a fresh pool entry is enough.
+    with_stale_retry("mysql.query", || {
+        query_once(cfg, sql, database, allow_risky)
+    })
+    .await
+}
+
+async fn query_once(
     cfg: &ConnectionConfig,
     sql: &str,
     database: Option<&str>,
@@ -160,61 +237,70 @@ pub async fn query_paged(
         return query(cfg, sql, database, allow_risky).await;
     }
 
-    let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
-    let offset = page.saturating_mul(page_size);
-    let pool = match database {
-        Some(db) if !db.is_empty() => connect_pool_db(cfg, db).await?,
-        _ => connect_pool(cfg).await?,
-    };
+    // Stale-connection retry (2026-08-17): same race-the-ping issue as
+    // `query` — the COUNT(*) probe or the page fetch can hit EOF when
+    // sqlx's test_before_acquire ping raced the server-side close. Wrap
+    // the whole post-routing body (pool acquire + COUNT + page stream)
+    // so a single retry re-acquires from the cached pool with a fresh
+    // connection.
+    with_stale_retry("mysql.query_paged", || async {
+        let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
+        let offset = page.saturating_mul(page_size);
+        let pool = match database {
+            Some(db) if !db.is_empty() => connect_pool_db(cfg, db).await?,
+            _ => connect_pool(cfg).await?,
+        };
 
-    let (base, user_limit) = strip_limit_offset(sql);
+        let (base, user_limit) = strip_limit_offset(sql);
 
-    // True total row count so the UI can render a pager. When the user already
-    // supplied a LIMIT we wrap the limited query so COUNT respects that cap.
-    // If the SQL is too exotic for COUNT (e.g. some top-level UNION shapes) we
-    // leave total = None and the UI simply hides the pager.
-    let count_sql = user_limit.map_or_else(
-        || format!("SELECT COUNT(*) FROM ({}) AS _cq_sub", base),
-        |limit| format!("SELECT COUNT(*) FROM ({} LIMIT {}) AS _cq_sub", base, limit),
-    );
-    let total: Option<usize> = sqlx::query_scalar::<_, i64>(&count_sql)
-        .fetch_one(&pool)
-        .await
-        .ok()
-        .map(|n| n.max(0) as usize);
+        // True total row count so the UI can render a pager. When the user already
+        // supplied a LIMIT we wrap the limited query so COUNT respects that cap.
+        // If the SQL is too exotic for COUNT (e.g. some top-level UNION shapes) we
+        // leave total = None and the UI simply hides the pager.
+        let count_sql = user_limit.map_or_else(
+            || format!("SELECT COUNT(*) FROM ({}) AS _cq_sub", base),
+            |limit| format!("SELECT COUNT(*) FROM ({} LIMIT {}) AS _cq_sub", base, limit),
+        );
+        let total: Option<usize> = sqlx::query_scalar::<_, i64>(&count_sql)
+            .fetch_one(&pool)
+            .await
+            .ok()
+            .map(|n| n.max(0) as usize);
 
-    // If the user supplied a LIMIT, paginate inside a derived table so we never
-    // return rows beyond their requested cap.
-    let page_sql = user_limit.map_or_else(
-        || format!("{} LIMIT ? OFFSET ?", base),
-        |limit| format!(
-            "SELECT * FROM ({} LIMIT {}) AS _cq_limited LIMIT ? OFFSET ?",
-            base, limit
-        ),
-    );
-    let mut stream = sqlx::query(&page_sql)
-        .bind(page_size as u64)
-        .bind(offset as u64)
-        .fetch(&pool);
-    let mut columns: Vec<String> = Vec::new();
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    while let Some(row) = stream.try_next().await.map_err(AppError::Sqlx)? {
-        if columns.is_empty() {
-            for c in row.columns() {
-                columns.push(c.name().to_string());
+        // If the user supplied a LIMIT, paginate inside a derived table so we never
+        // return rows beyond their requested cap.
+        let page_sql = user_limit.map_or_else(
+            || format!("{} LIMIT ? OFFSET ?", base),
+            |limit| format!(
+                "SELECT * FROM ({} LIMIT {}) AS _cq_limited LIMIT ? OFFSET ?",
+                base, limit
+            ),
+        );
+        let mut stream = sqlx::query(&page_sql)
+            .bind(page_size as u64)
+            .bind(offset as u64)
+            .fetch(&pool);
+        let mut columns: Vec<String> = Vec::new();
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        while let Some(row) = stream.try_next().await.map_err(AppError::Sqlx)? {
+            if columns.is_empty() {
+                for c in row.columns() {
+                    columns.push(c.name().to_string());
+                }
             }
+            rows.push(decode_row(&row).await);
         }
-        rows.push(decode_row(&row).await);
-    }
-    Ok(QueryResult {
-        columns,
-        rows,
-        truncated: false,
-        total,
-        primary_keys: vec![],
-        affected: None,
-        last_insert_id: None,
+        Ok(QueryResult {
+            columns,
+            rows,
+            truncated: false,
+            total,
+            primary_keys: vec![],
+            affected: None,
+            last_insert_id: None,
+        })
     })
+    .await
 }
 
 /// Strip a trailing `LIMIT` clause (MySQL's `LIMIT n`, `LIMIT n, m`, and
@@ -493,8 +579,11 @@ async fn connect_raw(cfg: &ConnectionConfig, database: &str) -> Result<MySqlPool
         .min_connections(0)
         // 主动在 server 的 wait_timeout 之前回收连接，避免拿到已被 server 静默
         // 关闭的空闲连接去跑查询（典型症状：got 0 bytes at EOF）。
+        // 30s 仍偏长——很多 MySQL server wait_timeout 配 60s 甚至更低，
+        // 客户端等到 server 关了才被动发现总会有一次 EOF 漏到查询层。
+        // 降到 15s 让 sqlx 主动回收，搭配 query() 层的 retry 兜底。
         .max_lifetime(Some(std::time::Duration::from_secs(1800)))
-        .idle_timeout(Some(std::time::Duration::from_secs(30)))
+        .idle_timeout(Some(std::time::Duration::from_secs(15)))
         // 每次从池里取出连接前先 ping 一下，死连接会被丢弃并重连，绝不让 EOF 漏到查询层。
         .test_before_acquire(true)
         .after_connect(|conn, _info| {
@@ -732,61 +821,70 @@ pub async fn schema(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Sc
             cfg.database.clone()
         }
     };
-    let pool = connect_pool_db(cfg, &db).await?;
-    // CAST every INFORMATION_SCHEMA text column to CHAR so sqlx decodes them as
-    // VARCHAR instead of BINARY (binary charset would break String mapping).
-    let rows = sqlx::query(
-        "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, \
-                CAST(DATA_TYPE AS CHAR) AS DATA_TYPE, CAST(COLUMN_KEY AS CHAR) AS COLUMN_KEY, \
-                CAST(IS_NULLABLE AS CHAR) AS IS_NULLABLE, CAST(COLUMN_DEFAULT AS CHAR) AS COLUMN_DEFAULT \
-         FROM INFORMATION_SCHEMA.COLUMNS \
-         WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 1000",
-    )
-    .bind(&db)
-    .fetch_all(&pool)
-    .await
-    .map_err(AppError::Sqlx)?;
-    let mut tables: Vec<TableInfo> = Vec::new();
-    for row in rows {
-        let tname: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
-        let cname: String = row.try_get("COLUMN_NAME").map_err(AppError::Sqlx)?;
-        let dtype: String = row.try_get("DATA_TYPE").map_err(AppError::Sqlx)?;
-        let key: String = row.try_get("COLUMN_KEY").map_err(AppError::Sqlx)?;
-        let nullable: String = row.try_get("IS_NULLABLE").map_err(AppError::Sqlx)?;
-        let default: Option<String> = row.try_get("COLUMN_DEFAULT").ok().flatten();
-        if let Some(last) = tables.last_mut() {
-            if last.name == tname {
-                last.columns.push(ColumnInfo {
+    with_stale_retry("mysql.schema", || async {
+        let pool = connect_pool_db(cfg, &db).await?;
+        // CAST every INFORMATION_SCHEMA text column to CHAR so sqlx decodes them as
+        // VARCHAR instead of BINARY (binary charset would break String mapping).
+        let rows = sqlx::query(
+            "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, \
+                    CAST(DATA_TYPE AS CHAR) AS DATA_TYPE, CAST(COLUMN_KEY AS CHAR) AS COLUMN_KEY, \
+                    CAST(IS_NULLABLE AS CHAR) AS IS_NULLABLE, CAST(COLUMN_DEFAULT AS CHAR) AS COLUMN_DEFAULT \
+             FROM INFORMATION_SCHEMA.COLUMNS \
+             WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 1000",
+        )
+        .bind(&db)
+        .fetch_all(&pool)
+        .await
+        .map_err(AppError::Sqlx)?;
+        let mut tables: Vec<TableInfo> = Vec::new();
+        for row in rows {
+            let tname: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
+            let cname: String = row.try_get("COLUMN_NAME").map_err(AppError::Sqlx)?;
+            let dtype: String = row.try_get("DATA_TYPE").map_err(AppError::Sqlx)?;
+            let key: String = row.try_get("COLUMN_KEY").map_err(AppError::Sqlx)?;
+            let nullable: String = row.try_get("IS_NULLABLE").map_err(AppError::Sqlx)?;
+            let default: Option<String> = row.try_get("COLUMN_DEFAULT").ok().flatten();
+            if let Some(last) = tables.last_mut() {
+                if last.name == tname {
+                    last.columns.push(ColumnInfo {
+                        name: cname,
+                        data_type: dtype,
+                        key,
+                        nullable,
+                        default,
+                        comment: None,
+                    });
+                    continue;
+                }
+            }
+            tables.push(TableInfo {
+                name: tname,
+                columns: vec![ColumnInfo {
                     name: cname,
                     data_type: dtype,
                     key,
                     nullable,
                     default,
                     comment: None,
-                });
-                continue;
-            }
+                }],
+            });
         }
-        tables.push(TableInfo {
-            name: tname,
-            columns: vec![ColumnInfo {
-                name: cname,
-                data_type: dtype,
-                key,
-                nullable,
-                default,
-                comment: None,
-            }],
-        });
-    }
-    Ok(Schema { tables })
+        Ok(Schema { tables })
+    })
+    .await
 }
 
 /// Lightweight connectivity check used by the connection form.
 pub async fn test(cfg: &ConnectionConfig) -> Result<()> {
-    let pool = connect_pool(cfg).await?;
-    sqlx::query("SELECT 1").execute(&pool).await.map_err(AppError::Sqlx)?;
-    Ok(())
+    with_stale_retry("mysql.test", || async {
+        let pool = connect_pool(cfg).await?;
+        sqlx::query("SELECT 1")
+            .execute(&pool)
+            .await
+            .map_err(AppError::Sqlx)?;
+        Ok(())
+    })
+    .await
 }
 
 /// Schema for a single database, returned to the frontend for editor autocomplete.
@@ -826,51 +924,57 @@ pub struct TableMeta {
 
 /// List non-system databases on the server (Navicat's "database" level).
 pub async fn list_databases(cfg: &ConnectionConfig) -> Result<Vec<String>> {
-    // 只查 INFORMATION_SCHEMA，无需（也不应）连接 mysql 系统库——托管账号往往
-    // 对 mysql 库无权限。走默认连接（空库或无库连接均可）。
-    let pool = connect_pool(cfg).await?;
-    // CAST SCHEMA_NAME to CHAR: INFORMATION_SCHEMA columns use a binary charset
-    // and would decode as SQL type BINARY, incompatible with Rust String.
-    let rows = sqlx::query(
-        "SELECT CAST(SCHEMA_NAME AS CHAR) AS SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA \
-         WHERE SCHEMA_NAME NOT IN ('information_schema','performance_schema','mysql','sys') \
-         ORDER BY SCHEMA_NAME",
-    )
-    .fetch_all(&pool)
+    with_stale_retry("mysql.list_databases", || async {
+        // 只查 INFORMATION_SCHEMA，无需（也不应）连接 mysql 系统库——托管账号往往
+        // 对 mysql 库无权限。走默认连接（空库或无库连接均可）。
+        let pool = connect_pool(cfg).await?;
+        // CAST SCHEMA_NAME to CHAR: INFORMATION_SCHEMA columns use a binary charset
+        // and would decode as SQL type BINARY, incompatible with Rust String.
+        let rows = sqlx::query(
+            "SELECT CAST(SCHEMA_NAME AS CHAR) AS SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA \
+             WHERE SCHEMA_NAME NOT IN ('information_schema','performance_schema','mysql','sys') \
+             ORDER BY SCHEMA_NAME",
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(AppError::Sqlx)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(row.try_get("SCHEMA_NAME").map_err(AppError::Sqlx)?);
+        }
+        Ok(out)
+    })
     .await
-    .map_err(AppError::Sqlx)?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        out.push(row.try_get("SCHEMA_NAME").map_err(AppError::Sqlx)?);
-    }
-    Ok(out)
 }
 
 /// List tables and views within a single database, ordered by name.
 pub async fn list_tables(cfg: &ConnectionConfig, database: &str) -> Result<Vec<TableMeta>> {
-    let pool = connect_pool_db(cfg, database).await?;
-    // INFORMATION_SCHEMA text columns are defined with a binary charset in MySQL,
-    // so sqlx reports them as SQL type BINARY and refuses to map them to String.
-    // CAST to CHAR so they come back as VARCHAR (see list_tables/schema/describe_table).
-    let rows = sqlx::query(
-        "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE \
-         FROM INFORMATION_SCHEMA.TABLES \
-         WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME",
-    )
-    .bind(database)
-    .fetch_all(&pool)
+    with_stale_retry("mysql.list_tables", || async {
+        let pool = connect_pool_db(cfg, database).await?;
+        // INFORMATION_SCHEMA text columns are defined with a binary charset in MySQL,
+        // so sqlx reports them as SQL type BINARY and refuses to map them to String.
+        // CAST to CHAR so they come back as VARCHAR (see list_tables/schema/describe_table).
+        let rows = sqlx::query(
+            "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE \
+             FROM INFORMATION_SCHEMA.TABLES \
+             WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME",
+        )
+        .bind(database)
+        .fetch_all(&pool)
+        .await
+        .map_err(AppError::Sqlx)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
+            let ttype: String = row.try_get("TABLE_TYPE").map_err(AppError::Sqlx)?;
+            out.push(TableMeta {
+                name,
+                is_view: ttype.eq_ignore_ascii_case("VIEW"),
+            });
+        }
+        Ok(out)
+    })
     .await
-    .map_err(AppError::Sqlx)?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
-        let ttype: String = row.try_get("TABLE_TYPE").map_err(AppError::Sqlx)?;
-        out.push(TableMeta {
-            name,
-            is_view: ttype.eq_ignore_ascii_case("VIEW"),
-        });
-    }
-    Ok(out)
 }
 
 /// Search tables in a database by name prefix, bounded by `limit`. Powers the
@@ -883,43 +987,46 @@ pub async fn search_tables(
     like: Option<&str>,
     limit: usize,
 ) -> Result<Vec<TableMeta>> {
-    let pool = connect_pool_db(cfg, database).await?;
-    let mut sql = String::from(
-        "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE \
-         FROM INFORMATION_SCHEMA.TABLES \
-         WHERE TABLE_SCHEMA = ?",
-    );
-    let mut binds: Vec<String> = Vec::new();
-    if let Some(like) = like {
-        if !like.is_empty() {
-            // Prefix match; escape LIKE wildcards in the user's input so a
-            // literal `%` / `_` is matched literally, not as a wildcard.
-            sql.push_str(" AND TABLE_NAME LIKE ? ESCAPE '\\\\'");
-            let pat = format!(
-                "{}%",
-                like.replace('\\', "\\\\")
-                    .replace('%', "\\%")
-                    .replace('_', "\\_")
-            );
-            binds.push(pat);
+    with_stale_retry("mysql.search_tables", || async {
+        let pool = connect_pool_db(cfg, database).await?;
+        let mut sql = String::from(
+            "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE \
+             FROM INFORMATION_SCHEMA.TABLES \
+             WHERE TABLE_SCHEMA = ?",
+        );
+        let mut binds: Vec<String> = Vec::new();
+        if let Some(like) = like {
+            if !like.is_empty() {
+                // Prefix match; escape LIKE wildcards in the user's input so a
+                // literal `%` / `_` is matched literally, not as a wildcard.
+                sql.push_str(" AND TABLE_NAME LIKE ? ESCAPE '\\\\'");
+                let pat = format!(
+                    "{}%",
+                    like.replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                );
+                binds.push(pat);
+            }
         }
-    }
-    sql.push_str(&format!(" ORDER BY TABLE_NAME LIMIT {}", limit));
-    let mut q = sqlx::query(&sql).bind(database);
-    for b in &binds {
-        q = q.bind(b.clone());
-    }
-    let rows = q.fetch_all(&pool).await.map_err(AppError::Sqlx)?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
-        let ttype: String = row.try_get("TABLE_TYPE").map_err(AppError::Sqlx)?;
-        out.push(TableMeta {
-            name,
-            is_view: ttype.eq_ignore_ascii_case("VIEW"),
-        });
-    }
-    Ok(out)
+        sql.push_str(&format!(" ORDER BY TABLE_NAME LIMIT {}", limit));
+        let mut q = sqlx::query(&sql).bind(database);
+        for b in &binds {
+            q = q.bind(b.clone());
+        }
+        let rows = q.fetch_all(&pool).await.map_err(AppError::Sqlx)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
+            let ttype: String = row.try_get("TABLE_TYPE").map_err(AppError::Sqlx)?;
+            out.push(TableMeta {
+                name,
+                is_view: ttype.eq_ignore_ascii_case("VIEW"),
+            });
+        }
+        Ok(out)
+    })
+    .await
 }
 
 /// List columns of a single table/view, including key/nullable/default.
@@ -928,39 +1035,42 @@ pub async fn list_columns(
     database: &str,
     table: &str,
 ) -> Result<Vec<ColumnInfo>> {
-    let pool = connect_pool_db(cfg, database).await?;
-    let rows = sqlx::query(
-        "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_KEY, IS_NULLABLE, COLUMN_DEFAULT, \
-                CAST(COLUMN_COMMENT AS CHAR) AS COLUMN_COMMENT \
-         FROM INFORMATION_SCHEMA.COLUMNS \
-         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
-    )
-    .bind(database)
-    .bind(table)
-    .fetch_all(&pool)
+    with_stale_retry("mysql.list_columns", || async {
+        let pool = connect_pool_db(cfg, database).await?;
+        let rows = sqlx::query(
+            "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_KEY, IS_NULLABLE, COLUMN_DEFAULT, \
+                    CAST(COLUMN_COMMENT AS CHAR) AS COLUMN_COMMENT \
+             FROM INFORMATION_SCHEMA.COLUMNS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+        )
+        .bind(database)
+        .bind(table)
+        .fetch_all(&pool)
+        .await
+        .map_err(AppError::Sqlx)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let name: String = row.try_get("COLUMN_NAME").map_err(AppError::Sqlx)?;
+            let data_type: String = row.try_get("DATA_TYPE").map_err(AppError::Sqlx)?;
+            let key: String = row.try_get("COLUMN_KEY").map_err(AppError::Sqlx)?;
+            let nullable: String = row.try_get("IS_NULLABLE").map_err(AppError::Sqlx)?;
+            let default: Option<String> = row.try_get("COLUMN_DEFAULT").ok().flatten();
+            let comment_raw: Option<String> = row.try_get("COLUMN_COMMENT").ok().flatten();
+            let comment = comment_raw
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty());
+            out.push(ColumnInfo {
+                name,
+                data_type,
+                key,
+                nullable,
+                default,
+                comment,
+            });
+        }
+        Ok(out)
+    })
     .await
-    .map_err(AppError::Sqlx)?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let name: String = row.try_get("COLUMN_NAME").map_err(AppError::Sqlx)?;
-        let data_type: String = row.try_get("DATA_TYPE").map_err(AppError::Sqlx)?;
-        let key: String = row.try_get("COLUMN_KEY").map_err(AppError::Sqlx)?;
-        let nullable: String = row.try_get("IS_NULLABLE").map_err(AppError::Sqlx)?;
-        let default: Option<String> = row.try_get("COLUMN_DEFAULT").ok().flatten();
-        let comment_raw: Option<String> = row.try_get("COLUMN_COMMENT").ok().flatten();
-        let comment = comment_raw
-            .map(|c| c.trim().to_string())
-            .filter(|c| !c.is_empty());
-        out.push(ColumnInfo {
-            name,
-            data_type,
-            key,
-            nullable,
-            default,
-            comment,
-        });
-    }
-    Ok(out)
 }
 
 /// Read-only paginated browse of a table:
@@ -977,64 +1087,67 @@ pub async fn browse(
     page: usize,
     page_size: usize,
 ) -> Result<QueryResult> {
-    let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
-    let offset = page.saturating_mul(page_size);
-    let pool = connect_pool_db(cfg, database).await?;
+    with_stale_retry("mysql.browse", || async {
+        let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
+        let offset = page.saturating_mul(page_size);
+        let pool = connect_pool_db(cfg, database).await?;
 
-    // Fully-qualified table reference: `db`.`tbl` — a DOT, not a space. A space
-    // would make MySQL treat `db` as a table name in the current schema, which
-    // produced "Table 'kf_ai.kf_ai' doesn't exist" (the db was misread as a
-    // table, the real table name became an alias).
-    let table_ref = qualified_table(database, table);
+        // Fully-qualified table reference: `db`.`tbl` — a DOT, not a space. A space
+        // would make MySQL treat `db` as a table name in the current schema, which
+        // produced "Table 'kf_ai.kf_ai' doesn't exist" (the db was misread as a
+        // table, the real table name became an alias).
+        let table_ref = qualified_table(database, table);
 
-    // Primary-key columns so the UI can locate a row for writes. Careful: a
-    // table with no primary key can't be safely written back (no stable row
-    // identity), so we surface the empty list and the UI disables editing.
-    // CAST COLUMN_NAME to CHAR: INFORMATION_SCHEMA text columns are binary-charset.
-    let pk_rows = sqlx::query(
-        "SELECT CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS \
-         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_KEY = 'PRI' \
-         ORDER BY ORDINAL_POSITION",
-    )
-    .bind(database)
-    .bind(table)
-    .fetch_all(&pool)
-    .await
-    .map_err(AppError::Sqlx)?;
-    let primary_keys: Vec<String> = pk_rows
-        .iter()
-        .map(|r| r.try_get::<String, _>("COLUMN_NAME").unwrap_or_default())
-        .collect();
-
-    let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {}", table_ref))
-        .fetch_one(&pool)
+        // Primary-key columns so the UI can locate a row for writes. Careful: a
+        // table with no primary key can't be safely written back (no stable row
+        // identity), so we surface the empty list and the UI disables editing.
+        // CAST COLUMN_NAME to CHAR: INFORMATION_SCHEMA text columns are binary-charset.
+        let pk_rows = sqlx::query(
+            "SELECT CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_KEY = 'PRI' \
+             ORDER BY ORDINAL_POSITION",
+        )
+        .bind(database)
+        .bind(table)
+        .fetch_all(&pool)
         .await
         .map_err(AppError::Sqlx)?;
+        let primary_keys: Vec<String> = pk_rows
+            .iter()
+            .map(|r| r.try_get::<String, _>("COLUMN_NAME").unwrap_or_default())
+            .collect();
 
-    let sql = format!("SELECT * FROM {} LIMIT ? OFFSET ?", table_ref);
-    let mut stream = sqlx::query(&sql)
-        .bind(page_size as u64)
-        .bind(offset as u64)
-        .fetch(&pool);
-    let mut columns: Vec<String> = Vec::new();
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    while let Some(row) = stream.try_next().await.map_err(AppError::Sqlx)? {
-        if columns.is_empty() {
-            for c in row.columns() {
-                columns.push(c.name().to_string());
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {}", table_ref))
+            .fetch_one(&pool)
+            .await
+            .map_err(AppError::Sqlx)?;
+
+        let sql = format!("SELECT * FROM {} LIMIT ? OFFSET ?", table_ref);
+        let mut stream = sqlx::query(&sql)
+            .bind(page_size as u64)
+            .bind(offset as u64)
+            .fetch(&pool);
+        let mut columns: Vec<String> = Vec::new();
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        while let Some(row) = stream.try_next().await.map_err(AppError::Sqlx)? {
+            if columns.is_empty() {
+                for c in row.columns() {
+                    columns.push(c.name().to_string());
+                }
             }
+            rows.push(decode_row(&row).await);
         }
-        rows.push(decode_row(&row).await);
-    }
-    Ok(QueryResult {
-        columns,
-        rows,
-        truncated: false,
-        total: Some(total.max(0) as usize),
-        primary_keys,
-        affected: None,
-        last_insert_id: None,
+        Ok(QueryResult {
+            columns,
+            rows,
+            truncated: false,
+            total: Some(total.max(0) as usize),
+            primary_keys,
+            affected: None,
+            last_insert_id: None,
+        })
     })
+    .await
 }
 
 /// Write back a single row's edited cells. All changes for one row are folded
@@ -1057,35 +1170,41 @@ pub async fn apply_edit(
     if set.is_empty() {
         return Ok(());
     }
-    let pool = connect_pool_db(cfg, database).await?;
-    let table_ref = qualified_table(database, table);
+    // Wrap the whole body (tx + execute + commit) in stale-retry. If begin()
+    // or execute() hits EOF, sqlx auto-rolls back the half-started tx on
+    // drop and the retry re-runs against a freshly-acquired connection.
+    with_stale_retry("mysql.apply_edit", || async {
+        let pool = connect_pool_db(cfg, database).await?;
+        let table_ref = qualified_table(database, table);
 
-    let mut sql = format!("UPDATE {} SET ", table_ref);
-    for (i, (col, _)) in set.iter().enumerate() {
-        if i > 0 {
-            sql.push_str(", ");
+        let mut sql = format!("UPDATE {} SET ", table_ref);
+        for (i, (col, _)) in set.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push_str(&format!("{} = ?", quote_ident(col)));
         }
-        sql.push_str(&format!("{} = ?", quote_ident(col)));
-    }
-    sql.push_str(" WHERE ");
-    for (i, (col, _)) in pk.iter().enumerate() {
-        if i > 0 {
-            sql.push_str(" AND ");
+        sql.push_str(" WHERE ");
+        for (i, (col, _)) in pk.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(" AND ");
+            }
+            sql.push_str(&format!("{} = ?", quote_ident(col)));
         }
-        sql.push_str(&format!("{} = ?", quote_ident(col)));
-    }
 
-    let mut tx = pool.begin().await.map_err(AppError::Sqlx)?;
-    let mut q = sqlx::query(&sql);
-    for (_, v) in &set {
-        q = q.bind(v.clone());
-    }
-    for (_, v) in &pk {
-        q = q.bind(v.clone());
-    }
-    q.execute(&mut *tx).await.map_err(AppError::Sqlx)?;
-    tx.commit().await.map_err(AppError::Sqlx)?;
-    Ok(())
+        let mut tx = pool.begin().await.map_err(AppError::Sqlx)?;
+        let mut q = sqlx::query(&sql);
+        for (_, v) in &set {
+            q = q.bind(v.clone());
+        }
+        for (_, v) in &pk {
+            q = q.bind(v.clone());
+        }
+        q.execute(&mut *tx).await.map_err(AppError::Sqlx)?;
+        tx.commit().await.map_err(AppError::Sqlx)?;
+        Ok(())
+    })
+    .await
 }
 
 /// Insert a new row. Only the columns the user explicitly typed are included
@@ -1102,26 +1221,29 @@ pub async fn insert_row(
     if values.is_empty() {
         return Ok(());
     }
-    let pool = connect_pool_db(cfg, database).await?;
-    let table_ref = qualified_table(database, table);
+    with_stale_retry("mysql.insert_row", || async {
+        let pool = connect_pool_db(cfg, database).await?;
+        let table_ref = qualified_table(database, table);
 
-    let cols: Vec<String> = values.iter().map(|(c, _)| quote_ident(c)).collect();
-    let placeholders: Vec<&str> = values.iter().map(|_| "?").collect();
-    let sql = format!(
-        "INSERT INTO {} ({}) VALUES ({})",
-        table_ref,
-        cols.join(", "),
-        placeholders.join(", "),
-    );
+        let cols: Vec<String> = values.iter().map(|(c, _)| quote_ident(c)).collect();
+        let placeholders: Vec<&str> = values.iter().map(|_| "?").collect();
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            table_ref,
+            cols.join(", "),
+            placeholders.join(", "),
+        );
 
-    let mut tx = pool.begin().await.map_err(AppError::Sqlx)?;
-    let mut q = sqlx::query(&sql);
-    for (_, v) in &values {
-        q = q.bind(v.clone());
-    }
-    q.execute(&mut *tx).await.map_err(AppError::Sqlx)?;
-    tx.commit().await.map_err(AppError::Sqlx)?;
-    Ok(())
+        let mut tx = pool.begin().await.map_err(AppError::Sqlx)?;
+        let mut q = sqlx::query(&sql);
+        for (_, v) in &values {
+            q = q.bind(v.clone());
+        }
+        q.execute(&mut *tx).await.map_err(AppError::Sqlx)?;
+        tx.commit().await.map_err(AppError::Sqlx)?;
+        Ok(())
+    })
+    .await
 }
 
 /// Delete a single row by its primary-key snapshot. The `pk` vector carries
@@ -1139,25 +1261,28 @@ pub async fn delete_row(
             "无法删除：该表没有主键，无法安全定位行".into(),
         ));
     }
-    let pool = connect_pool_db(cfg, database).await?;
-    let table_ref = qualified_table(database, table);
+    with_stale_retry("mysql.delete_row", || async {
+        let pool = connect_pool_db(cfg, database).await?;
+        let table_ref = qualified_table(database, table);
 
-    let mut sql = format!("DELETE FROM {} WHERE ", table_ref);
-    for (i, (col, _)) in pk.iter().enumerate() {
-        if i > 0 {
-            sql.push_str(" AND ");
+        let mut sql = format!("DELETE FROM {} WHERE ", table_ref);
+        for (i, (col, _)) in pk.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(" AND ");
+            }
+            sql.push_str(&format!("{} = ?", quote_ident(col)));
         }
-        sql.push_str(&format!("{} = ?", quote_ident(col)));
-    }
 
-    let mut tx = pool.begin().await.map_err(AppError::Sqlx)?;
-    let mut q = sqlx::query(&sql);
-    for (_, v) in &pk {
-        q = q.bind(v.clone());
-    }
-    q.execute(&mut *tx).await.map_err(AppError::Sqlx)?;
-    tx.commit().await.map_err(AppError::Sqlx)?;
-    Ok(())
+        let mut tx = pool.begin().await.map_err(AppError::Sqlx)?;
+        let mut q = sqlx::query(&sql);
+        for (_, v) in &pk {
+            q = q.bind(v.clone());
+        }
+        q.execute(&mut *tx).await.map_err(AppError::Sqlx)?;
+        tx.commit().await.map_err(AppError::Sqlx)?;
+        Ok(())
+    })
+    .await
 }
 
 /// A column's full structure detail — richer than `ColumnInfo` (which only
@@ -1208,78 +1333,81 @@ pub async fn describe_table(
     database: &str,
     table: &str,
 ) -> Result<TableStructure> {
-    let pool = connect_pool_db(cfg, database).await?;
+    with_stale_retry("mysql.describe_table", || async {
+        let pool = connect_pool_db(cfg, database).await?;
 
-    // 1. Column details — use COLUMN_TYPE (full) and EXTRA which list_columns
-    //    doesn't select.
-    // CAST every INFORMATION_SCHEMA text column to CHAR so sqlx decodes them as
-    // VARCHAR instead of BINARY (binary charset would break String mapping).
-    let col_rows = sqlx::query(
-        "SELECT CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, CAST(COLUMN_TYPE AS CHAR) AS COLUMN_TYPE, \
-                CAST(IS_NULLABLE AS CHAR) AS IS_NULLABLE, CAST(COLUMN_KEY AS CHAR) AS COLUMN_KEY, \
-                CAST(COLUMN_DEFAULT AS CHAR) AS COLUMN_DEFAULT, CAST(EXTRA AS CHAR) AS EXTRA \
-         FROM INFORMATION_SCHEMA.COLUMNS \
-         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
-    )
-    .bind(database)
-    .bind(table)
-    .fetch_all(&pool)
-    .await
-    .map_err(AppError::Sqlx)?;
-    let mut columns = Vec::with_capacity(col_rows.len());
-    for row in col_rows {
-        let name: String = row.try_get("COLUMN_NAME").map_err(AppError::Sqlx)?;
-        let column_type: String = row.try_get("COLUMN_TYPE").map_err(AppError::Sqlx)?;
-        let nullable_str: String = row.try_get("IS_NULLABLE").map_err(AppError::Sqlx)?;
-        let key: String = row.try_get("COLUMN_KEY").map_err(AppError::Sqlx)?;
-        let default: Option<String> = row.try_get("COLUMN_DEFAULT").ok().flatten();
-        let extra: String = row.try_get("EXTRA").map_err(AppError::Sqlx)?;
-        columns.push(ColumnDetail {
-            name,
-            column_type,
-            nullable: nullable_str.eq_ignore_ascii_case("YES"),
-            key,
-            default,
-            extra,
-        });
-    }
-
-    // 2. Indexes — SHOW INDEX returns one row per (index, column). Grouping is
-    //    left to the frontend; the raw entries preserve order and uniqueness.
-    let idx_sql = format!("SHOW INDEX FROM {}", qualified_table(database, table));
-    let idx_rows = sqlx::query(&idx_sql)
+        // 1. Column details — use COLUMN_TYPE (full) and EXTRA which list_columns
+        //    doesn't select.
+        // CAST every INFORMATION_SCHEMA text column to CHAR so sqlx decodes them as
+        // VARCHAR instead of BINARY (binary charset would break String mapping).
+        let col_rows = sqlx::query(
+            "SELECT CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, CAST(COLUMN_TYPE AS CHAR) AS COLUMN_TYPE, \
+                    CAST(IS_NULLABLE AS CHAR) AS IS_NULLABLE, CAST(COLUMN_KEY AS CHAR) AS COLUMN_KEY, \
+                    CAST(COLUMN_DEFAULT AS CHAR) AS COLUMN_DEFAULT, CAST(EXTRA AS CHAR) AS EXTRA \
+             FROM INFORMATION_SCHEMA.COLUMNS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+        )
+        .bind(database)
+        .bind(table)
         .fetch_all(&pool)
         .await
         .map_err(AppError::Sqlx)?;
-    let mut indexes = Vec::with_capacity(idx_rows.len());
-    for row in idx_rows {
-        let name: String = row.try_get("Key_name").map_err(AppError::Sqlx)?;
-        let non_unique: i64 = row.try_get("Non_unique").map_err(AppError::Sqlx)?;
-        let seq: i64 = row.try_get("Seq_in_index").map_err(AppError::Sqlx)?;
-        let column: String = row.try_get("Column_name").map_err(AppError::Sqlx)?;
-        indexes.push(IndexInfo {
-            name,
-            column,
-            unique: non_unique == 0,
-            seq: seq.max(1) as u32,
-        });
-    }
+        let mut columns = Vec::with_capacity(col_rows.len());
+        for row in col_rows {
+            let name: String = row.try_get("COLUMN_NAME").map_err(AppError::Sqlx)?;
+            let column_type: String = row.try_get("COLUMN_TYPE").map_err(AppError::Sqlx)?;
+            let nullable_str: String = row.try_get("IS_NULLABLE").map_err(AppError::Sqlx)?;
+            let key: String = row.try_get("COLUMN_KEY").map_err(AppError::Sqlx)?;
+            let default: Option<String> = row.try_get("COLUMN_DEFAULT").ok().flatten();
+            let extra: String = row.try_get("EXTRA").map_err(AppError::Sqlx)?;
+            columns.push(ColumnDetail {
+                name,
+                column_type,
+                nullable: nullable_str.eq_ignore_ascii_case("YES"),
+                key,
+                default,
+                extra,
+            });
+        }
 
-    // 3. DDL — SHOW CREATE TABLE returns two columns: Table, Create Table.
-    let ddl_sql = format!("SHOW CREATE TABLE {}", qualified_table(database, table));
-    let ddl_row = sqlx::query(&ddl_sql)
-        .fetch_one(&pool)
-        .await
-        .map_err(AppError::Sqlx)?;
-    let create_sql: String = ddl_row
-        .try_get::<String, _>(1)
-        .map_err(AppError::Sqlx)?;
+        // 2. Indexes — SHOW INDEX returns one row per (index, column). Grouping is
+        //    left to the frontend; the raw entries preserve order and uniqueness.
+        let idx_sql = format!("SHOW INDEX FROM {}", qualified_table(database, table));
+        let idx_rows = sqlx::query(&idx_sql)
+            .fetch_all(&pool)
+            .await
+            .map_err(AppError::Sqlx)?;
+        let mut indexes = Vec::with_capacity(idx_rows.len());
+        for row in idx_rows {
+            let name: String = row.try_get("Key_name").map_err(AppError::Sqlx)?;
+            let non_unique: i64 = row.try_get("Non_unique").map_err(AppError::Sqlx)?;
+            let seq: i64 = row.try_get("Seq_in_index").map_err(AppError::Sqlx)?;
+            let column: String = row.try_get("Column_name").map_err(AppError::Sqlx)?;
+            indexes.push(IndexInfo {
+                name,
+                column,
+                unique: non_unique == 0,
+                seq: seq.max(1) as u32,
+            });
+        }
 
-    Ok(TableStructure {
-        columns,
-        indexes,
-        create_sql,
+        // 3. DDL — SHOW CREATE TABLE returns two columns: Table, Create Table.
+        let ddl_sql = format!("SHOW CREATE TABLE {}", qualified_table(database, table));
+        let ddl_row = sqlx::query(&ddl_sql)
+            .fetch_one(&pool)
+            .await
+            .map_err(AppError::Sqlx)?;
+        let create_sql: String = ddl_row
+            .try_get::<String, _>(1)
+            .map_err(AppError::Sqlx)?;
+
+        Ok(TableStructure {
+            columns,
+            indexes,
+            create_sql,
+        })
     })
+    .await
 }
 
 /// A foreign-key relationship discovered from INFORMATION_SCHEMA. Each entry
@@ -1307,42 +1435,45 @@ pub async fn list_relationships(
     cfg: &ConnectionConfig,
     database: &str,
 ) -> Result<Vec<ForeignKeyInfo>> {
-    let pool = connect_pool_db(cfg, database).await?;
-    // CAST every INFORMATION_SCHEMA text column to CHAR: they use a binary
-    // charset and would decode as SQL type BINARY, incompatible with Rust String.
-    let rows = sqlx::query(
-        "SELECT CAST(CONSTRAINT_NAME AS CHAR) AS CONSTRAINT_NAME, \
-                CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, \
-                CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, \
-                CAST(REFERENCED_TABLE_NAME AS CHAR) AS REFERENCED_TABLE_NAME, \
-                CAST(REFERENCED_COLUMN_NAME AS CHAR) AS REFERENCED_COLUMN_NAME \
-         FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
-         WHERE TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME IS NOT NULL \
-         ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION",
-    )
-    .bind(database)
-    .fetch_all(&pool)
+    with_stale_retry("mysql.list_relationships", || async {
+        let pool = connect_pool_db(cfg, database).await?;
+        // CAST every INFORMATION_SCHEMA text column to CHAR: they use a binary
+        // charset and would decode as SQL type BINARY, incompatible with Rust String.
+        let rows = sqlx::query(
+            "SELECT CAST(CONSTRAINT_NAME AS CHAR) AS CONSTRAINT_NAME, \
+                    CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, \
+                    CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, \
+                    CAST(REFERENCED_TABLE_NAME AS CHAR) AS REFERENCED_TABLE_NAME, \
+                    CAST(REFERENCED_COLUMN_NAME AS CHAR) AS REFERENCED_COLUMN_NAME \
+             FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
+             WHERE TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME IS NOT NULL \
+             ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION",
+        )
+        .bind(database)
+        .fetch_all(&pool)
+        .await
+        .map_err(AppError::Sqlx)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let constraint_name: String =
+                row.try_get("CONSTRAINT_NAME").map_err(AppError::Sqlx)?;
+            let table_name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
+            let column_name: String = row.try_get("COLUMN_NAME").map_err(AppError::Sqlx)?;
+            let referenced_table: String =
+                row.try_get("REFERENCED_TABLE_NAME").map_err(AppError::Sqlx)?;
+            let referenced_column: String =
+                row.try_get("REFERENCED_COLUMN_NAME").map_err(AppError::Sqlx)?;
+            out.push(ForeignKeyInfo {
+                constraint_name,
+                table_name,
+                column_name,
+                referenced_table,
+                referenced_column,
+            });
+        }
+        Ok(out)
+    })
     .await
-    .map_err(AppError::Sqlx)?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let constraint_name: String =
-            row.try_get("CONSTRAINT_NAME").map_err(AppError::Sqlx)?;
-        let table_name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
-        let column_name: String = row.try_get("COLUMN_NAME").map_err(AppError::Sqlx)?;
-        let referenced_table: String =
-            row.try_get("REFERENCED_TABLE_NAME").map_err(AppError::Sqlx)?;
-        let referenced_column: String =
-            row.try_get("REFERENCED_COLUMN_NAME").map_err(AppError::Sqlx)?;
-        out.push(ForeignKeyInfo {
-            constraint_name,
-            table_name,
-            column_name,
-            referenced_table,
-            referenced_column,
-        });
-    }
-    Ok(out)
 }
 
 /// Quote a SQL identifier safely: strip any backtick (so a name containing one
@@ -1406,48 +1537,51 @@ pub async fn explain_visual(
     query: &str,
     database: Option<&str>,
 ) -> Result<ExplainVisual> {
-    let pool = match database {
-        Some(db) if !db.is_empty() => connect_pool_db(cfg, db).await?,
-        _ => connect_pool(cfg).await?,
-    };
+    with_stale_retry("mysql.explain_visual", || async {
+        let pool = match database {
+            Some(db) if !db.is_empty() => connect_pool_db(cfg, db).await?,
+            _ => connect_pool(cfg).await?,
+        };
 
-    // 去掉用户可能已写的 EXPLAIN / FORMAT=JSON 前缀，统一用 JSON 形态。
-    let inner = strip_explain_prefix(query);
-    if !is_select_query(&inner) {
-        return legacy_explain(&pool, &inner).await;
-    }
-
-    let json_sql = format!("EXPLAIN FORMAT=JSON {}", inner);
-    let row = sqlx::query(&json_sql)
-        .fetch_optional(&pool)
-        .await
-        .map_err(AppError::Sqlx)?;
-
-    match row {
-        Some(r) => {
-            // FORMAT=JSON 返回单列 "EXPLAIN"（MySQL 8）或 "QUERY PLAN"（MariaDB）。
-            let text: String = match r
-                .try_get::<Option<String>, _>(0)
-                .ok()
-                .flatten()
-            {
-                Some(t) => t,
-                None => r
-                    .try_get::<String, _>(0)
-                    .unwrap_or_else(|_| "{}".to_string()),
-            };
-            match parse_explain_json(&text) {
-                Some(nodes) => Ok(ExplainVisual {
-                    format: "json".into(),
-                    nodes,
-                    raw: Some(text),
-                }),
-                None => Ok(legacy_explain(&pool, &inner).await?),
-            }
+        // 去掉用户可能已写的 EXPLAIN / FORMAT=JSON 前缀，统一用 JSON 形态。
+        let inner = strip_explain_prefix(query);
+        if !is_select_query(&inner) {
+            return legacy_explain(&pool, &inner).await;
         }
-        // 该 MySQL 版本不支持 FORMAT=JSON → 回退经典表格。
-        None => Ok(legacy_explain(&pool, &inner).await?),
-    }
+
+        let json_sql = format!("EXPLAIN FORMAT=JSON {}", inner);
+        let row = sqlx::query(&json_sql)
+            .fetch_optional(&pool)
+            .await
+            .map_err(AppError::Sqlx)?;
+
+        match row {
+            Some(r) => {
+                // FORMAT=JSON 返回单列 "EXPLAIN"（MySQL 8）或 "QUERY PLAN"（MariaDB）。
+                let text: String = match r
+                    .try_get::<Option<String>, _>(0)
+                    .ok()
+                    .flatten()
+                {
+                    Some(t) => t,
+                    None => r
+                        .try_get::<String, _>(0)
+                        .unwrap_or_else(|_| "{}".to_string()),
+                };
+                match parse_explain_json(&text) {
+                    Some(nodes) => Ok(ExplainVisual {
+                        format: "json".into(),
+                        nodes,
+                        raw: Some(text),
+                    }),
+                    None => Ok(legacy_explain(&pool, &inner).await?),
+                }
+            }
+            // 该 MySQL 版本不支持 FORMAT=JSON → 回退经典表格。
+            None => Ok(legacy_explain(&pool, &inner).await?),
+        }
+    })
+    .await
 }
 
 /// 去掉 SQL 开头可能的 `EXPLAIN`、`EXPLAIN FORMAT=JSON` / `FORMAT=JSON` 前缀，

@@ -23,9 +23,10 @@ use tokio::time::timeout;
 
 use crate::state::AppState;
 
-/// 单条 ad-hoc 查询的服务端超时（秒）。兜底用：任何慢查询 / 卡死的网络
-/// 都不会把前端 IPC 永久挂起，超时会以 Err 形式返回，UI 可正常提示。
-const QUERY_TIMEOUT_SECS: u64 = 30;
+/// 单条 ad-hoc 查询的服务端兜底超时（秒）。当 UI 没传 `timeout_secs`
+/// 时用这个值。UI 在设置页可改，传过来的值覆盖这里。慢查询 / 卡死的
+/// 网络不会让前端 IPC 永久挂起，超时以 Err 返回。
+const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 300;
 
 // ---------------------------------------------------------------------------
 // Frontend-facing DTOs (the Rust backend types are not all Serialize, so we
@@ -762,6 +763,11 @@ pub async fn execute_query(
     // Set by the UI after the user confirmed unguarded UPDATE/DELETE in the
     // confirm dialog. Backend rejects whole-table writes without it.
     allow_risky: Option<bool>,
+    // Per-call override of the query timeout (seconds). UI reads this from
+    // the user's settings preference (settings → 通用) and passes it on
+    // every invoke, so the value can be hot-tweaked. `None` falls back to
+    // `DEFAULT_QUERY_TIMEOUT_SECS`. 2026-08-17.
+    timeout_secs: Option<u64>,
 ) -> Result<QueryOutput, String> {
     let cfg = {
         let store = state.store.lock().unwrap();
@@ -773,7 +779,8 @@ pub async fn execute_query(
     }
     .ok_or_else(|| "连接未找到".to_string())?;
 
-    let res = timeout(std::time::Duration::from_secs(QUERY_TIMEOUT_SECS), async {
+    let secs = timeout_secs.unwrap_or(DEFAULT_QUERY_TIMEOUT_SECS);
+    let res = timeout(std::time::Duration::from_secs(secs), async {
         match cfg.db_type {
             DbType::Mysql => {
                 let target_db: Option<&str> =
@@ -820,7 +827,7 @@ pub async fn execute_query(
 
     match res {
         Ok(inner) => inner,
-        Err(_) => Err(format!("查询超时（服务端限制 {} 秒）", QUERY_TIMEOUT_SECS)),
+        Err(_) => Err(format!("查询超时（服务端限制 {} 秒）", secs)),
     }
 }
 
@@ -1413,6 +1420,71 @@ pub fn list_vendor_profiles(state: State<AppState>) -> Vec<VendorProfileDto> {
     // LlmConfig has a vendor, copy it into a single default profile.
     let legacy = state.llm.lock().unwrap().clone();
     chatquery::config::migrate_legacy_llm_config(&legacy);
+
+    // Reconcile: after migration, LlmConfig.vendor may still hold the
+    // OLD preset id (e.g. "tokenhub"), while the migrated profile has a
+    // freshly-generated id (e.g. "v1a2b3..."). If we leave them out of
+    // sync, the frontend's `llmCfg.vendor === current.id` check in
+    // auto-save will never fire and saved keys never reach the runtime
+    // LlmConfig — every chat request still uses the old key and gets
+    // 401. Fix it here by matching on base_url (the most stable link
+    // between legacy LlmConfig and the migrated profile) and rewriting
+    // LlmConfig.vendor + api_key in place. Persist to disk so the fix
+    // survives restart.
+    //
+    // We also re-sync api_key when the id already matches. Reason: at
+    // startup `LlmConfig::load` may have produced an empty api_key
+    // (e.g. llm.json's api_key_enc was empty from a prior broken save),
+    // even though vendor_profiles.json holds the real key. Without
+    // re-syncing, in-memory state.llm.api_key stays empty and every
+    // chat 401s — the user-visible "已配" status in the settings UI
+    // looks fine because it reads the encrypted field, not the
+    // decrypted value.
+    {
+        let profiles = chatquery::config::load_vendor_profiles();
+        let mut current = state.llm.lock().unwrap();
+        let id_match = profiles.iter().any(|p| p.id == current.vendor);
+        let matched = if !id_match && !current.vendor.is_empty() {
+            profiles
+                .iter()
+                .find(|p| p.base_url == current.base_url)
+                .and_then(|p| {
+                    if current.model.is_empty()
+                        || p.models.iter().any(|m| m.name == current.model)
+                    {
+                        Some(p)
+                    } else {
+                        None
+                    }
+                })
+        } else {
+            profiles.iter().find(|p| p.id == current.vendor)
+        };
+        if let Some(p) = matched {
+            let vendor_was_remapped = !id_match;
+            if vendor_was_remapped {
+                eprintln!(
+                    "reconcile: remapping LlmConfig.vendor '{}' -> '{}' (matched on base_url)",
+                    current.vendor, p.id
+                );
+                current.vendor = p.id.clone();
+            }
+            // Always re-sync api_key — the on-disk vendor profile is the
+            // source of truth (the user types into the settings form, the
+            // key lands in vendor_profiles.json; LlmConfig.api_key is
+            // only refreshed by apply_vendor_profile or this reconcile).
+            if current.api_key != p.api_key {
+                eprintln!(
+                    "reconcile: re-syncing LlmConfig.api_key (was {} chars, now {} chars)",
+                    current.api_key.len(),
+                    p.api_key.len()
+                );
+                current.api_key = p.api_key.clone();
+            }
+            let _ = current.save();
+        }
+    }
+
     chatquery::config::load_vendor_profiles()
         .iter()
         .map(dto_from_profile)
@@ -1570,6 +1642,7 @@ pub async fn chat_turn(
     app: AppHandle,
     state: State<'_, AppState>,
     conn_id: String,
+    db: Option<String>,
     messages: Vec<ChatMessage>,
     refs: Option<Vec<SqlReference>>,
     conv_id: Option<String>,
@@ -1663,6 +1736,7 @@ pub async fn chat_turn(
             &refs,
             conv_ctx,
             &conn_id,
+            db.as_deref(),
             &tx,
                 ctl.clone(),
                 kb_loader,

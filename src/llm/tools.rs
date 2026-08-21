@@ -16,6 +16,11 @@ pub struct ToolContext<'a> {
     /// Injected knowledge-base loader (ADR-AI-6). Lets `search_knowledge` read
     /// docs bound to the active connection/db without coupling to the store.
     pub kb_loader: KbLoader,
+    /// The user's currently-selected database (from the composer + →
+    /// "选择数据库" picker). `execute_query` applies it automatically so the
+    /// model doesn't need to pass a `db` argument on every call. None means
+    /// "use the connection's default database".
+    pub current_db: Option<&'a str>,
 }
 
 /// A built-in capability the agent can invoke. Modeled as an enum (not a
@@ -70,7 +75,7 @@ impl BuiltinTool {
     }
     async fn call(&self, args: &Value, ctx: &ToolContext<'_>) -> (String, String) {
         match self {
-            BuiltinTool::ExecuteQuery => exec_builtin(args, ctx.conns).await,
+            BuiltinTool::ExecuteQuery => exec_builtin(args, ctx.conns, ctx.current_db).await,
             BuiltinTool::SearchKnowledge => exec_search_kb(args, ctx).await,
         }
     }
@@ -148,8 +153,36 @@ pub fn decode_mcp_tool(name: &str) -> Option<(String, String)> {
     Some((server, tool))
 }
 
+/// Match a connection by name. The system prompt's "可用连接" list shows
+/// each conn as "<name> (MySQL)" so the model sees the kind next to the
+/// name. Some models then pass the kind-suffixed form straight back to
+/// `execute_query` — e.g. `connection: "测试环境租户库 (MySQL)"` — which
+/// would otherwise miss the strict equality check on `c.name`. Strip the
+/// kind suffix and try again before giving up.
+fn resolve_conn<'a>(conns: &'a [ConnectionConfig], name: &str) -> Option<&'a ConnectionConfig> {
+    let trimmed = name.trim();
+    if let Some(c) = conns.iter().find(|c| c.name == trimmed) {
+        return Some(c);
+    }
+    // Tolerate "name (MySQL)" / "name (Redis)" / "name（MySQL）" — strip
+    // the parenthesised kind, retry, and only then report not found.
+    if let Some(open) = trimmed.find(['(', '（']) {
+        let stripped = trimmed[..open].trim();
+        if !stripped.is_empty() {
+            if let Some(c) = conns.iter().find(|c| c.name == stripped) {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
 /// Built-in `execute_query` tool: runs SQL on MySQL or a command on Redis.
-async fn exec_builtin(args: &Value, conns: &[ConnectionConfig]) -> (String, String) {
+async fn exec_builtin(
+    args: &Value,
+    conns: &[ConnectionConfig],
+    current_db: Option<&str>,
+) -> (String, String) {
     let conn_name = args
         .get("connection")
         .and_then(|v| v.as_str())
@@ -161,7 +194,7 @@ async fn exec_builtin(args: &Value, conns: &[ConnectionConfig]) -> (String, Stri
         .unwrap_or("")
         .to_string();
 
-    let cfg = match conns.iter().find(|c| c.name == conn_name) {
+    let cfg = match resolve_conn(conns, &conn_name) {
         Some(c) => c,
         None => {
             return (
@@ -171,8 +204,23 @@ async fn exec_builtin(args: &Value, conns: &[ConnectionConfig]) -> (String, Stri
         }
     };
 
+    // Apply the user's composer-selected db (current_db) automatically. The
+    // model is told the db in context_block but does not pass it on every
+    // execute_query call, so we route it server-side. Falls through to the
+    // connection's default database when current_db is None/empty.
+    let effective_db: Option<String> = match current_db {
+        Some(s) if !s.is_empty() => Some(s.to_string()),
+        _ => None,
+    };
+    // If the user picked a different db than the conn's default, surface
+    // it in the summary line so the UI/transcript can show what was
+    // actually queried.
+    let db_label = effective_db
+        .as_deref()
+        .filter(|d| !d.is_empty() && *d != cfg.database.as_str());
+
     match cfg.db_type {
-        DbType::Mysql => match mysql::query(cfg, &query, None, false).await {
+        DbType::Mysql => match mysql::query(cfg, &query, effective_db.as_deref(), false).await {
             Ok(r) => {
                 let summary = match r.affected {
                     Some(n) => {
@@ -181,9 +229,14 @@ async fn exec_builtin(args: &Value, conns: &[ConnectionConfig]) -> (String, Stri
                         } else {
                             String::new()
                         };
-                        format!("{}: 影响 {} 行{}", conn_name, n, id)
+                        format!("{}{}: 影响 {} 行{}", conn_name, db_label.unwrap_or(""), n, id)
                     }
-                    None => format!("{}: {} 行", conn_name, r.rows.len()),
+                    None => format!(
+                        "{}{}: {} 行",
+                        conn_name,
+                        db_label.unwrap_or(""),
+                        r.rows.len()
+                    ),
                 };
                 let detail = if crate::mask::masking_enabled() {
                     let m = crate::mask::mask_query_result(&r);

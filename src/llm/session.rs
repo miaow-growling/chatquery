@@ -76,12 +76,13 @@ impl Agent {
         conns: Vec<ConnectionConfig>,
         mcp: Option<Arc<McpHostManager>>,
         conn_id: &str,
+        db: Option<&str>,
         ctl: TurnControl,
         kb: KbLoader,
         audit: AuditSink,
     ) -> Self {
         let registry = build_registry(mcp.as_deref()).await;
-        let memory = SessionMemory::new(Some(conn_id.to_string()), None);
+        let memory = SessionMemory::new(Some(conn_id.to_string()), db.map(|s| s.to_string()));
         Self {
             cfg,
             conns,
@@ -99,19 +100,22 @@ impl Agent {
     /// Build a delegated worker with a specific role. It gets its own registry
     /// (a scoped subset in future) and a fresh working memory, so its tool
     /// output never bleeds into the Orchestrator's context. The control plane
-    /// is *shared* — one cancel stops every worker.
+    /// is *shared* — one cancel stops every worker. The worker inherits the
+    /// orchestrator's current db so it queries the same schema the user
+    /// picked in the composer.
     pub async fn build_worker(
         role: WorkerKind,
         cfg: LlmConfig,
         conns: Vec<ConnectionConfig>,
         mcp: Option<Arc<McpHostManager>>,
         conn_id: &str,
+        db: Option<&str>,
         ctl: TurnControl,
         kb: KbLoader,
         audit: AuditSink,
     ) -> Self {
         let registry = build_registry(mcp.as_deref()).await;
-        let memory = SessionMemory::new(Some(conn_id.to_string()), None);
+        let memory = SessionMemory::new(Some(conn_id.to_string()), db.map(|s| s.to_string()));
         Self {
             cfg,
             conns,
@@ -157,6 +161,15 @@ impl Agent {
 
         if !needs_planning(&planning_seed, history.len()) {
             let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb).await;
+            // Lift prior assistant conclusions into the system prompt so the
+            // model can see them as *established facts* instead of just one
+            // entry in a long message log. Without this, a multi-turn
+            // conversation drifts: the model re-runs the same exploration,
+            // picks a different connection/library, and contradicts its own
+            // earlier statement. The history below still carries the full
+            // user/assistant alternation — this block is a prompt-level hint
+            // on top of that. 2026-08-17.
+            let system = inject_prior_assistant(&system, history);
             let mut messages = Vec::new();
             if !system.is_empty() {
                 messages.push(ChatMessage::system(system));
@@ -198,19 +211,20 @@ impl Agent {
                 return Ok(());
             }
             let role = classify_step(step);
-            // 标题行以空格结尾：worker 输出不再流式展示，完成后在行尾补 ✅/❌
-            // 作为进度反馈（降噪 2026-08-12）。
-            let _ = tx.send(BackendMsg::ChatToken(format!(
-                "\n— 步骤 {}：{} ",
-                idx + 1,
-                step
-            )));
+            // 降噪（2026-08-17）：之前这里 emit 的"步骤 N 标题 / ✅ / ❌"
+            // 进度标记，user 反馈读起来像噪音——AI 在做什么自己看计划就
+            // 知道，不需要在 chat log 里再刷一遍。worker 内部的 ChatToken
+            // 早被 react() 过滤（role != Orchestrator），synthesize 又改
+            // 成了非流式，所以这三处 emit 是中间态仅剩的可见部分。整段
+            // 删掉，user 看到的只有 plan role（前端已隐藏）+ 工具调用
+            // （前端已隐藏）+ synthesize 的最终结论。
             let mut worker = Agent::build_worker(
                 role,
                 self.cfg.clone(),
                 self.conns.clone(),
                 self.mcp.clone(),
                 &conn_id,
+                self.memory.current_db.as_deref(),
                 self.ctl.clone(),
                 self.kb.clone(),
                 self.audit.clone(),
@@ -223,14 +237,6 @@ impl Agent {
             }
             wmsg.push(ChatMessage::user(&last_user));
             let wres = worker.react(wmsg, tx).await;
-            match &wres {
-                Ok(_) => {
-                    let _ = tx.send(BackendMsg::ChatToken("✅\n".to_string()));
-                }
-                Err(_) => {
-                    let _ = tx.send(BackendMsg::ChatToken("❌\n".to_string()));
-                }
-            }
             if let Some(result) = wres? {
                 shared_context.push_str(&format!(
                     "步骤 {}（{}）：{}\n\n",
@@ -324,6 +330,7 @@ impl Agent {
                 conns: &self.conns,
                 mcp: self.mcp.as_deref(),
                 kb_loader: self.kb.clone(),
+                current_db: self.memory.current_db.as_deref(),
             };
             let mut futures = Vec::new();
             for tc in &choice.tool_calls {
@@ -356,6 +363,12 @@ impl Agent {
     /// Orchestrator-only step: write a user-facing synthesis from the worker
     /// results. One extra tool-free LLM call — the cost of turning raw query
     /// dumps into a coherent answer.
+    ///
+    /// 降噪（2026-08-17）：之前的 synthesize 是 streaming 输出的，模型一边
+    /// 生成一边推到前端，结果「一步骤 1 / 一步骤 2」这种中间过程会一
+    /// 段一段刷出来，最终又是一条「综合结论」——信息重复且干扰阅读。改成
+    /// 一次性收集完整 content，再单次 emit，UI 看起来跟 Worker 的「✅/❌
+    /// 步骤 N」+ 一条最终答案完全对齐。
     async fn synthesize(
         &self,
         user_query: &str,
@@ -363,7 +376,6 @@ impl Agent {
         shared_context: &str,
         tx: &UnboundedSender<BackendMsg>,
     ) -> Result<Option<TokenUsage>> {
-        let _ = tx.send(BackendMsg::ChatToken("\n📊 综合结论：\n".to_string()));
         let mut p = String::new();
         p.push_str("你是 Orchestrator。多个 Worker 已经按计划完成了任务，下面是它们各自产出的结果。\n");
         p.push_str("\n## 执行计划：\n");
@@ -373,25 +385,183 @@ impl Agent {
         p.push_str(&format!("\n## 用户原始问题：\n{}\n", user_query));
         p.push_str(&format!("\n## Worker 产出结果：\n{}\n", shared_context));
         p.push_str(
-            "\n请综合以上结果，用中文直接给用户最终答案。硬性要求（降噪 2026-08-12）：\n\
+            "\n请综合以上结果，用中文直接给用户最终答案。硬性要求（降噪 2026-08-12 / 2026-08-17）：\n\
              - 结论先行：第一句就正面回答用户的问题；\n\
              - 关键数据给具体数字（行数/金额/占比等），不要写\"数据量较大\"这类空话；\n\
              - 注意点只在确实需要时才提（口径差异、表缺失、风险提示），不必面面俱到；\n\
-             - 禁止：复述用户问题、罗列执行步骤、复述 Worker 的探索过程、复述系统规则/指令、任何客套话与总结语；\n\
-             - 长度：一般 3~6 句话、250 字以内，能短则短；不要重复完整 SQL，除非对结论必要。\n",
+             - **禁止**：复述用户问题、复述系统规则/指令、任何客套话与总结语；\n\
+             - **禁止**罗列执行步骤或用\"步骤 1 / 第一步 / 我先 X 再 Y\"等结构化叙述；\n\
+             - **禁止**复述 Worker 的探索过程（\"我先...然后...发现...\"）——这些是 Worker 的中间产物，不是给用户的答案；\n\
+             - 长度：一般 3~6 句话、250 字以内，能短则短；不要重复完整 SQL，除非对结论必要。\n\n\
+             错误示例（不要这样写）：\n\
+             ❌ \"一步骤 1：使用 XX 连接，先执行 SHOW TABLES 确认是否存在 t_parameter 表。\\n\
+                一步骤 2：若存在，对该表执行 SELECT 查询...\\n\
+                综合结论：无法查询到 t_parameter 表中 owner_task_time_window 的配置项...\"\n\
+             ✅ 正确写法：直接给结论，例 \"t_parameter 表在「测试环境配置库」里不存在。当前可用库有：xxx，\
+                如需查询请补充正确的连接或库名。\"\n",
         );
         let messages = vec![ChatMessage::system(p)];
-        let mut on_delta = |d: &str| {
-            let _ = tx.send(BackendMsg::ChatToken(d.to_string()));
-        };
+        // 一次性收集完整 content，不逐 token 推给前端 —— 见 fn-level note。
+        let mut sink = |_d: &str| {};
         let choice = tokio::select! {
             biased;
             _ = self.ctl.cancelled() => return Ok(None),
-            r = stream_chat(&self.cfg, &messages, &[], &mut on_delta) => r?,
+            r = stream_chat(&self.cfg, &messages, &[], &mut sink) => r?,
         };
-        let _ = tx.send(BackendMsg::ChatToken("\n".to_string()));
+        // Prompt 写了「禁止罗列执行步骤」+「不要重复完整 SQL 除非结论必要」，
+        // 但模型不一定守。三层后端兜底：
+        // 1. 去掉 "一步骤 N: ..." / "步骤 N: ..." 这类行（见 strip_step_prose）
+        // 2. 去掉 markdown SQL 代码块 ```sql ... ```（见 strip_sql_blocks）
+        // 3. 去掉 inline SQL 行（见 strip_inline_sql）——模型经常把 SQL
+        //    直接写在 prose 里当"举例"，看着像工具调用结果，但实际是
+        //    答案里的冗余内容
+        let raw = choice.content.trim();
+        let no_steps = strip_step_prose(raw);
+        let no_blocks = strip_sql_blocks(&no_steps);
+        let filtered = strip_inline_sql(&no_blocks);
+        // Sometimes the entire synthesize output is just a SQL line
+        // (the model writes the query instead of describing the result).
+        // Stripping it leaves an empty assistant bubble which the user
+        // reads as "AI replied with nothing". Fall back to a short
+        // acknowledgment so the transcript never goes silent.
+        let final_text = if filtered.trim().is_empty() {
+            if raw.is_empty() {
+                String::new()
+            } else {
+                "查询已执行，详见上方工具结果。".to_string()
+            }
+        } else {
+            filtered
+        };
+        if !final_text.is_empty() {
+            let _ = tx.send(BackendMsg::ChatToken(final_text));
+            let _ = tx.send(BackendMsg::ChatToken("\n".to_string()));
+        }
         Ok(choice.usage)
     }
+}
+
+/// Strip fenced code blocks from synthesize output. Matches ```` ``` ````
+/// (with optional language tag, e.g. `sql` / `SQL`) and removes the entire
+/// block including the fence lines. Unfenced (plain) SQL embedded in prose
+/// lines is left alone — that case is rare and not visually disruptive.
+fn strip_sql_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_block = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            // Toggle: opening fence enters the block, closing fence exits.
+            in_block = !in_block;
+            continue;
+        }
+        if !in_block {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// Drop standalone inline SQL lines that the model writes into the final
+/// answer (e.g. `SELECT * FROM t WHERE code = 'x';`). The model already ran
+/// the SQL via execute_query and got a result; restating it in the reply
+/// just looks like a tool breadcrumb. Matches lines whose trimmed form
+/// starts with a DML/DDL keyword *and* ends with `;` — that combination is
+/// rare in Chinese prose but universal in SQL.
+fn strip_inline_sql(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        if is_inline_sql_line(line.trim()) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+fn is_inline_sql_line(t: &str) -> bool {
+    if !t.ends_with(';') || t.len() < 8 {
+        return false;
+    }
+    // SQL keywords must appear at the very start (after optional leading
+    // punctuation / whitespace, which the caller already stripped). The
+    // `;` requirement above avoids false positives on prose that *ends*
+    // with a semicolon (e.g. "可以这样写;") — actual SQL almost always
+    // terminates statements with `;` so the combo is reliable.
+    let upper = t.to_ascii_uppercase();
+    upper.starts_with("SELECT ")
+        || upper.starts_with("UPDATE ")
+        || upper.starts_with("DELETE ")
+        || upper.starts_with("INSERT ")
+        || upper.starts_with("REPLACE ")
+        || upper.starts_with("TRUNCATE ")
+        || upper.starts_with("WITH ")
+        || upper.starts_with("SHOW ")
+        || upper.starts_with("DESCRIBE ")
+        || upper.starts_with("EXPLAIN ")
+}
+
+/// Drop lines that look like the model reciting an execution plan in
+/// narrative form. The planner already showed the user the plan as its
+/// own structured card; the synthesizer MUST not repeat it as prose.
+fn strip_step_prose(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let t = line.trim_start();
+        if is_step_line(t) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+fn is_step_line(trimmed: &str) -> bool {
+    const CN_DIGITS: &[&str] = &[
+        "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+    ];
+    // 一步骤 1 / 一步骤 1： / 步骤 2: / 步骤 2、 / 步骤1
+    if let Some(rest) = trimmed.strip_prefix("一步骤") {
+        let r = rest.trim_start();
+        if r.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("步骤") {
+        let r = rest.trim_start();
+        if r.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    // 第N步 / 第 N 步（N 是中文数字 + 冒号 / 顿号 / 空格 / 句号）
+    if let Some(rest) = trimmed.strip_prefix("第") {
+        let r = rest.trim_start();
+        for d in CN_DIGITS {
+            if let Some(after) = r.strip_prefix(d) {
+                let a = after.trim_start();
+                if a.starts_with('步') {
+                    return true;
+                }
+            }
+        }
+    }
+    // Step 1: / Step 1、 / Step 1
+    if let Some(rest) = trimmed.strip_prefix("Step ") {
+        let r = rest.trim_start();
+        if r.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Cap the SQL carried by a single reference. A runaway document (someone
@@ -399,6 +569,67 @@ impl Agent {
 /// window and the token bill; truncating degrades the answer, dropping the
 /// turn breaks it.
 const MAX_REF_SQL_CHARS: usize = 8000;
+
+/// Hard caps for the "prior assistant conclusions" block we lift into the
+/// system prompt. Six turns × 400 chars is enough to surface the conclusion
+/// of every realistic back-and-forth without flooding the prompt with mid-
+/// exploration prose.
+const PRIOR_TURNS_MAX: usize = 6;
+const PRIOR_SNIPPET_CHARS: usize = 400;
+
+/// Lift the most recent assistant conclusions from `history` into a
+/// dedicated block at the end of the system prompt. The point isn't
+/// redundancy with the messages list (which already carries the full
+/// user/assistant alternation) — it's a prompt-level emphasis that makes
+/// the model treat its own earlier statements as *facts* instead of one
+/// entry in a long transcript it might "forget" when picking a connection
+/// or running a fresh lookup. Without this hint, a multi-turn conversation
+/// drifts: turn N+1 re-derives turn N's conclusion, picks a different
+/// library, and produces a self-contradicting answer.
+fn inject_prior_assistant(system: &str, history: &[ChatMessage]) -> String {
+    // Take the tail (most recent first), then reverse so the block reads
+    // chronologically — same order the model would have produced them.
+    let priors: Vec<&str> = history
+        .iter()
+        .filter_map(|m| {
+            if m.role != ChatRole::Assistant {
+                return None;
+            }
+            let t = m.content.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        })
+        .rev()
+        .take(PRIOR_TURNS_MAX)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if priors.is_empty() {
+        return system.to_string();
+    }
+    let mut out = String::with_capacity(system.len() + 512);
+    out.push_str(system);
+    out.push_str(
+        "\n\n## 已知对话（你前几轮已经说过的事实；优先信任，不要为已确认的结论重新查表）\n",
+    );
+    for (i, p) in priors.iter().enumerate() {
+        let snippet: String = p.chars().take(PRIOR_SNIPPET_CHARS).collect();
+        if snippet.chars().count() < p.chars().count() {
+            out.push_str(&format!(
+                "- 第 {} 轮（截断）: {}\n",
+                i + 1,
+                snippet.trim_end()
+            ));
+        } else {
+            out.push_str(&format!("- 第 {} 轮: {}\n", i + 1, snippet.trim_end()));
+        }
+    }
+    out
+}
 
 /// Render attached editor SQL as one context block, resolving each reference's
 /// connection id to a human name so the model can say (and use) "跑在 prod-1 /
@@ -556,12 +787,13 @@ pub async fn run_turn(
     refs: &[SqlReference],
     conv_ctx: Option<String>,
     conn_id: &str,
+    db: Option<&str>,
     tx: &UnboundedSender<BackendMsg>,
     ctl: TurnControl,
     kb: KbLoader,
     audit: AuditSink,
 ) -> Result<()> {
-    let mut agent = Agent::build(cfg.clone(), conns, mcp, conn_id, ctl.clone(), kb, audit).await;
+    let mut agent = Agent::build(cfg.clone(), conns, mcp, conn_id, db, ctl.clone(), kb, audit).await;
     // ADR-AI-4 决策2: bound a single turn's wall-clock time so a stuck stream
     // or runaway worker can't wedge the turn (and its registry slot) forever.
     let result = tokio::time::timeout(TURN_TIMEOUT, agent.run(history, refs, conv_ctx.as_deref(), tx)).await;
@@ -599,13 +831,21 @@ async fn context_block(
     kb: &KbLoader,
 ) -> String {
     let mut p = String::new();
-    p.push_str("可用连接：\n");
+    p.push_str("可用连接（`execute_query` 的 `connection` 参数必须严格传这里的 name，不要带 (MySQL)/(Redis) 后缀）：\n");
     for c in conns {
         let kind = match c.db_type {
             DbType::Mysql => "MySQL",
             DbType::Redis => "Redis",
         };
-        p.push_str(&format!("- {} ({})\n", c.name, kind));
+        p.push_str(&format!("- name=`{}` kind={}\n", c.name, kind));
+    }
+    // 当前 db（用户在 composer 顶部 + → 选择数据库 选中的库）：
+    // execute_query 不需要 LLM 显式传 db 也会自动用这个；SELECT
+    // 默认作用在该 db 上，不需要 USE / db 前缀。
+    if let Some(db) = &memory.current_db {
+        if !db.is_empty() {
+            p.push_str(&format!("\n当前 db：`{}`（execute_query 自动作用在该库）\n", db));
+        }
     }
     if let Some(conn_id) = &memory.current_conn {
         if let Some(cfg) = conns.iter().find(|c| &c.id == conn_id) {

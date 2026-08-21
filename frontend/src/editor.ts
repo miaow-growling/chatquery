@@ -20,6 +20,7 @@ import {
 import { undo, redo, indentMore, indentLess } from "@codemirror/commands";
 import {
   autocompletion,
+  snippet,
   type Completion,
   type CompletionSource,
 } from "@codemirror/autocomplete";
@@ -27,6 +28,76 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { format as formatSqlText, type SqlLanguage } from "sql-formatter";
 import type { ColumnInfo, ForeignKeyInfo, TableMeta } from "./types";
 import { api } from "./api";
+
+/// Common MySQL builtin functions with signatures and short descriptions.
+/// Shown instantly with `type: "function"` and boost when appropriate.
+const MYSQL_FUNCTIONS: readonly Completion[] = [
+  // Aggregate
+  { label: "COUNT", type: "function", detail: "(expr)", info: "统计行数或非空值数量", apply: "COUNT(${1:*})" },
+  { label: "SUM", type: "function", detail: "(expr)", info: "求和", apply: "SUM(${1:expr})" },
+  { label: "AVG", type: "function", detail: "(expr)", info: "求平均值", apply: "AVG(${1:expr})" },
+  { label: "MIN", type: "function", detail: "(expr)", info: "求最小值", apply: "MIN(${1:expr})" },
+  { label: "MAX", type: "function", detail: "(expr)", info: "求最大值", apply: "MAX(${1:expr})" },
+  { label: "GROUP_CONCAT", type: "function", detail: "(expr [SEPARATOR str])", info: "连接组内的字符串", apply: "GROUP_CONCAT(${1:expr})" },
+
+  // Date & Time
+  { label: "NOW", type: "function", detail: "()", info: "当前日期和时间 (YYYY-MM-DD HH:MM:SS)", apply: "NOW()" },
+  { label: "CURDATE", type: "function", detail: "()", info: "当前日期 (YYYY-MM-DD)", apply: "CURDATE()" },
+  { label: "CURTIME", type: "function", detail: "()", info: "当前时间 (HH:MM:SS)", apply: "CURTIME()" },
+  { label: "DATE_FORMAT", type: "function", detail: "(date, format)", info: "按格式格式化日期，如 '%Y-%m-%d %H:%i:%s'", apply: "DATE_FORMAT(${1:date}, '${2:%Y-%m-%d}')" },
+  { label: "DATEDIFF", type: "function", detail: "(expr1, expr2)", info: "返回两日期相差的天数 (expr1 - expr2)", apply: "DATEDIFF(${1:expr1}, ${2:expr2})" },
+  { label: "DATE_ADD", type: "function", detail: "(date, INTERVAL expr unit)", info: "日期增加，如 INTERVAL 1 DAY", apply: "DATE_ADD(${1:date}, INTERVAL ${2:1} ${3:DAY})" },
+  { label: "DATE_SUB", type: "function", detail: "(date, INTERVAL expr unit)", info: "日期减少，如 INTERVAL 1 DAY", apply: "DATE_SUB(${1:date}, INTERVAL ${2:1} ${3:DAY})" },
+  { label: "TIMESTAMP", type: "function", detail: "(expr)", info: "转换为时间戳", apply: "TIMESTAMP(${1:expr})" },
+  { label: "UNIX_TIMESTAMP", type: "function", detail: "([date])", info: "返回 Unix 时间戳秒数", apply: "UNIX_TIMESTAMP(${1:})" },
+  { label: "FROM_UNIXTIME", type: "function", detail: "(unix_timestamp [, format])", info: "Unix 时间戳转日期格式", apply: "FROM_UNIXTIME(${1:timestamp})" },
+
+  // String
+  { label: "CONCAT", type: "function", detail: "(str1, str2, ...)", info: "连接多个字符串", apply: "CONCAT(${1:str1}, ${2:str2})" },
+  { label: "CONCAT_WS", type: "function", detail: "(separator, str1, str2, ...)", info: "使用指定分隔符连接字符串", apply: "CONCAT_WS('${1:,}', ${2:str1}, ${3:str2})" },
+  { label: "SUBSTRING", type: "function", detail: "(str, pos, len)", info: "截取子字符串", apply: "SUBSTRING(${1:str}, ${2:1}, ${3:len})" },
+  { label: "LENGTH", type: "function", detail: "(str)", info: "返回字符串字节长度", apply: "LENGTH(${1:str})" },
+  { label: "CHAR_LENGTH", type: "function", detail: "(str)", info: "返回字符串字符数", apply: "CHAR_LENGTH(${1:str})" },
+  { label: "LOWER", type: "function", detail: "(str)", info: "转换为小写", apply: "LOWER(${1:str})" },
+  { label: "UPPER", type: "function", detail: "(str)", info: "转换为大写", apply: "UPPER(${1:str})" },
+  { label: "TRIM", type: "function", detail: "(str)", info: "去除首尾空格", apply: "TRIM(${1:str})" },
+  { label: "REPLACE", type: "function", detail: "(str, from_str, to_str)", info: "替换字符串", apply: "REPLACE(${1:str}, '${2:from}', '${3:to}')" },
+  { label: "LEFT", type: "function", detail: "(str, len)", info: "返回左边指定长度的字符", apply: "LEFT(${1:str}, ${2:len})" },
+  { label: "RIGHT", type: "function", detail: "(str, len)", info: "返回右边指定长度的字符", apply: "RIGHT(${1:str}, ${2:len})" },
+
+  // Control Flow & NULL
+  { label: "IFNULL", type: "function", detail: "(expr1, expr2)", info: "如果 expr1 为 NULL 则返回 expr2", apply: "IFNULL(${1:expr1}, ${2:default_val})" },
+  { label: "COALESCE", type: "function", detail: "(v1, v2, ...)", info: "返回参数列表中第一个非 NULL 值", apply: "COALESCE(${1:v1}, ${2:v2})" },
+  { label: "NULLIF", type: "function", detail: "(expr1, expr2)", info: "如果 expr1 = expr2 则返回 NULL", apply: "NULLIF(${1:expr1}, ${2:expr2})" },
+  { label: "IF", type: "function", detail: "(expr1, expr2, expr3)", info: "三元判断：expr1 为真返回 expr2，否则 expr3", apply: "IF(${1:condition}, ${2:true_val}, ${3:false_val})" },
+
+  // Numeric
+  { label: "ROUND", type: "function", detail: "(num [, decimals])", info: "四舍五入", apply: "ROUND(${1:num}, ${2:2})" },
+  { label: "CEIL", type: "function", detail: "(num)", info: "向上取整", apply: "CEIL(${1:num})" },
+  { label: "FLOOR", type: "function", detail: "(num)", info: "向下取整", apply: "FLOOR(${1:num})" },
+  { label: "ABS", type: "function", detail: "(num)", info: "绝对值", apply: "ABS(${1:num})" },
+
+  // JSON
+  { label: "JSON_EXTRACT", type: "function", detail: "(json_doc, path)", info: "提取 JSON 路径对应的值", apply: "JSON_EXTRACT(${1:json_col}, '$.${2:key}')" },
+  { label: "JSON_UNQUOTE", type: "function", detail: "(val)", info: "去除 JSON 字符串外层引号", apply: "JSON_UNQUOTE(${1:val})" },
+  { label: "JSON_ARRAY", type: "function", detail: "([val, ...])", info: "构造 JSON 数组", apply: "JSON_ARRAY(${1:})" },
+  { label: "JSON_OBJECT", type: "function", detail: "(k1, v1, ...)", info: "构造 JSON 对象", apply: "JSON_OBJECT('${1:key}', ${2:val})" },
+
+  // Type Cast & Misc
+  { label: "CAST", type: "function", detail: "(expr AS type)", info: "类型转换 (CHAR, SIGNED, DECIMAL, DATETIME...)", apply: "CAST(${1:expr} AS ${2:CHAR})" },
+  { label: "DISTINCT", type: "keyword", detail: "关键字", info: "去除重复记录", apply: "DISTINCT " },
+  { label: "EXISTS", type: "keyword", detail: "(subquery)", info: "判断子查询是否有结果", apply: "EXISTS (${1:SELECT 1 FROM ...})" },
+];
+
+/// Helpful SQL snippets for fast expansion.
+const SQL_SNIPPETS: readonly Completion[] = [
+  { label: "sel", type: "text", detail: "SELECT * FROM ...", info: "常用查询模板", apply: snippet("SELECT ${1:*} FROM ${2:table} WHERE ${3:1=1} LIMIT ${4:100};") },
+  { label: "ins", type: "text", detail: "INSERT INTO ...", info: "插入记录模板", apply: snippet("INSERT INTO ${1:table} (${2:cols}) VALUES (${3:vals});") },
+  { label: "upd", type: "text", detail: "UPDATE ... SET ...", info: "更新记录模板", apply: snippet("UPDATE ${1:table} SET ${2:col} = ${3:val} WHERE ${4:id} = ${5:val};") },
+  { label: "del", type: "text", detail: "DELETE FROM ...", info: "删除记录模板", apply: snippet("DELETE FROM ${1:table} WHERE ${2:id} = ${3:val};") },
+  { label: "join", type: "text", detail: "INNER JOIN ... ON ...", info: "关联查询模板", apply: snippet("INNER JOIN ${1:table} ON ${1:table}.${2:id} = ${3:prev}.${4:fk_id}") },
+  { label: "leftjoin", type: "text", detail: "LEFT JOIN ... ON ...", info: "左外连接模板", apply: snippet("LEFT JOIN ${1:table} ON ${1:table}.${2:id} = ${3:prev}.${4:fk_id}") },
+];
 
 export interface EditorHandle {
   view: EditorView;
@@ -387,281 +458,358 @@ export function createEditor(
   const themeConf = new Compartment();
   const initialDark = document.documentElement.dataset.theme !== "light";
 
-  // --- Lazy, bounded schema autocomplete (replaces the old eager full-schema
-  // load that froze the UI on large databases). The editor only knows WHICH
-  // connection/database it is editing; table/column names are fetched from the
-  // backend on demand, by name prefix, with a hard LIMIT. Two small client
-  // caches avoid re-querying the server on every keystroke. ---
+  // --- Fast In-Memory + LRU Schema Completion ---
+  // Tables for the active DB are eagerly prefetched in the background when the
+  // context switches. When typing, table completion runs 100% locally from
+  // memory with 0ms latency. Columns for referenced tables are fetched
+  // on-demand and kept in an LRU cache (capped to MAX_CACHED_TABLE_COLUMNS).
   let ctxConnId: string | null = null;
   let ctxDb: string | null = null;
-  let colCache = new Map<string, ColumnInfo[]>();
-  let tableCache = new Map<string, TableMeta[]>();
-  // FK cache: keyed by db, holds all foreign-key relationships for that db.
-  // Used to suggest JOIN targets and auto-build ON clauses (② enhancement).
+  let prefetchedTables: TableMeta[] = [];
+  let isPrefetchingTables = false;
+
+  const MAX_CACHED_TABLE_COLUMNS = 80;
+  // Map keeps insertion order; oldest entries evicted when size exceeds limit.
+  const colLruCache = new Map<string, ColumnInfo[]>();
   let fkCache = new Map<string, ForeignKeyInfo[]>();
 
-// Lightweight FROM/JOIN scanner for the current statement. Extracts an
-// (alias -> real table) map so autocomplete can suggest columns of the
-// tables the user is actually querying — including JOINed tables and
-// aliases. Handles `schema.table`, `AS alias`, comma-separated lists, and
-// the various `* JOIN` forms. Sub-queries (`FROM (...)`) are skipped, which
-// is an acceptable limitation (no derived-table column completion).
-function parseFromTables(sql: string): Map<string, string> {
-  const map = new Map<string, string>();
-  const re =
-    /\b(FROM|JOIN)\s+([^;()]+?)(?=\s+(?:WHERE|ON|GROUP BY|ORDER BY|LIMIT|HAVING|JOIN|;|$))/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(sql))) {
-    const list = m[2] ?? "";
-    for (const raw of list.split(",")) {
-      const t = raw.trim();
-      if (!t) continue;
-      const tm = t.match(
-        /^[`"]?([A-Za-z0-9_]+)[`"]?(?:\.[`"]?([A-Za-z0-9_]+)[`"]?)?\s*(?:AS\s+)?[`"]?([A-Za-z0-9_]+)?[`"]?$/i
-      );
-      if (!tm) continue;
-      const tableName = tm[2] ?? tm[1];
-      const alias = tm[3];
-      if (!tableName || tableName.startsWith("(")) continue;
+  const getCachedCols = (table: string): ColumnInfo[] | undefined => {
+    const key = table.toLowerCase();
+    const cols = colLruCache.get(key);
+    if (cols) {
+      // Refresh LRU order: delete & re-insert
+      colLruCache.delete(key);
+      colLruCache.set(key, cols);
+    }
+    return cols;
+  };
+
+  const setCachedCols = (table: string, cols: ColumnInfo[]) => {
+    const key = table.toLowerCase();
+    if (colLruCache.has(key)) colLruCache.delete(key);
+    colLruCache.set(key, cols);
+    if (colLruCache.size > MAX_CACHED_TABLE_COLUMNS) {
+      const oldestKey = colLruCache.keys().next().value;
+      if (oldestKey) colLruCache.delete(oldestKey);
+    }
+  };
+
+  // Background table prefetch: grabs up to 3000 table names for current DB.
+  // Typical schema payload is <100KB, making completions instantaneous.
+  const prefetchTables = async (connId: string, db: string) => {
+    if (isPrefetchingTables) return;
+    isPrefetchingTables = true;
+    try {
+      const tables = await api.searchTables(connId, db, null, 3000);
+      if (ctxConnId === connId && ctxDb === db) {
+        prefetchedTables = tables;
+      }
+    } catch {
+      // Ignored: autocomplete will fall back to lazy API query if needed
+    } finally {
+      isPrefetchingTables = false;
+    }
+  };
+
+  // Enhanced multi-statement FROM / JOIN / UPDATE / INSERT / DELETE scanner.
+  // Extracts an (alias -> real table) map so autocomplete can suggest columns of
+  // the tables the user is actually querying. Handles aliases, backticks,
+  // UPDATE t1 AS a, INSERT INTO t1, DELETE FROM t1, etc.
+  function parseFromTables(sql: string): Map<string, string> {
+    const map = new Map<string, string>();
+    if (!sql.trim()) return map;
+
+    // Pattern 1: FROM or JOIN table [[AS] alias]
+    const fromJoinRe =
+      /\b(?:FROM|JOIN)\s+([^;()]+?)(?=\s+(?:WHERE|ON|GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|JOIN|SET|;|$))/gi;
+    let m: RegExpExecArray | null;
+    while ((m = fromJoinRe.exec(sql))) {
+      const list = m[1] ?? "";
+      for (const raw of list.split(",")) {
+        const t = raw.trim();
+        if (!t || t.startsWith("(")) continue;
+        const tm = t.match(
+          /^[`"]?([A-Za-z0-9_]+)[`"]?(?:\.[`"]?([A-Za-z0-9_]+)[`"]?)?(?:\s+(?:AS\s+)?([`"]?[A-Za-z0-9_]+[`"]?))?$/i
+        );
+        if (!tm) continue;
+        const tableName = tm[2] ?? tm[1];
+        const alias = tm[3] ? tm[3].replace(/[`"]/g, "") : undefined;
+        if (!tableName || tableName.startsWith("(")) continue;
+        const key = (alias ?? tableName).toLowerCase();
+        if (!map.has(key)) map.set(key, tableName);
+        // Also map the real table name so both `alias.col` and `table.col` resolve
+        if (!map.has(tableName.toLowerCase())) map.set(tableName.toLowerCase(), tableName);
+      }
+    }
+
+    // Pattern 2: UPDATE table [[AS] alias] SET ...
+    const updateRe = /\bUPDATE\s+([`"]?[A-Za-z0-9_]+[`"]?(?:\.[`"]?[A-Za-z0-9_]+[`"]?)?)\s*(?:AS\s+)?([`"]?[A-Za-z0-9_]+[`"]?)?/gi;
+    while ((m = updateRe.exec(sql))) {
+      const rawTable = m[1].replace(/[`"]/g, "");
+      const tableName = rawTable.includes(".") ? rawTable.split(".")[1] : rawTable;
+      const alias = m[2] ? m[2].replace(/[`"]/g, "") : undefined;
       const key = (alias ?? tableName).toLowerCase();
       if (!map.has(key)) map.set(key, tableName);
+      if (!map.has(tableName.toLowerCase())) map.set(tableName.toLowerCase(), tableName);
     }
-  }
-  return map;
-}
 
-/// Build a human-readable detail string for a column completion option.
-/// Shows type + PK indicator + origin table (when provided).
-/// Examples: "🔑 int · users", "varchar(255) · orders"
-function colDetail(c: ColumnInfo, table?: string): string {
-  const pk = c.key === "PRI" ? "🔑 " : "";
-  const parts = [`${pk}${c.data_type}`];
-  if (table) parts.push(table);
-  return parts.join(" · ");
-}
-
-/// Fetch and cache foreign-key relationships for a database. Used to suggest
-/// JOIN targets and auto-build ON clauses when the user types after JOIN.
-async function getFks(connId: string, db: string): Promise<ForeignKeyInfo[]> {
-  const cached = fkCache.get(db);
-  if (cached) return cached;
-  try {
-    const fks = await api.listRelationships(connId, db);
-    fkCache.set(db, fks);
-    return fks;
-  } catch {
-    return [];
-  }
-}
-
-/// Find FK relationships that link any of `knownTables` to other tables.
-/// Returns suggestions: { table, column, refTable, refColumn } — meaning
-/// "you can JOIN `table` ON table.column = refTable.refColumn".
-function findJoinSuggestions(
-  fks: ForeignKeyInfo[],
-  knownTables: string[]
-): { table: string; column: string; refTable: string; refColumn: string }[] {
-  const known = new Set(knownTables.map((t) => t.toLowerCase()));
-  const out: { table: string; column: string; refTable: string; refColumn: string }[] = [];
-  const seen = new Set<string>();
-  for (const fk of fks) {
-    // Case 1: a known table is the FK table → suggest the referenced table
-    if (known.has(fk.table_name.toLowerCase()) &&
-        !known.has(fk.referenced_table.toLowerCase())) {
-      const key = `${fk.table_name}.${fk.referenced_table}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push({
-          table: fk.table_name,
-          column: fk.column_name,
-          refTable: fk.referenced_table,
-          refColumn: fk.referenced_column,
-        });
+    // Pattern 3: INSERT INTO table or DELETE FROM table
+    const insDelRe = /\b(?:INSERT\s+INTO|DELETE\s+FROM)\s+([`"]?[A-Za-z0-9_]+[`"]?(?:\.[`"]?[A-Za-z0-9_]+[`"]?)?)/gi;
+    while ((m = insDelRe.exec(sql))) {
+      const rawTable = m[1].replace(/[`"]/g, "");
+      const tableName = rawTable.includes(".") ? rawTable.split(".")[1] : rawTable;
+      if (tableName) {
+        map.set(tableName.toLowerCase(), tableName);
       }
     }
-    // Case 2: a known table is the referenced table → suggest the FK table
-    if (known.has(fk.referenced_table.toLowerCase()) &&
-        !known.has(fk.table_name.toLowerCase())) {
-      const key = `${fk.referenced_table}.${fk.table_name}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push({
-          table: fk.referenced_table,
-          column: fk.referenced_column,
-          refTable: fk.table_name,
-          refColumn: fk.column_name,
-        });
-      }
+
+    return map;
+  }
+
+  /// Build a human-readable detail string for a column completion option.
+  /// Shows type + PK indicator + origin table (when provided) + comment.
+  function colDetail(c: ColumnInfo, table?: string): string {
+    const pk = c.key === "PRI" ? "🔑 " : "";
+    const parts = [`${pk}${c.data_type}`];
+    if (table) parts.push(table);
+    return parts.join(" · ");
+  }
+
+  /// Fetch and cache foreign-key relationships for a database.
+  async function getFks(connId: string, db: string): Promise<ForeignKeyInfo[]> {
+    const cached = fkCache.get(db);
+    if (cached) return cached;
+    try {
+      const fks = await api.listRelationships(connId, db);
+      fkCache.set(db, fks);
+      return fks;
+    } catch {
+      return [];
     }
   }
-  return out;
-}
+
+  /// Find FK relationships that link any of `knownTables` to other tables.
+  function findJoinSuggestions(
+    fks: ForeignKeyInfo[],
+    knownTables: string[]
+  ): { table: string; column: string; refTable: string; refColumn: string }[] {
+    const known = new Set(knownTables.map((t) => t.toLowerCase()));
+    const out: { table: string; column: string; refTable: string; refColumn: string }[] = [];
+    const seen = new Set<string>();
+    for (const fk of fks) {
+      if (known.has(fk.table_name.toLowerCase()) && !known.has(fk.referenced_table.toLowerCase())) {
+        const key = `${fk.table_name}.${fk.referenced_table}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push({
+            table: fk.table_name,
+            column: fk.column_name,
+            refTable: fk.referenced_table,
+            refColumn: fk.referenced_column,
+          });
+        }
+      }
+      if (known.has(fk.referenced_table.toLowerCase()) && !known.has(fk.table_name.toLowerCase())) {
+        const key = `${fk.referenced_table}.${fk.table_name}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push({
+            table: fk.referenced_table,
+            column: fk.referenced_column,
+            refTable: fk.table_name,
+            refColumn: fk.column_name,
+          });
+        }
+      }
+    }
+    return out;
+  }
 
   const schemaCompleter: CompletionSource = async (context) => {
-    // Capture into consts so the non-null narrowing survives `await` (the
-    // outer lets are mutated by setSchemaContext, which TS can't track).
     const connId = ctxConnId;
     const db = ctxDb;
     if (!connId || !db) return null;
 
-  // The identifier being typed (or empty at BOF / after Ctrl-Space).
-  const word = context.matchBefore(/[\w`]+/);
-  let from: number;
-  let prefix: string;
-  if (word) {
-    from = word.from;
-    prefix = word.text;
-  } else if (context.explicit) {
-    from = context.pos;
-    prefix = "";
-  } else {
-    return null;
-  }
-  const lowerPrefix = prefix.toLowerCase();
-
-  const before = context.state.doc.sliceString(0, from);
-  // Scan the ENTIRE current statement (text before AND after the cursor) for
-  // FROM/JOIN clauses, so column completion fires in the SELECT list and WHERE
-  // clause too — not only after the FROM keyword. Previously we only scanned
-  // `before`, so typing a column left of the FROM (e.g. `SELECT col▍ FROM t`)
-  // found no tables and wrongly fell through to table-name suggestions.
-  const docText = context.state.doc.toString();
-  const [stmtStart, stmtEnd] = statementRange(docText, from, from);
-  const tablesMap = parseFromTables(docText.slice(stmtStart, stmtEnd));
-
-  // Are we typing in a table-name position (right after FROM / JOIN / a comma)?
-  // Used to decide whether table suggestions belong here. When composing a
-  // column name we must NOT dump unrelated tables whose names happen to share
-  // the column prefix.
-  const preWord = word ? before.slice(0, word.from) : before;
-  const inTablePos = /(\bFROM\b|\bJOIN\b|\,)\s*$/i.test(preWord);
-
-  // 1) `alias.` / `table.` column completion — resolve the alias to the real table.
-  const colMatch = before.match(/([A-Za-z0-9_`]+)\.\s*$/);
-  if (colMatch) {
-    const ref = colMatch[1].replace(/`/g, "");
-    const realTable = tablesMap.get(ref.toLowerCase()) ?? ref;
-    let cols = colCache.get(realTable);
-    if (!cols) {
-      try {
-        cols = await api.listColumns(connId, db, realTable);
-      } catch {
-        cols = [];
-      }
-      colCache.set(realTable, cols);
+    // The identifier being typed (or empty at BOF / after Ctrl-Space).
+    const word = context.matchBefore(/[\w`]+/);
+    let from: number;
+    let prefix: string;
+    if (word) {
+      from = word.from;
+      prefix = word.text;
+    } else if (context.explicit) {
+      from = context.pos;
+      prefix = "";
+    } else {
+      return null;
     }
-    const options = cols
-      .filter((c) => c.name.toLowerCase().startsWith(lowerPrefix))
-      .map(
-        (c): Completion => ({
-          label: c.name,
-          type: "property",
-          detail: colDetail(c),
-          info: c.comment || undefined,
-        })
-      );
-    return { from, options, validFor: /^[\w`]*$/ };
-  }
+    const lowerPrefix = prefix.toLowerCase();
+    const before = context.state.doc.sliceString(0, from);
 
-  // 2) Column context: FROM/JOIN present -> suggest columns of every referenced
-  //    table (deduped), with the origin table shown as detail. Table names are
-  //    only offered when the cursor is in a table position (see `inTablePos`),
-  //    so composing a column never shows unrelated tables. lang-sql's keyword
-  //    completion runs in parallel.
-  if (tablesMap.size > 0) {
-    const fetches = Array.from(tablesMap.values()).map(async (t) => {
-      let cols = colCache.get(t);
+    // Scan statement for table references
+    const docText = context.state.doc.toString();
+    const [stmtStart, stmtEnd] = statementRange(docText, from, from);
+    const statementText = docText.slice(stmtStart, stmtEnd);
+    const tablesMap = parseFromTables(statementText);
+
+    // Context analysis: are we in a table position (after FROM / JOIN / INTO / TABLE / UPDATE)?
+    const inTablePos = /\b(FROM|JOIN|INTO|TABLE|UPDATE)\s+[\w`]*$/i.test(before) || /\b(FROM|JOIN|INTO|TABLE|UPDATE)\s*$/i.test(preWord);
+    const isJoinPos = /\bJOIN\s+[\w`]*$/i.test(before) || /\bJOIN\s*$/i.test(preWord);
+
+    // Helper to get columns for a table (from local LRU or fetch)
+    const loadTableCols = async (t: string): Promise<ColumnInfo[]> => {
+      let cols = getCachedCols(t);
       if (!cols) {
         try {
           cols = await api.listColumns(connId, db, t);
         } catch {
           cols = [];
         }
-        colCache.set(t, cols);
+        setCachedCols(t, cols);
       }
-      return cols.map((c) => ({ c, t }));
-    });
-    const all = (await Promise.all(fetches)).flat();
-    const seen = new Set<string>();
-    const colOpts: Completion[] = [];
-    for (const { c, t } of all) {
-      const cl = c.name.toLowerCase();
-      if (seen.has(cl)) continue;
-      seen.add(cl);
-      if (lowerPrefix && !cl.startsWith(lowerPrefix)) continue;
-      colOpts.push({
-        label: c.name,
-        type: "property",
-        detail: colDetail(c, t),
-        info: c.comment || undefined,
-      });
+      return cols;
+    };
+
+    // Helper to get matching tables from in-memory prefetched list
+    const getMatchingTables = async (pfx: string): Promise<TableMeta[]> => {
+      if (prefetchedTables.length > 0) {
+        const lp = pfx.toLowerCase();
+        return lp
+          ? prefetchedTables.filter((t) => t.name.toLowerCase().startsWith(lp) || t.name.toLowerCase().includes(lp))
+          : prefetchedTables;
+      }
+      // Fallback if prefetch hasn't finished yet
+      try {
+        const tables = await api.searchTables(connId, db, pfx || null, 200);
+        return tables;
+      } catch {
+        return [];
+      }
+    };
+
+    // 1) `alias.` / `table.` column completion (highest priority, boosted)
+    const colMatch = before.match(/([A-Za-z0-9_`]+)\.\s*$/);
+    if (colMatch) {
+      const ref = colMatch[1].replace(/[`"]/g, "");
+      const realTable = tablesMap.get(ref.toLowerCase()) ?? ref;
+      const cols = await loadTableCols(realTable);
+      const options = cols
+        .filter((c) => !lowerPrefix || c.name.toLowerCase().startsWith(lowerPrefix) || c.name.toLowerCase().includes(lowerPrefix))
+        .map(
+          (c): Completion => ({
+            label: c.name,
+            type: c.key === "PRI" ? "keyword" : "property",
+            boost: c.key === "PRI" ? 99 : 90,
+            detail: colDetail(c),
+            info: c.comment || undefined,
+          })
+        );
+      return { from, options, validFor: /^[\w`]*$/ };
     }
 
-    let tableOpts: Completion[] = [];
-    // Only offer table names when the cursor is actually in a table position
-    // (right after FROM/JOIN/comma). When composing a column name we show
-    // columns only — never a pile of tables that merely share the prefix.
+    const completions: Completion[] = [];
+
+    // 2) If in table position (FROM/JOIN/INTO/UPDATE): prioritize table names
     if (inTablePos) {
-      // ② FK-driven JOIN suggestions: when typing after JOIN, check if any
-      // of the already-mentioned tables have FK relationships to other tables.
-      // Suggest those tables with auto-built ON clauses.
-      const isJoinPos = /\bJOIN\s*$/i.test(preWord);
+      // FK-driven JOIN suggestions
       if (isJoinPos && tablesMap.size > 0) {
         const fks = await getFks(connId, db);
-        const knownTables = Array.from(tablesMap.values());
+        const knownTables = Array.from(new Set(tablesMap.values()));
         const joinSugs = findJoinSuggestions(fks, knownTables);
         for (const s of joinSugs) {
-          // Apply string inserts the table name + ON clause in one go.
           const onClause = `${s.refTable} ON ${s.refTable}.${s.refColumn} = ${s.table}.${s.column}`;
-          tableOpts.push({
+          completions.push({
             label: s.refTable,
             type: "variable",
+            boost: 98,
             detail: `🔗 ${s.table}.${s.column} → ${s.refTable}.${s.refColumn}`,
             apply: onClause,
           });
         }
       }
-      try {
-        const tables = await api.searchTables(connId, db, prefix || null, 200);
-        // Filter out tables already suggested by FK to avoid duplicates.
-        const fkLabels = new Set(tableOpts.map((t) => t.label.toLowerCase()));
-        const extra = tables
-          .filter((t) => !lowerPrefix || t.name.toLowerCase().startsWith(lowerPrefix))
-          .filter((t) => !fkLabels.has(t.name.toLowerCase()))
-          .map(
-            (t): Completion => ({
-              label: t.name,
-              detail: t.is_view ? "view" : "table",
-            })
-          );
-        tableOpts = [...tableOpts, ...extra];
-      } catch {
-        /* ignore — column suggestions still work */
+
+      const tables = await getMatchingTables(lowerPrefix);
+      const fkLabels = new Set(completions.map((t) => t.label.toLowerCase()));
+      for (const t of tables) {
+        if (fkLabels.has(t.name.toLowerCase())) continue;
+        completions.push({
+          label: t.name,
+          type: t.is_view ? "interface" : "class",
+          boost: 90,
+          detail: t.is_view ? "view" : "table",
+        });
+      }
+
+      // Allow snippets when typing at line beginning or table position
+      if (lowerPrefix) {
+        for (const s of SQL_SNIPPETS) {
+          if (s.label.startsWith(lowerPrefix)) completions.push({ ...s, boost: 30 });
+        }
+      }
+
+      return { from, options: completions, validFor: /^[\w`]*$/ };
+    }
+
+    // 3) Normal clause position (SELECT, WHERE, GROUP BY, etc.)
+    // A) If statement contains tables, suggest columns of those tables first (SUPER BOOST)
+    if (tablesMap.size > 0) {
+      const distinctTables = Array.from(new Set(tablesMap.values()));
+      const colPromises = distinctTables.map(async (t) => {
+        const cols = await loadTableCols(t);
+        return cols.map((c) => ({ c, t }));
+      });
+      const allCols = (await Promise.all(colPromises)).flat();
+      const seenCol = new Set<string>();
+
+      for (const { c, t } of allCols) {
+        const cl = c.name.toLowerCase();
+        if (seenCol.has(cl)) continue;
+        seenCol.add(cl);
+        if (lowerPrefix && !cl.startsWith(lowerPrefix) && !cl.includes(lowerPrefix)) continue;
+        const isPrefixMatch = lowerPrefix && cl.startsWith(lowerPrefix);
+        completions.push({
+          label: c.name,
+          type: c.key === "PRI" ? "keyword" : "property",
+          boost: c.key === "PRI" ? (isPrefixMatch ? 99 : 85) : (isPrefixMatch ? 95 : 80),
+          detail: colDetail(c, t),
+          info: c.comment || undefined,
+        });
       }
     }
-    return { from, options: [...colOpts, ...tableOpts], validFor: /^[\w`]*$/ };
-  }
 
-  // 3) No FROM yet — just suggest table names (keywords handled by lang-sql).
-  try {
-    const tables = await api.searchTables(connId, db, prefix || null, 200);
-    const filtered = tables.filter(
-      (t) => !lowerPrefix || t.name.toLowerCase().startsWith(lowerPrefix)
-    );
-    return {
-      from,
-      options: filtered.map(
-        (t): Completion => ({
+    // B) Builtin Functions (boost: 10)
+    if (lowerPrefix.length >= 1) {
+      for (const fn of MYSQL_FUNCTIONS) {
+        if (fn.label.toLowerCase().startsWith(lowerPrefix)) {
+          completions.push({ ...fn, boost: 10 });
+        }
+      }
+    }
+
+    // C) SQL Snippets (boost: 5)
+    if (lowerPrefix.length >= 1) {
+      for (const snip of SQL_SNIPPETS) {
+        if (snip.label.startsWith(lowerPrefix)) {
+          completions.push({ ...snip, boost: 5 });
+        }
+      }
+    }
+
+    // D) If no tables were extracted from current statement, fall back to suggesting all tables
+    if (tablesMap.size === 0) {
+      const tables = await getMatchingTables(lowerPrefix);
+      for (const t of tables) {
+        completions.push({
           label: t.name,
+          type: t.is_view ? "interface" : "class",
+          boost: 50,
           detail: t.is_view ? "view" : "table",
-        })
-      ),
-      validFor: /^[\w`]*$/,
-    };
-  } catch {
-    return null;
-  }
-};
+        });
+      }
+    }
+
+    return { from, options: completions, validFor: /^[\w`]*$/ };
+  };
 
   const schemaCompleterExt = MySQL.language.data.of({
     autocomplete: schemaCompleter,
@@ -715,7 +863,12 @@ function findJoinSuggestions(
   const state = EditorState.create({
     extensions: [
       basicSetup,
-      autocompletion(),
+      autocompletion({
+        activateOnTyping: true,
+        maxRenderedOptions: 50,
+        defaultKeymap: true,
+        closeOnBlur: true,
+      }),
       runKeymap,
       updateListener,
       themeConf.of(initialDark ? oneDark : []),
@@ -738,9 +891,12 @@ function findJoinSuggestions(
     setSchemaContext(connId: string | null, db: string | null) {
       ctxConnId = connId;
       ctxDb = db;
-      colCache.clear();
-      tableCache.clear();
+      prefetchedTables = [];
+      colLruCache.clear();
       fkCache.clear();
+      if (connId && db) {
+        void prefetchTables(connId, db);
+      }
     },
     clear() {
       view.dispatch({

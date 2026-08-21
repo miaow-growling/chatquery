@@ -8,6 +8,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import React from "react";
 import { ErrorBoundary } from "./ErrorBoundary";
 import {
   api,
@@ -56,8 +57,8 @@ import { RedisBrowser } from "./RedisBrowser";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Tree } from "./Tree";
 import { Icon } from "./components/ui";
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { save, open } from "@tauri-apps/plugin-dialog";
+import { writeFile, writeTextFile, readTextFile } from "@tauri-apps/plugin-fs";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -81,6 +82,45 @@ function CopyIcon() {
   );
 }
 
+/** 从 React 子树里抽纯文本，用来喂剪贴板（避开 react-markdown 传进来的
+ *  <code> 元素层级）。递归处理字符串、数字、数组、React 元素。 */
+function nodeText(node: React.ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join("");
+  if (React.isValidElement(node)) {
+    return nodeText((node.props as { children?: React.ReactNode }).children);
+  }
+  return "";
+}
+
+/** AI 消息里的代码块：在右上角加一个独立复制按钮，只复制代码内容。
+ *  用 useMemo 缓存一次就行，codeText 在 children 引用变化时才重算。 */
+function CodeBlock({ children }: { children?: React.ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const codeText = useMemo(() => nodeText(children).replace(/\n$/, ""), [children]);
+  return (
+    <div className="md-code">
+      <button
+        type="button"
+        className={"md-code-copy" + (copied ? " copied" : "")}
+        title="复制代码"
+        aria-label="复制代码"
+        onClick={async () => {
+          const ok = await copyText(codeText);
+          if (ok) {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }
+        }}
+      >
+        {copied ? "✓" : <CopyIcon />}
+      </button>
+      <pre>{children}</pre>
+    </div>
+  );
+}
+
 /** 渲染 AI 消息内容为 Markdown：标题/加粗/列表/代码块/表格/链接等。
  *  用 react-markdown + remark-gfm，默认不 dangerouslySetInnerHTML，XSS 安全。 */
 function MarkdownMessage({ content }: { content: string }) {
@@ -94,6 +134,7 @@ function MarkdownMessage({ content }: { content: string }) {
               {children}
             </a>
           ),
+          pre: CodeBlock,
         }}
       >
         {content}
@@ -299,6 +340,12 @@ interface DbPickerProps {
 function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerProps) {
   const roots = useMemo(() => buildPickerRoots(tree), [tree]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  /// Text filter — matches both the connection name (any depth) and the
+  /// list of databases that have already been loaded for that connection
+  /// (databases are lazy, so a connection's db list is only searchable
+  /// after the user has expanded it at least once — that's an accepted
+  /// trade-off to keep the picker fast on large accounts).
+  const [filter, setFilter] = useState("");
 
   // Auto-expand type and env nodes whenever the tree changes so the user
   // starts at the group level.
@@ -315,6 +362,26 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
       return next;
     });
   }, [roots]);
+
+  // Does this node (or any of its descendants) match the active filter?
+  // Used at render time to skip non-matching branches. We don't touch
+  // `expanded` — when a match is found we force `isOpen` in the row
+  // render, which is enough to surface the hit without polluting the
+  // user's manually-collapsed state once they clear the filter.
+  const nodeMatches = (n: PickerNode): boolean => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return true;
+    const ownName = (n.kind === "conn" ? n.conn.name : n.name).toLowerCase();
+    if (ownName.indexOf(q) >= 0) return true;
+    if (n.kind === "conn") {
+      const dbsKey = `conn:${n.conn.id}`;
+      const list = dbs[dbsKey] ?? [];
+      if (list.some((d) => d.toLowerCase().indexOf(q) >= 0)) return true;
+    } else {
+      if (n.children.some(nodeMatches)) return true;
+    }
+    return false;
+  };
   const [dbs, setDbs] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
 
@@ -352,9 +419,18 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
     }
   };
 
-  const renderNode = (node: PickerNode, depth: number): JSX.Element => {
+  const renderNode = (node: PickerNode, depth: number): JSX.Element | null => {
+    // Filter: drop nodes that don't match AND have no matching descendants.
+    // The check is cheap (O(N) on render, but the tree is small).
+    if (!nodeMatches(node)) return null;
+
     const hasChildren = node.kind !== "conn";
-    const isOpen = !!expanded[node.key];
+    // While filtering, force every node ON the path to a match to render
+    // expanded so the user actually sees the hit. Once they clear the
+    // filter we fall back to the `expanded` state (so a user who
+    // collapsed "MySQL" can still do that).
+    const filtering = filter.trim() !== "";
+    const isOpen = filtering ? true : !!expanded[node.key];
     const kids = node.kind === "conn" ? [] : node.children;
     const pad = { paddingLeft: `${depth * 16 + 8}px` };
 
@@ -432,7 +508,12 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
           </div>
         )}
         {node.kind !== "conn" && isOpen &&
-          kids.map((c) => <div key={c.key}>{renderNode(c, depth + 1)}</div>)}
+          kids
+            .map((c) => renderNode(c, depth + 1))
+            .filter((n): n is JSX.Element => n !== null)
+            .map((n, i) => (
+              <div key={kids[i].key}>{n}</div>
+            ))}
       </div>
     );
   };
@@ -441,13 +522,40 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
     <div className="modal-mask" onClick={onClose}>
       <div className="modal db-picker-modal" onClick={(e) => e.stopPropagation()}>
         <h3>切换数据库（当前查询）</h3>
+        <div className="db-pick-filter">
+          <Icon name="search" size={12} />
+          <input
+            type="text"
+            placeholder="筛选连接名 / 库名…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            autoFocus
+          />
+          {filter && (
+            <button
+              type="button"
+              className="db-pick-filter-clear"
+              title="清空筛选"
+              onClick={() => setFilter("")}
+            >
+              ×
+            </button>
+          )}
+        </div>
         <div className="db-pick-tree">
           {roots.length === 0 && (
             <div className="tree-empty">暂无连接，请先在左侧添加连接</div>
           )}
-          {roots.map((r) => (
-            <div key={r.key}>{renderNode(r, 0)}</div>
-          ))}
+          {filter.trim() !== "" &&
+            roots.every((r) => !nodeMatches(r)) && (
+              <div className="tree-empty">无匹配：{filter}</div>
+            )}
+          {roots
+            .map((r) => renderNode(r, 0))
+            .filter((n): n is JSX.Element => n !== null)
+            .map((n, i) => (
+              <div key={roots[i].key}>{n}</div>
+            ))}
         </div>
         <div className="modal-actions">
           <span className="spacer" />
@@ -699,7 +807,9 @@ export function App() {
   // --- Row multi-select + copy menu (Phase 20) -----------------------------
   // `selRows` holds result-row indices selected for copy (JSON / INSERT / UPDATE).
   const [selRows, setSelRows] = useState<Set<number>>(new Set());
-  const [selCol, setSelCol] = useState<number | null>(null);
+  // `selCols` mirrors `selRows` for column headers: Ctrl/Cmd+click toggles,
+  // Shift+click takes the anchor range, right-click pins the menu's columns.
+  const [selCols, setSelCols] = useState<Set<number>>(new Set());
   // Single-cell selection (set by clicking a data cell; cleared on row/column
   // selection). Drives the .cell-selected highlight independently of rows/cols.
   const [selCell, setSelCell] = useState<{ ri: number; ci: number } | null>(null);
@@ -749,6 +859,8 @@ export function App() {
   }, [cellTip]);
   const [toast, setToast] = useState<string | null>(null);
   const lastAnchorRef = useRef(0);
+  // Shift-range anchor for column-header selection (mirrors lastAnchorRef).
+  const lastColAnchorRef = useRef(0);
 
   // Drag-to-select (marquee) for the result grid: hold left mouse and move
   // across rows to select a continuous range. Sits alongside the click / Ctrl /
@@ -859,6 +971,20 @@ export function App() {
     () => localStorage.getItem("cq_ai_complete") === "1"
   );
 
+  // --- Per-call query timeout (seconds) ----------------------------------
+  // User preference mirrored from `getQueryTimeoutSecs()` in `api.ts`. The
+  // setter also writes to localStorage; `api.executeQuery` always reads the
+  // latest value on invoke, so a tweak in settings takes effect on the next
+  // query without a reload. 2026-08-17.
+  const [queryTimeoutSecs, setQueryTimeoutSecs] = useState<number>(
+    () => {
+      const raw = localStorage.getItem("cq_query_timeout_secs");
+      const n = raw == null ? NaN : Number(raw);
+      if (!Number.isFinite(n) || n <= 0) return 300;
+      return Math.min(1800, Math.max(1, Math.floor(n)));
+    }
+  );
+
   // --- Resizable chat panel -----------------------------------------------
   const isResizingChat = useRef(false);
   const startChatX = useRef(0);
@@ -933,6 +1059,27 @@ export function App() {
       document.removeEventListener("keydown", onKey);
     };
   }, [plusOpen, modelOpen]);
+
+  // When the model dropdown opens, scroll the previously selected
+  // model into view so the user can "continue choosing" from where
+  // they left off (especially useful with a long vendor list). We
+  // wait a microtask so the <ul> is actually in the DOM and laid
+  // out before measuring.
+  const modelMenuListRef = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    if (!modelOpen) return;
+    const id = window.setTimeout(() => {
+      const list = modelMenuListRef.current;
+      if (!list) return;
+      const active = list.querySelector(".composer-model-item.active");
+      if (active && "scrollIntoView" in active) {
+        // `block: "nearest"` keeps the scroll minimal — only nudges
+        // the list if the active item is actually off-screen.
+        (active as HTMLElement).scrollIntoView({ block: "nearest" });
+      }
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [modelOpen, llmCfg?.vendor, llmCfg?.model]);
   // Display label for the current model: "<供应商名> · <model>" when
   // configured, "选择模型" otherwise. The supplier name is resolved
   // in this order:
@@ -1040,18 +1187,23 @@ export function App() {
   };
 
   // Load vendor presets + current config when the settings dialog opens.
+  // Sequencing: listModelAliases() FIRST because it may trigger a backend
+  // "reconcile" that rewrites LlmConfig.vendor (legacy preset id → fresh
+  // profile id). Only after that completes should we read the (now
+  // aligned) LlmConfig. If we read in parallel, the frontend sees the
+  // pre-reconcile LlmConfig and the auto-save apply check fails.
   const openSettings = useCallback(async () => {
     try {
-      const [ps, cfg, ks, profiles] = await Promise.all([
+      const profiles = await api.listModelAliases();
+      setVendorProfiles(profiles);
+      const [ps, cfg, ks] = await Promise.all([
         api.getVendorPresets(),
         api.getLlmConfig(),
         api.getKeyStatus(),
-        api.listModelAliases(),
       ]);
       setPresets(ps);
       setLlmCfg(cfg);
       setKeyStatus(ks);
-      setVendorProfiles(profiles);
     } catch (e) {
       showToast("加载设置失败: " + String(e));
     }
@@ -1064,87 +1216,175 @@ export function App() {
   /// vendors the user must still click the explicit "添加供应商" button
   /// to provide a stable id. We deep-compare the draft against the stored
   /// vendor to avoid round-tripping on no-op onBlur.
-  const autoSaveVendor = useCallback(
-    async (overrides?: Partial<typeof vendorDraft>) => {
-      if (!editingVendor) return;
-      const current = vendorProfiles.find((p) => p.id === editingVendor);
-      if (!current) return;
-      const draft = { ...vendorDraft, ...(overrides || {}) };
-      if (
-        draft.name === current.name &&
-        draft.base_url === current.base_url &&
-        draft.api_format === current.api_format &&
-        // api_key is only "changed" if the user typed a non-empty value.
-        // Empty = keep stored key.
-        (draft.api_key === "" || draft.api_key === current.api_key_hint)
-      ) {
-        return; // nothing to save
-      }
-      try {
-        await api.saveModelAlias({
-          id: current.id,
-          name: draft.name.trim(),
-          vendor: current.id,
-          base_url: draft.base_url.trim(),
-          model: "",
-          api_key: draft.api_key,
-          api_format: draft.api_format,
-          models: current.models,
+  /// Auto-save the current vendor draft. Plain async function (NOT
+  /// useCallback) because we read `vendorDraft` from closure on every
+  /// call — a memoised callback with a stale `vendorDraft` dep would
+  /// silently no-op the deep-compare (draft.base_url === current.base_url
+  /// is always true for the cached closure) and the user would see "改
+  /// 了地址 / 切回来原样" with no error. Recreating each render costs
+  /// nothing here — no child component memos on it.
+  ///
+  /// If the saved vendor is the currently-active one (i.e. the one
+  /// driving live LLM calls), we also re-apply it so the runtime
+  /// LlmConfig picks up the new api_key / base_url immediately. Without
+  /// this, the user has to go re-pick a model in the composer after
+  /// every key change, which is the source of "加了 key 怎么还 401".
+  const autoSaveVendor = async (
+    overrides?: Partial<typeof vendorDraft>
+  ): Promise<"saved" | "unchanged" | "error"> => {
+    if (!editingVendor) return "unchanged";
+    const current = vendorProfiles.find((p) => p.id === editingVendor);
+    if (!current) return "unchanged";
+    const draft = { ...vendorDraft, ...(overrides || {}) };
+    if (
+      draft.name === current.name &&
+      draft.base_url === current.base_url &&
+      draft.api_format === current.api_format &&
+      // api_key is only "changed" if the user typed a non-empty value.
+      // Empty = keep stored key.
+      (draft.api_key === "" || draft.api_key === current.api_key_hint)
+    ) {
+      return "unchanged"; // nothing to save
+    }
+    try {
+      const newKey = draft.api_key;
+      const newBaseUrl = draft.base_url.trim();
+      await api.saveModelAlias({
+        id: current.id,
+        name: draft.name.trim(),
+        vendor: current.id,
+        base_url: newBaseUrl,
+        model: "",
+        api_key: newKey,
+        api_format: draft.api_format,
+        models: current.models,
+      });
+      const fresh = await api.listModelAliases();
+      setVendorProfiles(fresh);
+      setVendorDraft({ ...draft, api_key: "" });
+      // Re-apply the vendor to the runtime LlmConfig so any change
+      // (key, base_url, api_format, even model list) takes effect
+      // immediately. The user expectation is "改了就生效" — they
+      // should not have to go back to the composer to re-pick a
+      // model just to pick up a new key.
+      //
+      // We match the active LLM by id OR by base_url. The id match
+      // is the fast path (after a successful backend reconcile,
+      // LlmConfig.vendor is the profile id). The base_url match is
+      // the safety net: if the user is mid-edit on a legacy install
+      // where LlmConfig.vendor still holds the old preset id
+      // ("tokenhub") while the profile uses a fresh "vXXX..." id,
+      // the id check would skip the apply and the new key never
+      // reaches runtime — every chat still 401s. base_url is a
+      // unique-enough proxy because every vendor has its own
+      // endpoint URL.
+      const latestProfile = fresh.find((p) => p.id === current.id);
+      if (latestProfile && llmCfg?.model) {
+        const isActive =
+          llmCfg.vendor === current.id ||
+          (!!llmCfg.base_url && llmCfg.base_url === current.base_url);
+        // eslint-disable-next-line no-console
+        console.log("[vendor save] apply check", {
+          editingId: current.id,
+          editingName: current.name,
+          llmCfgVendor: llmCfg?.vendor,
+          llmCfgBaseUrl: llmCfg?.base_url,
+          llmCfgModel: llmCfg?.model,
+          isActive,
+          newKeySet: newKey !== "",
         });
-        setVendorProfiles(await api.listModelAliases());
-        setVendorDraft({ ...draft, api_key: "" });
-        showToast?.("已自动保存");
-      } catch (e) {
-        showToast?.("保存失败: " + String(e));
+        if (isActive) {
+          const stillHas = latestProfile.models.some((m) => m.name === llmCfg.model);
+          if (stillHas) {
+            try {
+              await api.applyModelAlias(current.id, llmCfg.model);
+              setLlmCfg(await api.getLlmConfig());
+              // eslint-disable-next-line no-console
+              console.log("[vendor save] apply ok, runtime updated");
+            } catch (e) {
+              showToast?.("已保存,但 runtime 未生效,需重选 model: " + String(e));
+              // eslint-disable-next-line no-console
+              console.error("[vendor save] apply failed", e);
+            }
+          } else {
+            showToast?.(`已保存,当前 model「${llmCfg.model}」不在供应商里,记得去 composer 重选`);
+          }
+        }
       }
-    },
-    // We deliberately keep this callback's deps small — the draft is read
-    // fresh on each call to avoid stale-closure overwrites. eslint-disable
-    // for the dep array to keep this concise.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [editingVendor, vendorProfiles]
-  );
+      // Refresh `status` so the header bar's "LLM 已配置/未配置"
+      // text reflects the new state. Best-effort.
+      try {
+        setStatus(await api.getStatus());
+      } catch {
+        /* status refresh is best-effort */
+      }
+      return "saved";
+    } catch (e) {
+      showToast?.("保存失败: " + String(e));
+      return "error";
+    }
+  };
 
   // -------------------------------------------------------------------
   // Add a model to the in-progress draft. In edit mode also persists
   // via saveModelAlias (the backend keeps the vendor's identity); in
   // create mode the list stays local until the "添加供应商" save.
+  //
+  // Race: if the user edited base_url / api_format and hasn't blurred
+  // out of those fields yet, the SAVED profile (v.*) still has the old
+  // base_url. We flush any pending vendor-level edits first so the
+  // new model list is written with the *new* base_url, not a stale one.
+  //
+  // Plain function (not useCallback) for the same reason as
+  // autoSaveVendor: the draft + autoSaveVendor closure must be fresh.
   // -------------------------------------------------------------------
-  const addModel = useCallback(
-    (rawName: string) => {
-      const newName = rawName.trim();
-      if (!newName) return;
-      // Compute the next list from the DRAFT (the local source of
-      // truth) rather than from `v.models` (the backend snapshot).
-      // This avoids a race where two rapid adds/deletes would each
-      // base their save on a stale vendorProfiles snapshot.
-      if (vendorDraft.models.some((m) => m.name === newName)) return;
-      const nextModels = [...vendorDraft.models, { name: newName }];
-      setVendorDraft({ ...vendorDraft, models: nextModels, newModel: "" });
-      // Persist in edit mode. The non-vendor fields are taken from
-      // the SAVED profile (v.*) so an in-progress but unblurred
-      // name/base_url edit doesn't accidentally get baked in here.
-      if (editingVendor) {
-        const v = vendorProfiles.find((p) => p.id === editingVendor);
-        if (!v) return;
-        api
-          .saveModelAlias({
-            id: v.id,
-            name: v.name,
-            vendor: v.id,
-            base_url: v.base_url,
-            model: "",
-            api_key: "",
-            api_format: v.api_format,
-            models: nextModels,
-          })
-          .then(() => api.listModelAliases())
-          .then((list) => setVendorProfiles(list))
-          .catch((e) => showToast("添加 model 失败: " + String(e)));
-      }
-    },
-    [editingVendor, vendorProfiles, vendorDraft]
-  );
+  const addModel = (rawName: string) => {
+    const newName = rawName.trim();
+    if (!newName) return;
+    if (vendorDraft.models.some((m) => m.name === newName)) return;
+    const nextModels = [...vendorDraft.models, { name: newName }];
+    setVendorDraft({ ...vendorDraft, models: nextModels, newModel: "" });
+    if (!editingVendor) return; // create mode — no backend yet
+    const v = vendorProfiles.find((p) => p.id === editingVendor);
+    if (!v) return;
+    // If the draft has unsaved base_url / api_format / name changes,
+    // autoSaveVendor will bake them in first. After it resolves,
+    // re-read vendorProfiles so `v` below is the post-save state.
+    const needsFlush =
+      vendorDraft.base_url !== v.base_url ||
+      vendorDraft.name !== v.name ||
+      vendorDraft.api_format !== v.api_format ||
+      (vendorDraft.api_key !== "" && vendorDraft.api_key !== v.api_key_hint);
+    const persist = (latest: typeof vendorProfiles) => {
+      const cur = latest.find((p) => p.id === editingVendor);
+      if (!cur) return;
+      api
+        .saveModelAlias({
+          id: cur.id,
+          name: cur.name,
+          vendor: cur.id,
+          base_url: cur.base_url,
+          model: "",
+          api_key: "",
+          api_format: cur.api_format,
+          models: nextModels,
+        })
+        .then(() => api.listModelAliases())
+        .then((list) => setVendorProfiles(list))
+        .catch((e) => showToast("添加 model 失败: " + String(e)));
+    };
+    if (needsFlush) {
+      autoSaveVendor()
+        .then(() => api.listModelAliases())
+        .then((latest) => {
+          setVendorProfiles(latest);
+          persist(latest);
+        })
+        .catch((e) => showToast("添加 model 失败: " + String(e)));
+    } else {
+      persist(vendorProfiles);
+    }
+  };
 
   // -------------------------------------------------------------------
   // Field — labeled single-line input used by the vendor-edit form.
@@ -1245,7 +1485,7 @@ export function App() {
   // Drop the selection whenever the result or the active tab changes.
   useEffect(() => {
     setSelRows(new Set());
-    setSelCol(null);
+    setSelCols(new Set());
     setSelCell(null);
     setCtxMenu(null);
   }, [active?.id, result]);
@@ -1554,9 +1794,9 @@ export function App() {
       text = rowsToInsert(table, result.columns, rows);
     else if (kind === "csv") text = toCsv(result.columns, rows);
     else if (kind === "wherein") {
-      // Use the column from context menu (right-clicked column header) or
-      // the currently selected column. Fall back to first column.
-      const ci = ctxMenu?.col ?? selCol ?? 0;
+      // Use the column from context menu (right-clicked column header) or the
+      // first currently selected column. Fall back to first column.
+      const ci = ctxMenu?.col ?? (selCols.size > 0 ? Math.min(...selCols) : 0);
       const colName = result.columns[ci] ?? `col${ci + 1}`;
       text = rowsToWhereIn(colName, ci, rows);
     } else if (kind === "update") {
@@ -1644,7 +1884,7 @@ export function App() {
   // selections are cleared so the highlight is unambiguous.
   const onCellClick = (ri: number, ci: number) => {
     setSelRows(new Set());
-    setSelCol(null);
+    setSelCols(new Set());
     setSelCell({ ri, ci });
   };
 
@@ -1665,18 +1905,63 @@ export function App() {
     setCtxMenu({ x, y, rows: eff, cell: { ri, ci } });
   };
 
-  // Right-click a column header: pin the column selection and surface the
-  // column copy actions. Row selection is left untouched so the user can
+  // Right-click a column header: if the column is part of the current
+  // multi-selection keep the whole set, otherwise collapse to just that column
+  // (same convention as rows). Row selection is left untouched so the user can
   // still copy rows from the same menu if any are selected.
   const onColCtx = (ci: number, e: ReactMouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setSelCol(ci);
+    const eff = selCols.has(ci)
+      ? Array.from(selCols).sort((a, b) => a - b)
+      : [ci];
+    setSelCols(new Set(eff));
+    lastColAnchorRef.current = ci;
     const rows =
       selRows.size > 0 ? Array.from(selRows).sort((a, b) => a - b) : [];
     const x = Math.min(e.clientX, window.innerWidth - 220);
     const y = Math.min(e.clientY, window.innerHeight - 130);
     setCtxMenu({ x, y, rows, col: ci });
+  };
+
+  // Left-click a column header. Plain click keeps the old behaviour (select
+  // this one column + cycle sort). Ctrl/Cmd+click toggles the column in the
+  // multi-select set WITHOUT touching sort — toggling must never reorder.
+  // Shift+click selects the anchor..clicked range, mirroring row selection.
+  const onColClick = (ci: number, e: ReactMouseEvent) => {
+    if (e.metaKey || e.ctrlKey) {
+      setSelRows(new Set());
+      setSelCell(null);
+      setSelCols((prev) => {
+        const n = new Set(prev);
+        if (n.has(ci)) n.delete(ci);
+        else n.add(ci);
+        return n;
+      });
+      lastColAnchorRef.current = ci;
+      return;
+    }
+    if (e.shiftKey && selCols.size > 0) {
+      setSelRows(new Set());
+      setSelCell(null);
+      const [a, b] = [lastColAnchorRef.current, ci].sort((x, y) => x - y);
+      const next = new Set<number>();
+      for (let k = a; k <= b; k++) next.add(k);
+      setSelCols(next);
+      return;
+    }
+    setSelCols(new Set([ci]));
+    setSelRows(new Set());
+    setSelCell(null);
+    lastColAnchorRef.current = ci;
+    // Cycle: none → asc → desc → none (#3 sort).
+    setGridSort((s) =>
+      s?.col === ci
+        ? s.dir === "asc"
+          ? { col: ci, dir: "desc" }
+          : null
+        : { col: ci, dir: "asc" }
+    );
   };
 
   // --- Column filter actions (#3) -----------------------------------------
@@ -1770,22 +2055,63 @@ export function App() {
     return true;
   };
 
-  // Serialize a single column to a JSON array, applying the same NULL / bool /
-  // number coercion used by rowsToJson so the output is clean, typed JSON.
-  const copyColAsJson = async (ci: number) => {
-    if (!result || result.kind !== "table" || ci < 0) return;
-    const colName = result.columns[ci];
-    const arr = result.rows.map((r) => {
-      const v = r[ci] ?? "";
-      const low = v.toLowerCase();
-      if (v === "NULL") return null;
-      if (low === "true") return true;
-      if (low === "false") return false;
-      if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
-      return v;
-    });
-    await copyText(JSON.stringify(arr, null, 2));
-    showToast(`已复制列 ${colName} · ${arr.length} 个值 (JSON)`);
+  // Copy the selected columns (Ctrl/Cmd+click headers to multi-select) in the
+  // given format. `cols` are sorted result-column indices. JSON keeps the old
+  // single-column shape (a bare typed array) and switches to row objects once
+  // more than one column is selected; CSV keeps the header; TSV is bare values
+  // for pasting straight into Excel; "names" copies just the column names.
+  const copyColsAs = async (kind: "json" | "csv" | "tsv" | "names") => {
+    if (!result || result.kind !== "table") return;
+    const cols = Array.from(selCols)
+      .sort((a, b) => a - b)
+      .filter((ci) => ci < result.columns.length);
+    if (cols.length === 0) return;
+    const names = cols.map((ci) => result.columns[ci] ?? `#${ci + 1}`);
+    let text = "";
+    if (kind === "names") {
+      text = names.join(", ");
+    } else if (kind === "tsv") {
+      // Flatten tabs/newlines inside values so a cell never breaks the row.
+      text = result.rows
+        .map((r) =>
+          cols
+            .map((ci) => fmtCell(r[ci] ?? "").replace(/\t|\r?\n/g, " "))
+            .join("\t")
+        )
+        .join("\n");
+    } else {
+      const projected = result.rows.map((r) =>
+        cols.map((ci) => r[ci] ?? "")
+      );
+      if (kind === "csv") {
+        text = toCsv(names, projected);
+      } else if (cols.length === 1) {
+        // Single column keeps the old bare typed-array shape.
+        text = JSON.stringify(
+          projected.map((r) => {
+            const v = r[0];
+            const low = v.toLowerCase();
+            if (v === "NULL") return null;
+            if (low === "true") return true;
+            if (low === "false") return false;
+            if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+            return v;
+          }),
+          null,
+          2
+        );
+      } else {
+        text = rowsToJson(names, projected);
+      }
+    }
+    await copyText(text);
+    showToast(
+      kind === "names"
+        ? `已复制 ${cols.length} 个列名`
+        : `已复制 ${cols.length} 列 · ${result.rows.length} 行 · ${
+            kind === "json" ? "JSON" : kind === "csv" ? "CSV" : "Tab 分隔"
+          }`
+    );
     setCtxMenu(null);
   };
 
@@ -2838,25 +3164,13 @@ export function App() {
                 key={i}
                 className={
                   (pkSet.has(c) ? "pk " : "") +
-                  (selCol === i ? "col-selected " : "") +
+                  (selCols.has(i) ? "col-selected " : "") +
                   (gridSort?.col === i ? "col-sorted " : "") +
                   (colFilters[i] ? "col-filtered " : "")
                 }
-                onClick={() => {
-                  setSelCol(i);
-                  setSelRows(new Set());
-                  setSelCell(null);
-                  // Cycle: none → asc → desc → none (#3 sort).
-                  setGridSort((s) =>
-                    s?.col === i
-                      ? s.dir === "asc"
-                        ? { col: i, dir: "desc" }
-                        : null
-                      : { col: i, dir: "asc" }
-                  );
-                }}
+                onClick={(e) => onColClick(i, e)}
                 onContextMenu={(e) => onColCtx(i, e)}
-                title="左键点击排序(升/降/取消) · 右键列筛选/复制"
+                title="左键点击排序(升/降/取消) · Ctrl+点击多选列 · Shift+点击范围选列 · 右键列筛选/复制"
               >
                 {c}
                 {pkSet.has(c) ? " 🔑" : ""}
@@ -2913,7 +3227,7 @@ export function App() {
                       className={
                         (ov !== undefined ? "dirty " : "") +
                         (editable && !isDeleted ? "editable " : "") +
-                        (selCol === ci ? "col-selected " : "") +
+                        (selCols.has(ci) ? "col-selected " : "") +
                         (isCellSel ? "cell-selected " : "")
                       }
                       title={
@@ -3290,6 +3604,13 @@ export function App() {
   // pointed at the same connection the user has in the tree.
   const [chatConnId, setChatConnId] = useState<string | null>(null);
   const [chatDb, setChatDb] = useState<string | null>(null);
+  /// Files attached to the next chat turn (.md / .txt / .json / .csv / .log
+  /// — anything readTextFile can swallow). Read once on attach, kept in
+  /// memory for the lifetime of the session, cleared the moment we send the
+  /// turn (same lifecycle as `pendingRefs` and `pendingConvRefs`).
+  const [chatAttachments, setChatAttachments] = useState<
+    { id: string; name: string; content: string; size: number }[]
+  >([]);
   useEffect(() => {
     if (chatConnId === null && selId) setChatConnId(selId);
   }, [selId, chatConnId]);
@@ -3566,6 +3887,28 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selId]);
 
+  // Load the user's vendor profiles + active LlmConfig on mount so the
+  // composer's model dropdown is populated on first launch and the
+  // active highlight survives restart. We sequence the two calls:
+  // listModelAliases() may trigger a backend "reconcile" that rewrites
+  // LlmConfig.vendor (e.g. from a legacy preset id to the migrated
+  // profile id) — only after that completes should we read the (now
+  // aligned) LlmConfig. If we read in parallel, the frontend sees the
+  // pre-reconcile LlmConfig and the auto-save apply check
+  // (`llmCfg.vendor === current.id`) keeps failing.
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await api.listModelAliases();
+        setVendorProfiles(list);
+        const cfg = await api.getLlmConfig();
+        setLlmCfg(cfg);
+      } catch (e) {
+        showToast("加载模型配置失败: " + String(e));
+      }
+    })();
+  }, []);
+
   /// Pick a conversation for an @-mention. `whole` = reference the session
   /// tail; otherwise open the message drill-down.
   const pickConvRef = (c: ConversationSummary, whole: boolean) => {
@@ -3705,6 +4048,18 @@ export function App() {
     // are never replayed from history.
     const convRefs = pendingConvRefs;
     setPendingConvRefs([]);
+    // Same for attachments: prepend the file contents to the user message
+    // (the model sees it as part of the turn's context), then drop them
+    // from the composer so the next question starts clean.
+    const attachments = chatAttachments;
+    setChatAttachments([]);
+    const attText =
+      attachments.length > 0
+        ? attachments
+            .map((a) => `--- 附件: ${a.name} ---\n${a.content}`)
+            .join("\n\n") + "\n\n"
+        : "";
+    const finalText = attText + text;
     // First user message of a fresh conversation → auto title (§5.2).
     void maybeAutoTitle(text);
     // The reference card is display-only (`role: "ref"` has no Rust
@@ -3715,7 +4070,7 @@ export function App() {
       ...(refs.length > 0
         ? [{ role: "ref" as const, content: "", refs }]
         : []),
-      { role: "user" as const, content: text },
+      { role: "user" as const, content: finalText },
     ];
     setChat(next);
     input.value = "";
@@ -3745,7 +4100,7 @@ export function App() {
       // connection, and the backend tells the model to honour that
       // one when running the referenced SQL. `convId`/`convRefs` are
       // the P0/P1 conversation plumbing.
-      turnIdRef.current = await chatTurn(chatConnId ?? selId, history, refs, convId, convRefs);
+      turnIdRef.current = await chatTurn(chatConnId ?? selId, chatDb, history, refs, convId, convRefs);
     } catch (e) {
       setStreaming(false);
       sendingRef.current = false;
@@ -3753,6 +4108,7 @@ export function App() {
       // Hand the references back so the user can retry without re-selecting.
       setPendingRefs((prev) => (prev.length > 0 ? prev : refs));
       setPendingConvRefs((prev) => (prev.length > 0 ? prev : convRefs));
+      setChatAttachments((prev) => (prev.length > 0 ? prev : attachments));
       setChat((prev) => [...prev, { role: "tool", content: "错误: " + String(e) }]);
     }
   };
@@ -3994,24 +4350,35 @@ export function App() {
       else unlisteners.push(u);
     };
     onChatToken((t) => {
+      // Token accumulation: extend the *most recent* assistant bubble, not
+      // whatever happens to be at the tail. Tool breadcrumbs (`onChatTool`
+      // below) push `role:"tool"` cards into the array even though the
+      // renderer hides them — a tool call followed by a streamed reply used
+      // to spawn a second AI card because the tail was no longer an
+      // assistant. Same trap for the persistence snapshot below. 2026-08-17.
       setChat((prev) => {
-        const next = [...prev];
-        const last = next[next.length - 1];
-        if (last && last.role === "assistant") {
-          next[next.length - 1] = { ...last, content: last.content + t };
-        } else {
-          next.push({ role: "assistant", content: t });
+        let lastIdx = -1;
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].role === "assistant") { lastIdx = i; break; }
         }
+        if (lastIdx === -1) {
+          return [...prev, { role: "assistant", content: t }];
+        }
+        const next = [...prev];
+        next[lastIdx] = { ...next[lastIdx], content: next[lastIdx].content + t };
         return next;
       });
       // Keep the persistence snapshot in step so chat-done writes the full text.
       const snap = turnItemsRef.current;
       const items = [...snap.items];
-      const last = items[items.length - 1];
-      if (last && last.role === "assistant") {
-        items[items.length - 1] = { ...last, content: last.content + t };
-      } else {
+      let lastIdx = -1;
+      for (let i = items.length - 1; i >= 0; i--) {
+        if (items[i].role === "assistant") { lastIdx = i; break; }
+      }
+      if (lastIdx === -1) {
         items.push({ role: "assistant", content: t });
+      } else {
+        items[lastIdx] = { ...items[lastIdx], content: items[lastIdx].content + t };
       }
       turnItemsRef.current = { convId: snap.convId, items };
     }).then(safe);
@@ -4055,13 +4422,43 @@ export function App() {
       sendingRef.current = false;
       turnIdRef.current = null;
       setConfirmQueue([]);
+      // Front-end fallback (2026-08-17): when the backend's synthesize
+      // emits nothing (model returned empty, or a filter stripped
+      // everything), the assistant bubble would render as the literal
+      // "…" placeholder. Patch the last assistant message with a short
+      // acknowledgment so the user always sees a visible reply.
+      // Mirrors the backend's `查询已执行，详见上方工具结果。` fallback
+      // so the two layers agree on the message text.
+      setChat((prev) => {
+        if (prev.length === 0) return prev;
+        const last = prev[prev.length - 1];
+        if (last.role === "assistant" && last.content.trim() === "") {
+          const filled = prev.slice();
+          filled[filled.length - 1] = {
+            ...last,
+            content: "查询已执行，详见上方工具结果。",
+          };
+          return filled;
+        }
+        return prev;
+      });
       // §5.2: persist this turn's snapshot (ref/plan cards + user + assistant)
       // into the conversation it was sent from, then refresh the selector.
       const snap = turnItemsRef.current;
       const convId_ = snap.convId;
       turnItemsRef.current = { convId: null, items: [] };
+      // Patch the snapshot too — the empty-assistant filter below would
+      // drop the empty bubble and leave the turn un-persisted.
+      const patchedSnap = {
+        convId: snap.convId,
+        items: snap.items.map((m) =>
+          m.role === "assistant" && m.content.trim() === ""
+            ? { ...m, content: "查询已执行，详见上方工具结果。" }
+            : m,
+        ),
+      };
       if (convId_) {
-        const msgs: NewChatMessage[] = snap.items
+        const msgs: NewChatMessage[] = patchedSnap.items
           .filter((m) => !(m.role === "assistant" && m.content.trim() === ""))
           .map((m) => {
             if (m.role === "plan") {
@@ -4427,9 +4824,13 @@ export function App() {
                       value={gridSearch}
                       onChange={(e) => setGridSearch(e.target.value)}
                     />
-                    <label className="case-toggle" title="区分大小写">
+                    <label
+                      className="case-toggle"
+                      title="区分大小写：勾选后「搜索当前页」和列筛选（包含/等于/不等于）区分大小写，不勾选则忽略大小写"
+                    >
                       <input
                         type="checkbox"
+                        title="区分大小写"
                         checked={gridCase}
                         onChange={(e) => setGridCase(e.target.checked)}
                       />
@@ -4636,7 +5037,7 @@ export function App() {
               )}
             </div>
             <span className="chat-status">
-            {status.llm_enabled ? "LLM 已配置" : "LLM 未配置"} · 脱敏:
+            {llmCfg?.enabled ? "LLM 已配置" : "LLM 未配置"} · 脱敏:
             {status.mask_enabled ? "开" : "关"}
           </span>
           <button
@@ -4659,16 +5060,14 @@ export function App() {
         </div>
         <div className="chat-log">
           {chat.map((m, i) =>
-            m.role === "plan" ? (
-              <div key={i} className="chat-plan">
-                <div className="chat-plan-head">执行计划</div>
-                <ol className="chat-plan-steps">
-                  {m.steps.map((s, j) => (
-                    <li key={j}>{s}</li>
-                  ))}
-                </ol>
-              </div>
-            ) : m.role === "ref" ? (
+            // Hidden roles — the backend still emits them as structured
+            // events (the planner's plan + tool breadcrumbs), but the
+            // user transcript reads cleaner without them. The model
+            // already used the plan internally; the tool calls were
+            // already summarised in the final answer. Showing them
+            // would only add noise to the chat log.
+            m.role === "plan" || m.role === "tool" ? null :
+            m.role === "ref" ? (
               <div key={i} className="chat-ref">
                 <div className="chat-ref-head">已引用 SQL</div>
                 {m.refs.map((r, j) => {
@@ -4774,17 +5173,93 @@ export function App() {
             <span className="dim">· 会话累计 {fmtNum(sessionTokens)}</span>
           </div>
         )}
-        {pendingRefs.length > 0 && (
-          <div className="ref-tray">
+        {/* Unified "本轮引用" tray — renders a single rounded container
+         * only when at least one of the four reference types is present.
+         * The 4 categories (database / file attachment / SQL statement /
+         * cross-conversation mention) share the same chip visual so the
+         * user sees them as one "what I'm sending" group, not four
+         * independent blocks. Type colour cue lives in a small left-edge
+         * tag so each chip is still scannable. */}
+        {(chatDb ||
+          (chatConnId && chatConnId !== selId) ||
+          chatAttachments.length > 0 ||
+          pendingRefs.length > 0 ||
+          pendingConvRefs.length > 0) && (
+          <div className="refs-tray" aria-label="本轮引用">
+            <button
+              type="button"
+              className="refs-tray-clear"
+              title="清空所有引用"
+              aria-label="清空所有引用"
+              onClick={() => {
+                setChatConnId(selId);
+                setChatDb(null);
+                setChatAttachments([]);
+                setPendingRefs([]);
+                setPendingConvRefs([]);
+              }}
+            >
+              <Icon name="trash" size={11} />
+            </button>
+            {/* Database chip — the chat's *active* conn/db, routed via
+             * the + menu's "选择数据库" → `chatConnId` / `chatDb` (NOT
+             * the SQL tab's `selId` / `active.db`). Skip when the chat
+             * context matches the tree to avoid duplicating info. */}
+            {(chatConnId || chatDb) && (chatDb || chatConnId !== selId) && (
+              <span className="ref-chip" title="还原为当前选中的连接 / 库">
+                <span className="ref-chip-kind db">DB</span>
+                <Icon name="cylinder" size={11} />
+                <span className="ref-conn">
+                  {chatConnId ? findConn(chatConnId)?.name ?? "未知连接" : "无连接"}
+                </span>
+                <span className="ref-sep">·</span>
+                <span className="ref-db">{chatDb ?? "默认库"}</span>
+                <button
+                  type="button"
+                  className="ref-chip-x"
+                  title="还原为当前选中的连接 / 库"
+                  onClick={() => {
+                    setChatConnId(selId);
+                    setChatDb(null);
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            )}
+            {/* Attachment chips — plain text files attached via the +
+             * menu. Prepended to the user message on send, cleared
+             * after (same lifecycle as the other reference types). */}
+            {chatAttachments.map((a) => (
+              <span
+                key={a.id}
+                className="ref-chip"
+                title={`${a.name} · ${(a.size / 1024).toFixed(1)} KB`}
+              >
+                <span className="ref-chip-kind file">FILE</span>
+                <Icon name="file" size={11} />
+                <span className="ref-name">{a.name}</span>
+                <span className="ref-size">{(a.size / 1024).toFixed(1)}K</span>
+                <button
+                  type="button"
+                  className="ref-chip-x"
+                  title="移除附件"
+                  onClick={() =>
+                    setChatAttachments((prev) => prev.filter((x) => x.id !== a.id))
+                  }
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            {/* SQL refs (existing) — re-skinned to share the unified chip
+             * visual; mismatch warning still kept on the chip itself. */}
             {pendingRefs.map((r, i) => {
               const l = refLabel(r);
-              // The chat panel is bound to `selId` while a reference carries
-              // its own connection. Flagging the mismatch beats silently
-              // running prod SQL against whatever the panel happens to select.
               const mismatch = r.conn_id !== selId;
               return (
                 <span
-                  key={i}
+                  key={`sql-${i}`}
                   className={"ref-chip" + (mismatch ? " mismatch" : "")}
                   title={
                     (mismatch
@@ -4792,6 +5267,7 @@ export function App() {
                       : "") + "点击查看完整 SQL"
                   }
                 >
+                  <span className="ref-chip-kind sql">SQL</span>
                   <button
                     type="button"
                     className="ref-chip-main"
@@ -4817,25 +5293,30 @@ export function App() {
                 </span>
               );
             })}
-          </div>
-        )}
-        {/* P1 @-mentions (docs/chat-conversation-design.md §6): staged
-            cross-conversation reference cards, sent with this turn's
-            `conv_refs` and never replayed from history. */}
-        {pendingConvRefs.length > 0 && (
-          <div className="convref-tray">
+            {/* Conversation refs (existing) — same unified chip visual. */}
             {pendingConvRefs.map((r, i) => (
               <span
-                key={i}
-                className="convref-chip"
+                key={`conv-${i}`}
+                className="ref-chip"
                 title={r.preview}
-                onClick={() => pickConvRef(
-                  convs.find((c) => c.id === r.conv_id) ??
-                    { id: r.conv_id, title: r.title, conn_id: null, conn_name: null, created: 0, updated: 0, pinned: false, last_preview: "", msg_count: 0 },
-                  r.scope === "message",
-                )}
+                onClick={() =>
+                  pickConvRef(
+                    convs.find((c) => c.id === r.conv_id) ?? {
+                      id: r.conv_id,
+                      title: r.title,
+                      conn_id: null,
+                      conn_name: null,
+                      created: 0,
+                      updated: 0,
+                      pinned: false,
+                      last_preview: "",
+                      msg_count: 0,
+                    },
+                    r.scope === "message",
+                  )
+                }
               >
-                <span className="convref-icon">🔗</span>
+                <span className="ref-chip-kind conv">@</span>
                 <span className="convref-title">{r.title}</span>
                 <span
                   className={
@@ -4844,7 +5325,6 @@ export function App() {
                 >
                   {r.scope === "session" ? "整段" : "单条"}
                 </span>
-                <span className="convref-preview">{r.preview}</span>
                 <button
                   type="button"
                   className="ref-chip-x"
@@ -4985,14 +5465,61 @@ export function App() {
                 </button>
                 <button
                   className="composer-plus-item"
-                  onClick={() => {
+                  onClick={async () => {
                     setPlusOpen(false);
-                    // File attach hook — future home for Tauri file picker
-                    showToast?.("附加文件: 待接入 Tauri dialog");
+                    try {
+                      const selected = await open({
+                        multiple: true,
+                        directory: false,
+                        filters: [
+                          {
+                            name: "文本文件",
+                            extensions: ["md", "txt", "json", "csv", "log", "tsv", "yaml", "yml", "xml"],
+                          },
+                        ],
+                      });
+                      if (!selected) return;
+                      const paths = Array.isArray(selected) ? selected : [selected];
+                      // Cap per-file size to keep the message payload sane.
+                      // 200KB is a reasonable ceiling — a Markdown doc or
+                      // JSON dump of that size is ~50k tokens which is still
+                      // well within most model context windows. Larger files
+                      // would be better served by the KB loader.
+                      const MAX_BYTES = 200 * 1024;
+                      for (const p of paths) {
+                        try {
+                          const content = await readTextFile(p);
+                          if (content.length > MAX_BYTES) {
+                            showToast?.(
+                              `${p} 太大 (${(content.length / 1024).toFixed(0)}KB)，已跳过；建议 ≤ 200KB`
+                            );
+                            continue;
+                          }
+                          const name = p.split(/[\\/]/).pop() ?? p;
+                          setChatAttachments((prev) => [
+                            ...prev,
+                            {
+                              id:
+                                (typeof crypto !== "undefined" &&
+                                  "randomUUID" in crypto
+                                  ? crypto.randomUUID()
+                                  : `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+                              name,
+                              content,
+                              size: content.length,
+                            },
+                          ]);
+                        } catch (e) {
+                          showToast?.(`读 ${p} 失败: ${String(e)}`);
+                        }
+                      }
+                    } catch (e) {
+                      showToast?.("选文件失败: " + String(e));
+                    }
                   }}
                 >
                   <span className="composer-plus-item-title">附加文件</span>
-                  <span className="composer-plus-item-sub">.md / .txt 文本文件</span>
+                  <span className="composer-plus-item-sub">.md / .txt / .json / .csv 等</span>
                 </button>
               </div>
             )}
@@ -5009,7 +5536,7 @@ export function App() {
                 <span className="composer-caret" aria-hidden="true">▾</span>
               </button>
               {modelOpen && (
-                <ul className="composer-model-menu" role="menu">
+                <ul className="composer-model-menu" role="menu" ref={modelMenuListRef}>
                   {vendorProfiles.length === 0 && (
                     <li className="composer-model-empty">
                       还没配置模型 — 去「设置 → 模型」添加
@@ -5043,6 +5570,16 @@ export function App() {
                                 try {
                                   await api.applyModelAlias(p.id, m.name);
                                   setLlmCfg(await api.getLlmConfig());
+                                  // `status` is a separate cache that
+                                  // drives other UI bits (header bar,
+                                  // tooltip copy); keep it in sync with
+                                  // the new LlmConfig so future reads
+                                  // don't see the stale value.
+                                  try {
+                                    setStatus(await api.getStatus());
+                                  } catch {
+                                    /* best-effort */
+                                  }
                                   showToast?.("已切到 " + p.name + " · " + m.name);
                                 } catch (e) {
                                   showToast?.("切换失败: " + String(e));
@@ -5088,8 +5625,20 @@ export function App() {
               <button
                 className="primary composer-send"
                 onClick={sendChat}
-                disabled={!status.llm_enabled}
-                title="发送 (Enter / Cmd+Enter)"
+                // Simple: enable whenever the user has picked a
+                // model. Don't gate on LlmConfig.enabled() / api_key
+                // presence — if the key is missing the backend will
+                // 401 and the error surfaces in the chat; better
+                // than a mysteriously-grayed button that forces a
+                // re-pick dance after every settings edit.
+                disabled={streaming || !llmCfg?.model}
+                title={
+                  streaming
+                    ? "正在发送..."
+                    : llmCfg?.model
+                      ? "发送 (Enter / Cmd+Enter)"
+                      : "请先在右上角选一个 model"
+                }
               >
                 发送
               </button>
@@ -5560,7 +6109,19 @@ export function App() {
       )}
 
       {settingsOpen && (
-        <div className="modal-mask" onClick={() => setSettingsOpen(false)}>
+        <div
+          className="modal-mask"
+          onClick={() => {
+            // Force-save any in-progress edits before the modal
+            // unmounts, so things like the api_key (which auto-saves
+            // on onBlur) don't get lost when the user closes the
+            // modal by clicking outside. The function no-ops for
+            // create-mode (`editingVendor === null`) and for drafts
+            // that haven't actually changed.
+            void autoSaveVendor();
+            setSettingsOpen(false);
+          }}
+        >
           <div
             className={
               "modal settings-modal" +
@@ -5788,18 +6349,31 @@ export function App() {
                             adornment={(() => {
                               const v = editingVendor ? vendorProfiles.find((p) => p.id === editingVendor) : null;
                               if (!v) return undefined;
+                              // Consider the draft too — if the user is typing a
+                              // fresh key the saved `enabled` flag is still false
+                              // (the persist-on-blur hasn't fired yet), so we
+                              // treat "draft has any chars" as a positive
+                              // signal. Empty draft + saved enabled = still
+                              // configured; empty draft + saved disabled = not.
+                              const hasKey = v.enabled || vendorDraft.api_key !== "";
                               return (
                                 <span
-                                  className={"vendor-key-state " + (v.enabled ? "ok" : "off")}
-                                  title={v.enabled ? "已配置 API Key" : "未配置 API Key（保存后可填）"}
+                                  className={"vendor-key-state " + (hasKey ? "ok" : "off")}
+                                  title={
+                                    v.enabled
+                                      ? vendorDraft.api_key
+                                        ? "密钥待保存(失焦后落盘)"
+                                        : "已配置 API Key"
+                                      : "未配置 API Key（保存后可填）"
+                                  }
                                 >
                                   <Icon
-                                    name={v.enabled ? "check" : "circle"}
+                                    name={hasKey ? "check" : "circle"}
                                     size={12}
-                                    variant={v.enabled ? "stroke" : "fill"}
+                                    variant={hasKey ? "stroke" : "fill"}
                                     style={{ marginRight: 4, verticalAlign: "-1px" }}
                                   />
-                                  {v.enabled ? "已配" : "未配"}
+                                  {hasKey ? "已配" : "未配"}
                                 </span>
                               );
                             })()}
@@ -5918,6 +6492,31 @@ export function App() {
                             </button>
                           </div>
                         </div>
+                        {/* EDIT-mode action row. User feedback: the previous
+                         * onBlur-only auto-save felt invisible ("为啥地址改
+                         * 不了啊 / 保存了连个反馈都没有") — a manual button
+                         * with explicit toast feedback makes the save
+                         * observable. The onBlur auto-save still runs in
+                         * parallel so the convenience isn't lost. */}
+                        {editingVendor !== null && (
+                          <div className="vendor-edit-save">
+                            <span className="vendor-edit-hint">
+                              字段失焦会自动保存，点这里手动触发并拿到反馈
+                            </span>
+                            <button
+                              className="btn primary vendor-edit-cta"
+                              onClick={async () => {
+                                const r = await autoSaveVendor();
+                                if (r === "saved") showToast("已保存");
+                                else if (r === "unchanged") showToast("无变更");
+                                else showToast("保存失败");
+                              }}
+                            >
+                              <Icon name="check" size={14} style={{ marginRight: 6 }} />
+                              保存修改
+                            </button>
+                          </div>
+                        )}
                         {/* The bottom action row only shows when creating a new
                          * vendor. For existing vendors, every field auto-saves
                          * on blur and the api_format select saves on change, so
@@ -5963,7 +6562,12 @@ export function App() {
                                     // next "+ 添加" works against the right baseline.
                                     models: next.models.map((m) => ({ name: m.name })),
                                   });
-                                  showToast("已添加供应商");
+                                  // After add, the new vendor has no active
+                                  // model yet — the user has to pick one in
+                                  // the composer. Make this explicit so they
+                                  // don't think the new vendor is "in use"
+                                  // just because the profile is saved.
+                                  showToast("已添加供应商，去 composer 选 model 即可用");
                                 } catch (e) {
                                   showToast("添加失败: " + String(e));
                                 } finally {
@@ -6049,6 +6653,26 @@ export function App() {
                         输入停顿后由 LLM 续写 SQL；需先配置模型。默认关闭，以免产生延迟与费用。
                       </small>
                     </span>
+                  </label>
+                  <label className="cfg-input" style={{ marginTop: 16 }}>
+                    <span>
+                      单条查询超时（秒）
+                      <small>
+                        执行 SQL/Redis 命令的服务端兜底时长，超时后会以错误返回。范围 1 ~ 1800，默认 300（5 分钟）。改完即生效，不需要重启。
+                      </small>
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={1800}
+                      step={30}
+                      value={queryTimeoutSecs}
+                      onChange={(e) => {
+                        const v = Math.max(1, Math.min(1800, Math.floor(Number(e.target.value) || 1)));
+                        setQueryTimeoutSecs(v);
+                        localStorage.setItem("cq_query_timeout_secs", String(v));
+                      }}
+                    />
                   </label>
                   </div>
                 </div>
@@ -6274,13 +6898,36 @@ export function App() {
                 <div className="ctx-sep" />
               </>
             )}
-            {selCol !== null && (
+            {selCols.size > 0 && result?.kind === "table" && (
               <>
                 <div className="ctx-title">
-                  列：{result?.kind === "table" ? result.columns[selCol] : ""}
+                  {selCols.size === 1
+                    ? `列：${result.columns[Array.from(selCols)[0]] ?? ""}`
+                    : `已选 ${selCols.size} 列：${
+                        Array.from(selCols)
+                          .sort((a, b) => a - b)
+                          .slice(0, 3)
+                          .map((ci) => result.columns[ci] ?? `#${ci + 1}`)
+                          .join("、") + (selCols.size > 3 ? " …" : "")
+                      }`}
                 </div>
-                <button onClick={() => void copyColAsJson(selCol)}>
-                  复制选中列为 JSON
+                <button onClick={() => void copyColsAs("json")}>
+                  {selCols.size === 1
+                    ? "复制选中列为 JSON"
+                    : `复制选中 ${selCols.size} 列为 JSON`}
+                </button>
+                {selCols.size > 1 && (
+                  <>
+                    <button onClick={() => void copyColsAs("csv")}>
+                      复制为 CSV（含表头）
+                    </button>
+                    <button onClick={() => void copyColsAs("tsv")}>
+                      复制列值（Tab 分隔）
+                    </button>
+                  </>
+                )}
+                <button onClick={() => void copyColsAs("names")}>
+                  复制列名
                 </button>
                 <div className="ctx-sep" />
               </>

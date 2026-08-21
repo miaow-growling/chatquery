@@ -2542,6 +2542,46 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   padding: 0;
   color: var(--text-primary);
 }
+/* Code block wrapper: holds the relative-positioned pre + a top-right copy button. */
+.md-code {
+  position: relative;
+  margin: 8px 0;
+}
+.md-code > pre {
+  margin: 0;
+}
+.md-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated, var(--bg-subtle));
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.14);
+}
+.md-code:hover .md-code-copy,
+.md-code-copy:focus-visible {
+  opacity: 1;
+}
+.md-code-copy:hover {
+  color: var(--brand);
+  border-color: var(--brand-border);
+}
+.md-code-copy.copied {
+  opacity: 1;
+  color: var(--success-500);
+  border-color: var(--success-500);
+}
 /* Tables (GFM) */
 .md table {
   border-collapse: collapse;
@@ -2630,31 +2670,85 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   letter-spacing: .04em;
   color: var(--text-secondary);
 }
-/* Staged references sit between the log and the input. Capped + scrollable so
-   a stack of chips can never squeeze the transcript out of view. */
-.ref-tray {
+/* === Unified "本轮引用" tray ===========================================
+   Sits between the chat log and the composer. One rounded container, four
+   reference kinds (db / file / sql / @-mention) share the same chip shape
+   and 24px height so they read as a single "what I'm sending" group.
+   Each chip carries a small `kind` tag on the left edge as a colour cue
+   — scanning the row tells the user the type at a glance. */
+.refs-tray {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
-  padding: 8px 14px 0;
-  max-height: 92px;
+  margin: 8px 14px 0;
+  padding: 8px 36px 6px 10px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  max-height: 96px;
   overflow-y: auto;
   flex: none;
+  transition: border-color 0.15s ease;
 }
+.refs-tray:hover { border-color: var(--border); }
+.refs-tray-clear {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.refs-tray-clear:hover {
+  background: var(--bg-canvas);
+  border-color: var(--border);
+  color: #d9534f;
+}
+.refs-tray-clear:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
 .ref-chip {
   display: inline-flex;
   align-items: center;
+  gap: 5px;
+  height: 24px;
   max-width: 100%;
   min-width: 0;
-  background: var(--bg-inset);
-  border: 1px solid var(--border-strong);
+  padding: 0 0 0 0;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border);
   border-radius: 999px;
-  overflow: hidden;
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1;
+  color: var(--text-secondary);
+  transition: border-color 0.12s ease, background 0.12s ease;
+  overflow: hidden;
 }
-.ref-chip.mismatch { border-color: #d08a3a; }
+.ref-chip:hover { border-color: var(--border-strong); background: var(--bg-elevated); }
+/* SQL chip's status hint — comes from a reference whose conn diverges
+   from the panel's active conn. Yellow tint beats silently running prod
+   SQL against whatever the panel happens to be showing. */
+.ref-chip.mismatch {
+  border-color: #d08a3a;
+  background: color-mix(in srgb, #d08a3a 8%, var(--bg-canvas));
+}
+/* Used in the in-log reference card (the SQL statement that the model
+   actually received as context). Same chip visuals but rendered as a
+   larger rounded rectangle so it stands out as a transcript entry. */
 .ref-chip.in-log {
+  height: auto;
   border-radius: 8px;
   cursor: pointer;
   padding: 4px 9px;
@@ -2667,29 +2761,72 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   align-items: center;
   gap: 5px;
   min-width: 0;
+  height: 100%;
   background: none;
   border: none;
-  padding: 4px 4px 4px 10px;
+  padding: 0 4px 0 0;
   cursor: pointer;
   color: var(--text-secondary);
   font-size: 11px;
+  text-align: left;
 }
-.ref-chip-main:hover,
-.ref-chip.in-log:hover { background: var(--bg-subtle); }
+.ref-chip-main:hover { color: var(--text-primary); }
+
+/* The kind tag on the left of every chip — a 3-4 char uppercase label
+   that colour-codes the reference type so the user can scan the row.
+   Same shape for all 4 kinds, only the background colour differs. */
+.ref-chip-kind {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 0 7px;
+  font-size: 9px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: var(--text-tertiary);
+  user-select: none;
+}
+.ref-chip-kind.db   { background: #4f7dd4; }   /* MySQL/Redis — calm blue */
+.ref-chip-kind.file { background: #7a6dd4; }   /* attachment — purple */
+.ref-chip-kind.sql  { background: #d4935a; }   /* SQL — warm amber */
+.ref-chip-kind.conv { background: #5ca97a; }   /* @-mention — sage */
+
+/* The DB / file / @ chips also use the kind tag instead of the brand-
+   coloured text. The brand-soft highlight on the OLD design was too
+   loud when 3-4 chips of mixed kinds were stacked. */
 .ref-icon { flex: none; }
-.ref-conn { color: var(--brand); font-weight: 600; flex: none; }
-.ref-sep { color: var(--text-tertiary); flex: none; }
-.ref-db { color: var(--text-secondary); flex: none; }
+.ref-conn {
+  flex: none;
+  color: var(--text-primary);
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+.ref-sep { flex: none; color: var(--text-tertiary); }
+.ref-db {
+  flex: none;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
 .ref-scope {
   flex: none;
-  padding: 0 5px;
-  border-radius: 4px;
-  background: var(--bg-subtle);
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-inset);
   color: var(--text-tertiary);
   font-size: 10px;
 }
-/* The SQL preview is the only elastic part — it yields first when the panel
-   is narrow, so the provenance (which instance / which db) never truncates. */
+/* The SQL preview is the only elastic part — it yields first when the
+   panel is narrow, so the provenance (which instance / which db) never
+   truncates. */
 .ref-sql {
   min-width: 0;
   overflow: hidden;
@@ -2698,19 +2835,58 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   font-family: var(--font-mono);
   color: var(--text-tertiary);
 }
+.ref-name {
+  flex: none;
+  color: var(--text-primary);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+.ref-size {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+/* X — identical shape across all four kinds, so the affordance is
+   predictable. 18×18 hit area is below the 24×24 WCAG minimum for
+   small targets, but the tray is dense and the surrounding chip
+   background is the visual cue. */
 .ref-chip-x {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 100%;
   background: none;
   border: none;
+  border-left: 1px solid var(--border-soft);
   cursor: pointer;
   color: var(--text-tertiary);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1;
-  padding: 4px 9px 5px 5px;
+  padding: 0;
+  transition: color 0.12s ease, background 0.12s ease;
 }
-.ref-chip-x:hover { color: #d9534f; }
-/* ▶ run / 👁 view affordances on a chat ref card — flex:none so they stay
-   visible while the SQL preview (the elastic part) yields first. */
+.ref-chip-x:hover { color: #d9534f; background: var(--bg-inset); }
+.ref-chip-x:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+  border-radius: 0;
+}
+
+/* Honour the user's reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+  .refs-tray,
+  .ref-chip,
+  .ref-chip-x { transition: none; }
+}
+
+/* ▶ run / 👁 view affordances on a chat ref card (in-log variant) —
+   flex:none so they stay visible while the SQL preview yields first. */
 .ref-jump {
   flex: none;
   margin-left: 4px;
@@ -2739,49 +2915,27 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .chat-usage .dim { color: var(--text-tertiary); }
 
 /* ---- @-mention tray + picker (docs/chat-conversation-design.md §6.1) ---- */
-.convref-tray {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px 14px 0;
-}
-.convref-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  padding: 3px 9px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-  font-size: 12px;
-  transition: border-color var(--t-fast);
-}
-.convref-chip:hover { border-color: var(--border-focus); }
-.convref-icon { font-size: 11px; }
+/* .convref-tray / .convref-chip used to be a separate tray above the
+   composer. After the May-26 redesign they live inside .refs-tray
+   alongside the other 3 reference kinds. .convref-title and
+   .convref-scope are still in use — they style the inner content of a
+   unified .ref-chip whose left-edge tag carries the @ kind colour. */
 .convref-title {
-  font-weight: 600;
+  flex: none;
+  font-weight: var(--fw-semibold);
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 140px;
+  max-width: 180px;
 }
 .convref-scope {
   font-size: 10px;
-  padding: 1px 7px;
-  border-radius: 999px;
+  padding: 1px 5px;
+  border-radius: 3px;
   flex-shrink: 0;
-}
-.convref-scope.whole { background: var(--brand-soft); color: var(--brand); }
-.convref-scope.single { background: var(--warning-soft); color: var(--warning-500); }
-.convref-preview {
+  background: var(--bg-inset);
   color: var(--text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 200px;
 }
 
 /* Floating picker above the composer: @-mention candidate list */
@@ -3394,7 +3548,8 @@ select.field-input:disabled {
  *     The hint sits on the LEFT and the primary CTA on the RIGHT, which
  *     matches the macOS settings convention (destructive / secondary on
  *     the left, primary action on the right). */
-.vendor-edit-create {
+.vendor-edit-create,
+.vendor-edit-save {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4014,6 +4169,41 @@ select.field-input:disabled {
 
 /* DB picker modal (env → group → conn) */
 .db-picker-modal { width: 420px; max-width: 92vw; max-height: 76vh; }
+.db-pick-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  margin: 0 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-input);
+  color: var(--text-tertiary);
+}
+.db-pick-filter input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+}
+.db-pick-filter input::placeholder { color: var(--text-tertiary); }
+.db-pick-filter-clear {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.db-pick-filter-clear:hover { color: #d9534f; }
+.db-pick-filter:focus-within {
+  border-color: var(--brand);
+  background: var(--bg-canvas);
+}
 .db-pick-tree {
   flex: 1;
   min-height: 0;
@@ -4049,6 +4239,10 @@ select.field-input:disabled {
 }
 .cfg-check input { margin-top: 2px; width: 16px; height: 16px; accent-color: var(--brand); flex: none; }
 .cfg-check small { display: block; color: var(--text-tertiary); font-size: var(--fs-xs); margin-top: 2px; line-height: 1.4; }
+.cfg-input { display: flex; flex-direction: column; gap: var(--sp-2); margin: var(--sp-2) 0; font-size: var(--fs-sm); color: var(--text-primary); }
+.cfg-input > span > small { display: block; color: var(--text-tertiary); font-size: var(--fs-xs); margin-top: 2px; line-height: 1.4; }
+.cfg-input input[type="number"] { width: 140px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary); font-size: var(--fs-sm); }
+.cfg-input input[type="number"]:focus { outline: 2px solid var(--brand); outline-offset: -1px; border-color: var(--brand); }
 
 /* Inline AI ghost suggestion */
 .cm-ai-ghost { color: var(--text-tertiary); opacity: 0.6; font-style: normal; pointer-events: none; }
@@ -5101,9 +5295,9 @@ select.field-input:disabled {
 .cm-editor .cm-tooltip-autocomplete > ul > li {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 6px 10px;
-  border-radius: 7px;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
   color: var(--text-primary);
   line-height: 1.3;
 }
@@ -5112,35 +5306,96 @@ select.field-input:disabled {
   color: #fff;
 }
 .cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionDetail {
-  color: rgba(255, 255, 255, 0.82);
+  color: rgba(255, 255, 255, 0.85);
 }
 .cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionIcon {
-  filter: brightness(0) invert(1);
+  background: rgba(255, 255, 255, 0.25) !important;
+  color: #fff !important;
 }
 
-/* Kill the legacy emoji/box glyphs; replace with a unified dot. */
+/* Subtle clean Icon Badges for Completion Items (Navicat/VS Code style) */
 .cm-editor .cm-completionIcon {
-  display: inline-block;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--text-tertiary);
-  padding: 0 !important;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  line-height: 1;
+  text-transform: uppercase;
   margin: 0 !important;
-  color: transparent !important;
+  padding: 0 !important;
 }
-.cm-editor .cm-completionIcon::after {
-  content: "" !important;   /* wipe 🔑 / □ / ƒ … */
+
+.cm-editor .cm-completionIcon-property {
+  background: rgba(59, 130, 246, 0.15) !important;
+  color: #3b82f6 !important;
 }
-/* Type color-coding — column / table / keyword / function. */
-.cm-editor .cm-completionIcon-property { background: var(--info-500); }   /* column  : blue  */
-.cm-editor .cm-completionIcon-keyword  { background: #c586c0; }            /* keyword : mauve */
-.cm-editor .cm-completionIcon-function { background: #dcdcaa; }            /* func    : sand  */
-.cm-editor .cm-completionIcon-class,
+.cm-editor .cm-completionIcon-property::after {
+  content: "C" !important; /* Column */
+}
+
+.cm-editor .cm-completionIcon-keyword {
+  background: rgba(168, 85, 247, 0.15) !important;
+  color: #a855f7 !important;
+}
+.cm-editor .cm-completionIcon-keyword::after {
+  content: "K" !important; /* Keyword / PK */
+}
+
+.cm-editor .cm-completionIcon-function {
+  background: rgba(234, 179, 8, 0.15) !important;
+  color: #eab308 !important;
+}
+.cm-editor .cm-completionIcon-function::after {
+  content: "F" !important; /* Function */
+}
+
+.cm-editor .cm-completionIcon-class {
+  background: rgba(34, 197, 94, 0.15) !important;
+  color: #22c55e !important;
+}
+.cm-editor .cm-completionIcon-class::after {
+  content: "T" !important; /* Table */
+}
+
+.cm-editor .cm-completionIcon-interface {
+  background: rgba(6, 182, 212, 0.15) !important;
+  color: #06b6d4 !important;
+}
+.cm-editor .cm-completionIcon-interface::after {
+  content: "V" !important; /* View */
+}
+
+.cm-editor .cm-completionIcon-variable {
+  background: rgba(14, 165, 233, 0.15) !important;
+  color: #0ea5e9 !important;
+}
+.cm-editor .cm-completionIcon-variable::after {
+  content: "J" !important; /* Join */
+}
+
+.cm-editor .cm-completionIcon-text {
+  background: rgba(249, 115, 22, 0.15) !important;
+  color: #f97316 !important;
+}
+.cm-editor .cm-completionIcon-text::after {
+  content: "S" !important; /* Snippet */
+}
+
 .cm-editor .cm-completionIcon-type,
-.cm-editor .cm-completionIcon-constant { background: #4ec9b0; }            /* type    : teal  */
-/* Tables/views carry no `type` => default neutral dot, fine. */
+.cm-editor .cm-completionIcon-constant {
+  background: rgba(20, 184, 166, 0.15) !important;
+  color: #14b8a6 !important;
+}
+.cm-editor .cm-completionIcon-type::after,
+.cm-editor .cm-completionIcon-constant::after {
+  content: "D" !important;
+}
 
 .cm-editor .cm-completionLabel {
   font-size: 13px;

@@ -305,9 +305,23 @@ pub fn load_vendor_profiles() -> Vec<VendorProfile> {
             let api_key = if d.api_key_enc.is_empty() {
                 String::new()
             } else {
+                // Strip the '$' prefix that `save_vendor_profiles`
+                // prepends to mark the field as encrypted. Without
+                // this, `crypto::decrypt` would try to base64-decode
+                // a string starting with '$' (not a base64 char) and
+                // fail silently via `unwrap_or_default()` — returning
+                // an empty api_key that would then be written into
+                // `state.llm.api_key` by `apply_vendor_profile`, and
+                // every chat request would 401 with "API Key does
+                // not exist". `LlmConfig::load` does this strip; this
+                // function forgot to.
+                let raw = d
+                    .api_key_enc
+                    .strip_prefix('$')
+                    .unwrap_or(&d.api_key_enc);
                 crypto::load_key()
                     .ok()
-                    .and_then(|k| crypto::decrypt(&d.api_key_enc, &k).ok())
+                    .and_then(|k| crypto::decrypt(raw, &k).ok())
                     .unwrap_or_default()
             };
             VendorProfile {

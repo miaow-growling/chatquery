@@ -37,6 +37,25 @@ import type {
 
 const PAGE_SIZE = 200;
 
+/// Per-call query timeout (seconds) for `execute_query`. Stored in
+/// localStorage so the user can tweak it from settings → 通用 and have the
+/// new value apply on the very next invoke. Defaults to 300s (5 min) when
+/// nothing is saved, which is also the backend's `DEFAULT_QUERY_TIMEOUT_SECS`
+/// fallback. Read fresh on every call — UI changes are picked up without a
+/// restart. 2026-08-17.
+const QUERY_TIMEOUT_LS_KEY = "cq_query_timeout_secs";
+const QUERY_TIMEOUT_DEFAULT = 300;
+/// Hard cap that the settings input also clamps to. Five minutes is more
+/// than enough for any user-driven query; anything beyond that is a sign
+/// the wrong tool is being used.
+const QUERY_TIMEOUT_MAX = 1800;
+export function getQueryTimeoutSecs(): number {
+  const raw = localStorage.getItem(QUERY_TIMEOUT_LS_KEY);
+  const n = raw == null ? NaN : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return QUERY_TIMEOUT_DEFAULT;
+  return Math.min(Math.max(1, Math.floor(n)), QUERY_TIMEOUT_MAX);
+}
+
 export const api = {
   /// Full tree model (environments → groups → connections), supersedes
   /// `list_connections`.
@@ -51,7 +70,8 @@ export const api = {
     db?: string | null,
     page?: number,
     pageSize?: number,
-    allowRisky?: boolean
+    allowRisky?: boolean,
+    timeoutSecs?: number
   ) =>
     invoke<QueryOutput>("execute_query", {
       connId,
@@ -60,6 +80,9 @@ export const api = {
       page: page ?? 0,
       pageSize: pageSize ?? PAGE_SIZE,
       allowRisky: allowRisky ?? false,
+      // Always send the latest user-chosen value (or the default) so the
+      // server's fallback only kicks in for non-frontend callers.
+      timeoutSecs: timeoutSecs ?? getQueryTimeoutSecs(),
     }),
   /// Pre-execution guardrail: scan `query` for UPDATE/DELETE statements that
   /// lack a WHERE/LIMIT (whole-table operations). Returns the risky statements
@@ -274,6 +297,7 @@ export function onChatConfirm(
 /// as background context. Both are optional — the TUI path omits them.
 export function chatTurn(
   connId: string,
+  db: string | null,
   messages: ChatMessage[],
   refs?: SqlReference[],
   convId?: string | null,
@@ -281,6 +305,7 @@ export function chatTurn(
 ): Promise<string> {
   return invoke<string>("chat_turn", {
     connId,
+    db: db ?? null,
     messages,
     refs: refs && refs.length > 0 ? refs : null,
     convId: convId ?? null,
