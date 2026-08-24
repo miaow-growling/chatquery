@@ -510,6 +510,9 @@ impl App {
                 // The TUI has no conversation selector either — no @-mentions.
                 None,
                 &conn_id,
+                // The TUI has no database picker — queries run against the
+                // connection's configured default database.
+                None,
                 &tx,
                 ctl,
                 std::sync::Arc::new(|_, _| Vec::new()),

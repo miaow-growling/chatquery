@@ -221,6 +221,12 @@ fn clean_sql(s: &str) -> String {
 /// by `clean_sql`, so only parenthesis depth matters here).
 fn split_statements(sql: &str) -> Vec<String> {
     let clean = clean_sql(sql);
+    // `clean` is char-for-char aligned with `sql`, but NOT byte-aligned:
+    // multibyte chars inside literals/comments are blanked to single-byte
+    // spaces. The enumerate() index below is therefore a CHAR index and must
+    // never slice `sql` directly — doing so panics on a non-char boundary
+    // (e.g. Chinese column aliases) and takes the whole app down.
+    let sql_chars: Vec<char> = sql.chars().collect();
     let mut stmts = Vec::new();
     let mut depth = 0usize;
     let mut start = 0usize;
@@ -229,14 +235,14 @@ fn split_statements(sql: &str) -> Vec<String> {
             '(' => depth += 1,
             ')' => depth = depth.saturating_sub(1),
             ';' if depth == 0 => {
-                stmts.push(sql[start..i].to_string());
+                stmts.push(sql_chars[start..i].iter().collect());
                 start = i + 1;
             }
             _ => {}
         }
     }
-    if start < sql.len() {
-        stmts.push(sql[start..].to_string());
+    if start < sql_chars.len() {
+        stmts.push(sql_chars[start..].iter().collect());
     }
     stmts
 }
@@ -268,6 +274,27 @@ mod tests {
         assert_eq!(kinds("delete from users"), vec![WriteRiskKind::DeleteAll]);
         assert_eq!(kinds("DELETE   FROM users  "), vec![WriteRiskKind::DeleteAll]);
         assert_eq!(kinds("UPDATE LOW_PRIORITY IGNORE t SET a=1"), vec![WriteRiskKind::UpdateAll]);
+    }
+
+    #[test]
+    fn splits_multibyte_sql_on_char_boundaries() {
+        // Regression: split_statements used the char index from clean.chars()
+        // as a BYTE index into `sql`. With multibyte chars (中文别名) before
+        // the semicolon this panicked at a non-char boundary and crashed the
+        // whole app (main-thread abort).
+        let sql = "SELECT org.name AS 公司, proj.name AS 末级项目 FROM k_task t;\nSELECT 1";
+        let stmts = split_statements(sql);
+        assert_eq!(stmts.len(), 2);
+        assert!(stmts[0].contains("公司"));
+        assert!(!stmts[0].contains(';'));
+        assert_eq!(stmts[1].trim(), "SELECT 1");
+
+        // Literal containing multibyte text followed by a semicolon inside it
+        // must not split — clean_sql blanks the literal first.
+        let q = "SELECT '中文；分号' AS x; UPDATE t SET a=1 WHERE id=2";
+        let stmts2 = split_statements(q);
+        assert_eq!(stmts2.len(), 2);
+        assert!(stmts2[0].contains("中文；分号"));
     }
 
     #[test]
