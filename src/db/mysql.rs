@@ -357,16 +357,15 @@ fn is_select_query(sql: &str) -> bool {
 fn is_read_query(sql: &str) -> bool {
     let no_tail = sql.trim().trim_end_matches(';').trim();
     let body = skip_leading_inline_comment(no_tail);
+    // Decide by the FIRST keyword only — a formatted `SELECT\n  col…` has a
+    // newline after SELECT, which a `starts_with("SELECT ")` check misses and
+    // the query would be misrouted down the write path ("写操作执行成功").
     let up = body.to_ascii_uppercase();
-    up == "SELECT"
-        || up.starts_with("SELECT ")
-        || up.starts_with("WITH ")
-        || up.starts_with("SHOW ")
-        || up.starts_with("EXPLAIN ")
-        || up.starts_with("DESC ")
-        || up.starts_with("DESCRIBE ")
-        || up.starts_with("PRAGMA ")
-        || up.starts_with("HELP ")
+    let first = up.split(|c: char| c.is_whitespace()).next().unwrap_or("");
+    matches!(
+        first,
+        "SELECT" | "WITH" | "SHOW" | "EXPLAIN" | "DESC" | "DESCRIBE" | "PRAGMA" | "HELP"
+    )
 }
 
 /// Skip a leading `-- ` or `#` comment line so that `-- comment\nSELECT ...`
@@ -1800,6 +1799,9 @@ mod tests {
     fn is_read_query_classifies_reads_vs_writes() {
         // Reads: result-set / state statements keep the fetch path.
         assert!(is_read_query("SELECT * FROM t"));
+        // Regression: formatted SQL has a NEWLINE after SELECT, not a space —
+        // used to be misrouted to the write path ("写操作执行成功" on a SELECT).
+        assert!(is_read_query("SELECT\n    org.name AS 公司\nFROM k_task t"));
         assert!(is_read_query("-- c\nSELECT id FROM t"));
         assert!(is_read_query("WITH x AS (SELECT 1) SELECT * FROM x"));
         assert!(is_read_query("SHOW TABLES"));

@@ -169,7 +169,7 @@ function parseFromTables(sql: string): Map<string, string> {
   if (!sql.trim()) return map;
 
   const fromJoinRe =
-    /\b(?:FROM|JOIN)\s+([^;()]+?)(?=\s+(?:WHERE|ON|GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|JOIN|SET|;|$))/gi;
+    /\b(?:FROM|JOIN)\s+([^;()]+?)(?=\s+(?:WHERE|ON|USING|GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|NATURAL|STRAIGHT_JOIN|UNION|WINDOW|SET|FOR|;|$))/gi;
   let m: RegExpExecArray | null;
   while ((m = fromJoinRe.exec(sql))) {
     const list = m[1] ?? "";
@@ -294,6 +294,42 @@ const prefetchTables = async (connId: string, db: string) => {
 
 // Register Monaco MySQL Completion Item Provider ONCE
 let providerRegistered = false;
+
+// --- Inline AI completion (Copilot-style ghost text) ------------------------
+// Module-level because Monaco providers are registered per-language (global),
+// while our editor instance (and its aiProvider closure) may be recreated.
+let aiEnabled = false;
+let aiProviderFn: ((prefix: string) => Promise<string | null>) | undefined;
+let aiInlineRegistered = false;
+
+function ensureAiInlineProvider() {
+  if (aiInlineRegistered) return;
+  aiInlineRegistered = true;
+
+  monaco.languages.registerInlineCompletionsProvider("sql", {
+    async provideInlineCompletions(model, position, _context, token) {
+      if (!aiEnabled || !aiProviderFn) return { items: [] };
+      const offset = model.getOffsetAt(position);
+      const prefix = model.getValue().slice(0, offset);
+      if (!prefix.trim()) return { items: [] };
+
+      // Monaco invokes on every keystroke; wait for a typing pause before
+      // spending an LLM call (mirrors the old CodeMirror 500ms debounce).
+      await new Promise((r) => setTimeout(r, 500));
+      if (token.isCancellationRequested) return { items: [] };
+
+      try {
+        const suggestion = await aiProviderFn!(prefix);
+        if (token.isCancellationRequested || !suggestion) return { items: [] };
+        return { items: [{ insertText: suggestion }] };
+      } catch {
+        // network/LLM error — silently skip this suggestion
+        return { items: [] };
+      }
+    },
+    disposeInlineCompletions() {},
+  });
+}
 
 function ensureCompletionProvider() {
   if (providerRegistered) return;
@@ -556,6 +592,11 @@ export function createEditor(
 ): EditorHandle {
   ensureCompletionProvider();
   ensureThemes();
+  ensureAiInlineProvider();
+  if (_aiProvider) {
+    aiProviderFn = _aiProvider;
+    aiEnabled = true;
+  }
 
   const isDark = document.documentElement.dataset.theme !== "light";
 
@@ -577,6 +618,8 @@ export function createEditor(
     tabSize: 2,
     wordWrap: "on",
     fixedOverflowWidgets: true,
+    // Inline AI ghost text (Tab accepts) — provider in ensureAiInlineProvider.
+    inlineSuggest: { enabled: true },
     // Use the app's own Navicat-style context menu (App.tsx buildEditorMenu:
     // 运行/格式化/注释/大小写/AI 引用…). Monaco's built-in menu would open
     // on top of it with only cut/copy/paste entries.
@@ -659,10 +702,11 @@ export function createEditor(
       monaco.editor.setTheme(dark ? "cq-dark" : "cq-light");
     },
     setAiComplete(
-      _enabled: boolean,
-      _provider?: (prefix: string) => Promise<string | null>
-    ) {
-      // Placeholder
+      enabled: boolean,
+      provider?: (prefix: string) => Promise<string | null>
+    ): void {
+      aiEnabled = enabled;
+      if (provider) aiProviderFn = provider;
     },
     formatSql() {
       const model = editor.getModel();
