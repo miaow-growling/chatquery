@@ -1,7 +1,11 @@
+import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import { format as formatSqlText, type SqlLanguage } from "sql-formatter";
 import type { ColumnInfo, TableMeta } from "./types";
 import { api } from "./api";
+
+// Configure @monaco-editor/react to use the local bundled monaco instance
+loader.config({ monaco });
 
 export interface EditorHandle {
   view: { destroy: () => void; focus: () => void };
