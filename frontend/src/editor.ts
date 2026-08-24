@@ -276,6 +276,10 @@ function ensureCompletionProvider() {
   monaco.languages.registerCompletionItemProvider("sql", {
     triggerCharacters: [".", " ", "`"],
     provideCompletionItems: async (model, position) => {
+      const connId = currentConnId;
+      const db = currentDb;
+      if (!connId || !db) return { suggestions: [] };
+
       const word = model.getWordUntilPosition(position);
       const range: monaco.IRange = {
         startLineNumber: position.lineNumber,
@@ -283,56 +287,6 @@ function ensureCompletionProvider() {
         startColumn: word.startColumn,
         endColumn: word.endColumn,
       };
-
-      const suggestions: monaco.languages.CompletionItem[] = [];
-
-      // Always include SQL snippets & templates (available even without active db)
-      suggestions.push(
-        {
-          label: "sel",
-          kind: monaco.languages.CompletionItemKind.Snippet,
-          detail: "SELECT * FROM ...",
-          documentation: { value: "常用 SELECT 查询模板" },
-          insertText: "SELECT ${1:*} FROM ${2:table} WHERE ${3:1=1} LIMIT ${4:100};",
-          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-          range,
-          sortText: "00_0_sel",
-        },
-        {
-          label: "select_all",
-          kind: monaco.languages.CompletionItemKind.Snippet,
-          detail: "SELECT * FROM ...",
-          documentation: { value: "常用 SELECT 查询模板" },
-          insertText: "SELECT ${1:*} FROM ${2:table};",
-          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-          range,
-          sortText: "00_1_sel",
-        },
-        {
-          label: "ins",
-          kind: monaco.languages.CompletionItemKind.Snippet,
-          detail: "INSERT INTO ...",
-          documentation: { value: "常用 INSERT 插入模板" },
-          insertText: "INSERT INTO ${1:table} (${2:cols}) VALUES (${3:vals});",
-          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-          range,
-          sortText: "00_2_ins",
-        },
-        {
-          label: "upd",
-          kind: monaco.languages.CompletionItemKind.Snippet,
-          detail: "UPDATE ... SET ...",
-          documentation: { value: "常用 UPDATE 更新模板" },
-          insertText: "UPDATE ${1:table} SET ${2:col} = ${3:val} WHERE ${4:id} = ${5:val};",
-          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-          range,
-          sortText: "00_3_upd",
-        }
-      );
-
-      const connId = currentConnId;
-      const db = currentDb;
-      if (!connId || !db) return { suggestions };
 
       const lineContent = model.getLineContent(position.lineNumber);
       const textBefore = lineContent.slice(0, position.column - 1);
@@ -361,7 +315,7 @@ function ensureCompletionProvider() {
           setCachedCols(realTable, cols);
         }
 
-        const dotSuggestions: monaco.languages.CompletionItem[] = cols.map((c) => ({
+        const suggestions: monaco.languages.CompletionItem[] = cols.map((c) => ({
           label: c.name,
           kind: c.key === "PRI" ? monaco.languages.CompletionItemKind.Keyword : monaco.languages.CompletionItemKind.Field,
           detail: `${c.key === "PRI" ? "🔑 " : ""}${c.data_type} · ${realTable}`,
@@ -371,8 +325,10 @@ function ensureCompletionProvider() {
           sortText: c.key === "PRI" ? `00_${c.name}` : `01_${c.name}`,
         }));
 
-        return { suggestions: dotSuggestions };
+        return { suggestions };
       }
+
+      const suggestions: monaco.languages.CompletionItem[] = [];
 
       // 2) In Table position (FROM, JOIN, INTO, UPDATE)
       if (inTablePos) {
@@ -436,27 +392,39 @@ function ensureCompletionProvider() {
         }
       }
 
-      // 4) If no tables yet, also suggest table names
-      if (tablesMap.size === 0) {
-        let tables = prefetchedTables;
-        if (tables.length === 0) {
-          try {
-            tables = await api.searchTables(connId, db, null, 200);
-          } catch {
-            tables = [];
-          }
+      // Add common templates / snippets
+      suggestions.push(
+        {
+          label: "sel",
+          kind: monaco.languages.CompletionItemKind.Snippet,
+          detail: "SELECT * FROM ...",
+          documentation: { value: "常用 SELECT 查询模板" },
+          insertText: "SELECT ${1:*} FROM ${2:table} WHERE ${3:1=1} LIMIT ${4:100};",
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          range,
+          sortText: "99_sel",
+        },
+        {
+          label: "ins",
+          kind: monaco.languages.CompletionItemKind.Snippet,
+          detail: "INSERT INTO ...",
+          documentation: { value: "常用 INSERT 插入模板" },
+          insertText: "INSERT INTO ${1:table} (${2:cols}) VALUES (${3:vals});",
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          range,
+          sortText: "99_ins",
+        },
+        {
+          label: "upd",
+          kind: monaco.languages.CompletionItemKind.Snippet,
+          detail: "UPDATE ... SET ...",
+          documentation: { value: "常用 UPDATE 更新模板" },
+          insertText: "UPDATE ${1:table} SET ${2:col} = ${3:val} WHERE ${4:id} = ${5:val};",
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          range,
+          sortText: "99_upd",
         }
-        for (const t of tables) {
-          suggestions.push({
-            label: t.name,
-            kind: t.is_view ? monaco.languages.CompletionItemKind.Interface : monaco.languages.CompletionItemKind.Class,
-            detail: t.is_view ? "View 视图" : "Table 数据表",
-            insertText: t.name,
-            range,
-            sortText: `10_${t.name}`,
-          });
-        }
-      }
+      );
 
       return { suggestions };
     },
@@ -537,26 +505,15 @@ export function createEditor(
     wordWrap: "on",
     quickSuggestions: {
       other: true,
-      comments: true,
-      strings: true,
+      comments: false,
+      strings: false,
     },
     suggestOnTriggerCharacters: true,
-    acceptSuggestionOnEnter: "on",
-    tabCompletion: "on",
+    acceptSuggestionOnEnter: "smart",
     snippetSuggestions: "top",
     bracketPairColorization: { enabled: true },
     guides: { bracketPairs: true, indentation: true },
     fixedOverflowWidgets: true,
-    suggest: {
-      showKeywords: true,
-      showSnippets: true,
-      showFunctions: true,
-      showFields: true,
-      showClasses: true,
-      showInterfaces: true,
-      localityBonus: true,
-      shareSuggestSelections: true,
-    },
   });
 
   // Subscribe to changes
