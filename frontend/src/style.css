@@ -458,10 +458,24 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .sidebar-actions button:active:not(:disabled) { background: var(--bg-subtle); box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.12); }
 .sidebar-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* =====================  TREE  =====================
-   (The old bare `.tree` / `.tree > *` rules were removed: nothing in
-   the app used className="tree" anymore, but Monaco's suggest widget
-   renders an internal <div class="tree"> that these rules hit.) */
+/* =====================  TREE (sidebar schema tree)  =====================
+   Named `.db-tree` — was a bare `.tree`, which collided with the internal
+   <div class="tree"> that Monaco's suggest widget renders (the widget's
+   layout got corrupted by these rules). Do NOT rename back to bare `.tree`. */
+.db-tree {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  position: relative;
+  /* Subtle inner shadow for depth against vibrancy sidebar */
+  box-shadow: inset -1px 0 0 var(--border);
+}
+.db-tree > * {
+  /* ScrollArea (first child after toolbar) fills remaining space */
+  flex: 1 1 auto;
+  min-height: 0;
+}
 
 /* ===== Custom always-visible scrollbars (see ScrollArea.tsx) ===== */
 .scroll-area { position: relative; overflow: hidden; }

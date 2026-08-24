@@ -820,7 +820,7 @@ export function Tree(props: TreeProps) {
 
   return (
     <div
-      className="tree"
+      className="db-tree"
       onContextMenu={(e) => {
         if (!(e.target as HTMLElement).closest(".tree-row")) setMenu(null);
       }}
