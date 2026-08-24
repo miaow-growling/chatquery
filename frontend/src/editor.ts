@@ -482,6 +482,10 @@ monaco.editor.defineTheme("chatquery-dark", {
     "editorLineNumber.foreground": "#52525b",
     "editorLineNumber.activeForeground": "#a1a1aa",
     "editorIndentGuide.background": "#27272a",
+    "editorSuggestWidget.background": "#1e1e24",
+    "editorSuggestWidget.border": "#3f3f46",
+    "editorSuggestWidget.selectedBackground": "#6366f1",
+    "editorSuggestWidget.highlightForeground": "#38bdf8",
   },
 });
 
@@ -499,6 +503,7 @@ monaco.editor.defineTheme("chatquery-light", {
     "editor.foreground": "#18181b",
     "editorCursor.foreground": "#6366f1",
     "editor.lineHighlightBackground": "#f4f4f5",
+    "editorSuggestWidget.selectedBackground": "#6366f1",
   },
 });
 
@@ -530,7 +535,28 @@ export function createEditor(
     minimap: { enabled: false },
     tabSize: 2,
     wordWrap: "on",
+    quickSuggestions: {
+      other: true,
+      comments: true,
+      strings: true,
+    },
+    suggestOnTriggerCharacters: true,
+    acceptSuggestionOnEnter: "on",
+    tabCompletion: "on",
+    snippetSuggestions: "top",
+    bracketPairColorization: { enabled: true },
+    guides: { bracketPairs: true, indentation: true },
     fixedOverflowWidgets: true,
+    suggest: {
+      showKeywords: true,
+      showSnippets: true,
+      showFunctions: true,
+      showFields: true,
+      showClasses: true,
+      showInterfaces: true,
+      localityBonus: true,
+      shareSuggestSelections: true,
+    },
   });
 
   // Subscribe to changes

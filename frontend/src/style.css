@@ -5275,6 +5275,35 @@ select.field-input:disabled {
 }
 
 /* ============================================================
+   Monaco Editor — Autocomplete & Suggest Widget Enhancement
+   ============================================================ */
+.monaco-editor .suggest-widget {
+  border-radius: 8px !important;
+  box-shadow: var(--shadow-pop) !important;
+  border: 1px solid var(--border-strong) !important;
+  overflow: hidden !important;
+}
+
+.monaco-editor .suggest-widget .monaco-list .monaco-list-row {
+  border-radius: 4px !important;
+  margin: 2px 4px !important;
+  padding: 0 4px !important;
+}
+
+.monaco-editor .suggest-widget .monaco-list .monaco-list-row.focused {
+  background: var(--brand) !important;
+  color: #ffffff !important;
+}
+
+.monaco-editor .suggest-widget .monaco-list .monaco-list-row.focused .monaco-icon-label .label-name {
+  color: #ffffff !important;
+}
+
+.monaco-editor .suggest-widget .monaco-list .monaco-list-row.focused .monaco-icon-label .label-description {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+/* ============================================================
    Result cell hover preview (truncated/overflowed cells)
    A custom floating popover — NOT the native `title` (which is
    slow to appear, unstyleable, and truncates long values). Shows
