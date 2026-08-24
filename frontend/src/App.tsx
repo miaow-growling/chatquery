@@ -4701,6 +4701,22 @@ export function App() {
               <span className="hint"> (Ctrl/Cmd+Enter 执行)</span>
             </span>
             <div className="pane-actions">
+              <button
+                type="button"
+                className={"ai-toggle-btn" + (aiCompleteOn ? " active" : "")}
+                onClick={() => {
+                  const next = !aiCompleteOn;
+                  setAiCompleteOn(next);
+                  localStorage.setItem("cq_ai_complete", next ? "1" : "0");
+                }}
+                title={
+                  aiCompleteOn
+                    ? "✨ AI 补全已开启（输入停顿后灰色提示，Tab 采纳，Alt+\\ 手动触发）"
+                    : "✨ AI 补全已关闭（点击开启，输入 SQL 停顿后由 LLM 续写）"
+                }
+              >
+                ✨ AI 续写 {aiCompleteOn ? "开" : "关"}
+              </button>
               <button className="primary" onClick={() => void runQuery()} title="执行查询 (Ctrl/Cmd+Enter)">
                 执行
               </button>

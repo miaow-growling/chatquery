@@ -302,6 +302,20 @@ let aiEnabled = false;
 let aiProviderFn: ((prefix: string) => Promise<string | null>) | undefined;
 let aiInlineRegistered = false;
 
+/// Trim overlapping prefix from LLM response. Many models repeat the last few
+/// tokens (e.g. prompt ends with "SELECT ", model returns "SELECT * FROM t").
+function trimOverlap(prefix: string, suggestion: string): string {
+  let s = suggestion.trimStart();
+  const cleanPrefix = prefix.trimEnd();
+  for (let len = Math.min(cleanPrefix.length, s.length); len > 0; len--) {
+    if (cleanPrefix.endsWith(s.slice(0, len))) {
+      s = s.slice(len);
+      break;
+    }
+  }
+  return s;
+}
+
 function ensureAiInlineProvider() {
   if (aiInlineRegistered) return;
   aiInlineRegistered = true;
@@ -313,15 +327,34 @@ function ensureAiInlineProvider() {
       const prefix = model.getValue().slice(0, offset);
       if (!prefix.trim()) return { items: [] };
 
-      // Monaco invokes on every keystroke; wait for a typing pause before
-      // spending an LLM call (mirrors the old CodeMirror 500ms debounce).
-      await new Promise((r) => setTimeout(r, 500));
+      // Debounce: wait for a brief typing pause before invoking the LLM.
+      await new Promise((r) => setTimeout(r, 350));
       if (token.isCancellationRequested) return { items: [] };
 
       try {
-        const suggestion = await aiProviderFn!(prefix);
-        if (token.isCancellationRequested || !suggestion) return { items: [] };
-        return { items: [{ insertText: suggestion }] };
+        let suggestion = await aiProviderFn!(prefix);
+        if (token.isCancellationRequested || !suggestion || !suggestion.trim()) {
+          return { items: [] };
+        }
+
+        suggestion = trimOverlap(prefix, suggestion);
+        if (!suggestion) return { items: [] };
+
+        const range: monaco.IRange = {
+          startLineNumber: position.lineNumber,
+          startColumn: position.column,
+          endLineNumber: position.lineNumber,
+          endColumn: position.column,
+        };
+
+        return {
+          items: [
+            {
+              insertText: suggestion,
+              range,
+            },
+          ],
+        };
       } catch {
         // network/LLM error — silently skip this suggestion
         return { items: [] };
@@ -557,6 +590,8 @@ function ensureThemes() {
       "editorSuggestWidget.selectedForeground": "#ffffff",
       "editorSuggestWidget.highlightForeground": "#0078d4",
       "editorSuggestWidget.focusHighlightForeground": "#ffffff",
+      // Ghost text (AI inline completion)
+      "editorGhostText.foreground": "#6b7280",
       // Hover
       "editorHoverWidget.background": "#ffffff",
       "editorHoverWidget.border": "#d4d4d8",
@@ -576,6 +611,8 @@ function ensureThemes() {
       "editorSuggestWidget.selectedForeground": "#ffffff",
       "editorSuggestWidget.highlightForeground": "#18a3ff",
       "editorSuggestWidget.focusHighlightForeground": "#ffffff",
+      // Ghost text (AI inline completion)
+      "editorGhostText.foreground": "#9ca3af",
       "editorHoverWidget.background": "#252526",
       "editorHoverWidget.border": "#454545",
       "editorHoverWidget.foreground": "#d4d4d4",
