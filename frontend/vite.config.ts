@@ -1,11 +1,23 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import monacoEditorPlugin from "vite-plugin-monaco-editor";
 
 const host = process.env.TAURI_DEV_HOST;
 
 // Tauri expects a fixed dev port and ignores Vite's default "clear screen".
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    (monacoEditorPlugin as any).default
+      ? (monacoEditorPlugin as any).default({
+          languageWorkers: ["editorWorkerService"],
+          customLanguages: [{ label: "sql", entry: "vs/basic-languages/sql/sql.contribution" }],
+        })
+      : (monacoEditorPlugin as any)({
+          languageWorkers: ["editorWorkerService"],
+          customLanguages: [{ label: "sql", entry: "vs/basic-languages/sql/sql.contribution" }],
+        }),
+  ],
   clearScreen: false,
   server: {
     port: 1420,

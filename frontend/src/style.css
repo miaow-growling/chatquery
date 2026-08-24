@@ -862,17 +862,24 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .menu-item:hover:not(.disabled) { background: var(--brand-soft); color: var(--brand); }
 .menu-item.disabled { color: var(--text-disabled); cursor: not-allowed; }
 
-/* Editor host */
+/* Editor host - Monaco Editor Container */
 .editor {
   flex: 1;
   min-height: 0;
   min-width: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
+  position: relative;
   background: var(--bg-surface);
 }
-.editor .cm-editor { height: 100%; }
-.editor .cm-editor.cm-focused { outline: none; }
+.editor .monaco-editor {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 100% !important;
+  width: 100% !important;
+}
 
 /* Database-context chip in editor header */
 .ctx-conn-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
@@ -5265,162 +5272,6 @@ select.field-input:disabled {
   border-radius: 10px;
   font-size: var(--fs-sm);
   font-weight: 500;
-}
-
-/* ============================================================
-   SQL editor — autocomplete popup overhaul
-   Problem: @codemirror/autocomplete ships oneDark/legacy glyphs
-   (keyword => yellow 🔑 emoji, property => grey □ box) that clash
-   with ChatQuery's vibrancy/translucent UI — the "old TV" feeling.
-   Fix: drop the mismatched glyphs, use a unified color-coded dot per
-   completion type, full-invert the selected row, and glass-ify the
-   popup to match the app's popover language. (CSS vars flip with
-   dark/light automatically, so no JS theme reconfig needed.)
-   ============================================================ */
-.cm-editor .cm-tooltip.cm-tooltip-autocomplete {
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  background: var(--panel-bg);
-  -webkit-backdrop-filter: blur(24px) saturate(1.6);
-  backdrop-filter: blur(24px) saturate(1.6);
-  box-shadow: var(--shadow-pop);
-  overflow: hidden;
-  padding: 5px;
-  font-family: var(--font-mono);
-}
-.cm-editor .cm-tooltip-autocomplete > ul {
-  font-family: var(--font-mono);
-  max-height: 18em;
-}
-.cm-editor .cm-tooltip-autocomplete > ul > li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  border-radius: 6px;
-  color: var(--text-primary);
-  line-height: 1.3;
-}
-.cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] {
-  background: var(--brand);
-  color: #fff;
-}
-.cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionLabel {
-  color: #ffffff !important;
-}
-.cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionDetail {
-  color: rgba(255, 255, 255, 0.85);
-}
-.cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionIcon {
-  background: rgba(255, 255, 255, 0.25) !important;
-  color: #fff !important;
-}
-
-/* Subtle clean Icon Badges for Completion Items (Navicat/VS Code style) */
-.cm-editor .cm-completionIcon {
-  display: inline-flex !important;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 600;
-  font-family: var(--font-sans);
-  line-height: 1;
-  text-transform: uppercase;
-  margin: 0 !important;
-  padding: 0 !important;
-}
-
-.cm-editor .cm-completionIcon-property {
-  background: rgba(59, 130, 246, 0.15) !important;
-  color: #3b82f6 !important;
-}
-.cm-editor .cm-completionIcon-property::after {
-  content: "C" !important; /* Column */
-}
-
-.cm-editor .cm-completionIcon-keyword {
-  background: rgba(168, 85, 247, 0.15) !important;
-  color: #a855f7 !important;
-}
-.cm-editor .cm-completionIcon-keyword::after {
-  content: "K" !important; /* Keyword / PK */
-}
-
-.cm-editor .cm-completionIcon-function {
-  background: rgba(234, 179, 8, 0.15) !important;
-  color: #eab308 !important;
-}
-.cm-editor .cm-completionIcon-function::after {
-  content: "F" !important; /* Function */
-}
-
-.cm-editor .cm-completionIcon-class {
-  background: rgba(34, 197, 94, 0.15) !important;
-  color: #22c55e !important;
-}
-.cm-editor .cm-completionIcon-class::after {
-  content: "T" !important; /* Table */
-}
-
-.cm-editor .cm-completionIcon-interface {
-  background: rgba(6, 182, 212, 0.15) !important;
-  color: #06b6d4 !important;
-}
-.cm-editor .cm-completionIcon-interface::after {
-  content: "V" !important; /* View */
-}
-
-.cm-editor .cm-completionIcon-variable {
-  background: rgba(14, 165, 233, 0.15) !important;
-  color: #0ea5e9 !important;
-}
-.cm-editor .cm-completionIcon-variable::after {
-  content: "J" !important; /* Join */
-}
-
-.cm-editor .cm-completionIcon-text {
-  background: rgba(249, 115, 22, 0.15) !important;
-  color: #f97316 !important;
-}
-.cm-editor .cm-completionIcon-text::after {
-  content: "S" !important; /* Snippet */
-}
-
-.cm-editor .cm-completionIcon-type,
-.cm-editor .cm-completionIcon-constant {
-  background: rgba(20, 184, 166, 0.15) !important;
-  color: #14b8a6 !important;
-}
-.cm-editor .cm-completionIcon-type::after,
-.cm-editor .cm-completionIcon-constant::after {
-  content: "D" !important;
-}
-
-.cm-editor .cm-completionLabel {
-  font-size: 13px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-.cm-editor .cm-completionDetail {
-  margin-left: auto;
-  padding-left: 12px;
-  font-size: 11px;
-  font-style: normal;
-  color: var(--text-tertiary);
-  white-space: nowrap;
-  opacity: 0.9;
-}
-/* Scrollbar inside the popup — keep it subtle, not a chunky native bar. */
-.cm-editor .cm-tooltip-autocomplete > ul::-webkit-scrollbar {
-  width: 8px;
-}
-.cm-editor .cm-tooltip-autocomplete > ul::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: 8px;
 }
 
 /* ============================================================
