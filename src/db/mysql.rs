@@ -344,7 +344,9 @@ fn strip_limit_offset(sql: &str) -> (String, Option<usize>) {
 fn is_select_query(sql: &str) -> bool {
     let no_tail = sql.trim().trim_end_matches(';').trim();
     let body = skip_leading_inline_comment(no_tail);
-    if !body.eq_ignore_ascii_case("select") && !body.to_ascii_uppercase().starts_with("SELECT ") {
+    let up = body.to_ascii_uppercase();
+    let first = up.split(|c: char| c.is_whitespace()).next().unwrap_or("");
+    if first != "SELECT" {
         return false;
     }
     !has_unquoted_semicolon(no_tail)
@@ -1784,6 +1786,9 @@ mod tests {
     #[test]
     fn is_select_query_recognises_select_only() {
         assert!(is_select_query("SELECT * FROM t"));
+        // Regression: formatted SQL has a NEWLINE after SELECT — used to miss
+        // is_select_query, falling back to plain unpaged query (total=None, no pager).
+        assert!(is_select_query("SELECT\n    org.name AS 公司\nFROM k_task t"));
         assert!(is_select_query("  select id from t where x = 1  "));
         assert!(is_select_query("-- comment\nSELECT * FROM t"));
         assert!(is_select_query("SELECT * FROM t WHERE msg = 'a;b'"));
