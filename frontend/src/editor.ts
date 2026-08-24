@@ -577,6 +577,10 @@ export function createEditor(
     tabSize: 2,
     wordWrap: "on",
     fixedOverflowWidgets: true,
+    // Use the app's own Navicat-style context menu (App.tsx buildEditorMenu:
+    // 运行/格式化/注释/大小写/AI 引用…). Monaco's built-in menu would open
+    // on top of it with only cut/copy/paste entries.
+    contextmenu: false,
   });
 
   // Subscribe to changes
@@ -695,10 +699,22 @@ export function createEditor(
       editor.focus();
     },
     copy() {
-      document.execCommand("copy");
+      // Monaco's selection is internal (not a DOM selection), so
+      // document.execCommand("copy") copies nothing — write explicitly.
+      const sel = editor.getSelection();
+      const model = editor.getModel();
+      if (sel && model && !sel.isEmpty()) {
+        void navigator.clipboard.writeText(model.getValueInRange(sel));
+      }
     },
     cut() {
-      document.execCommand("cut");
+      const sel = editor.getSelection();
+      const model = editor.getModel();
+      if (sel && model && !sel.isEmpty()) {
+        void navigator.clipboard.writeText(model.getValueInRange(sel));
+        editor.executeEdits("cut", [{ range: sel, text: "" }]);
+      }
+      editor.focus();
     },
     async paste() {
       try {
