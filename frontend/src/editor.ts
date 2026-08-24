@@ -289,21 +289,7 @@ function ensureCompletionProvider() {
       // Always include SQL snippets & templates (available even without active db)
       suggestions.push(
         {
-          label: {
-            label: "select",
-            description: "关键字",
-          },
-          kind: monaco.languages.CompletionItemKind.Keyword,
-          detail: "SELECT",
-          insertText: "SELECT ",
-          range,
-          sortText: "00_select",
-        },
-        {
-          label: {
-            label: "sel",
-            description: "常用查询模板",
-          },
+          label: "sel",
           kind: monaco.languages.CompletionItemKind.Snippet,
           detail: "SELECT * FROM ...",
           documentation: { value: "常用 SELECT 查询模板" },
@@ -313,65 +299,7 @@ function ensureCompletionProvider() {
           sortText: "00_0_sel",
         },
         {
-          label: {
-            label: "from",
-            description: "关键字",
-          },
-          kind: monaco.languages.CompletionItemKind.Keyword,
-          detail: "FROM",
-          insertText: "FROM ",
-          range,
-          sortText: "00_from",
-        },
-        {
-          label: {
-            label: "where",
-            description: "关键字",
-          },
-          kind: monaco.languages.CompletionItemKind.Keyword,
-          detail: "WHERE",
-          insertText: "WHERE ",
-          range,
-          sortText: "00_where",
-        },
-        {
-          label: {
-            label: "insert",
-            description: "关键字",
-          },
-          kind: monaco.languages.CompletionItemKind.Keyword,
-          detail: "INSERT INTO",
-          insertText: "INSERT INTO ",
-          range,
-          sortText: "00_insert",
-        },
-        {
-          label: {
-            label: "update",
-            description: "关键字",
-          },
-          kind: monaco.languages.CompletionItemKind.Keyword,
-          detail: "UPDATE",
-          insertText: "UPDATE ",
-          range,
-          sortText: "00_update",
-        },
-        {
-          label: {
-            label: "delete",
-            description: "关键字",
-          },
-          kind: monaco.languages.CompletionItemKind.Keyword,
-          detail: "DELETE FROM",
-          insertText: "DELETE FROM ",
-          range,
-          sortText: "00_delete",
-        },
-        {
-          label: {
-            label: "select_all",
-            description: "查询全表",
-          },
+          label: "select_all",
           kind: monaco.languages.CompletionItemKind.Snippet,
           detail: "SELECT * FROM ...",
           documentation: { value: "常用 SELECT 查询模板" },
@@ -381,10 +309,7 @@ function ensureCompletionProvider() {
           sortText: "00_1_sel",
         },
         {
-          label: {
-            label: "ins",
-            description: "插入记录模板",
-          },
+          label: "ins",
           kind: monaco.languages.CompletionItemKind.Snippet,
           detail: "INSERT INTO ...",
           documentation: { value: "常用 INSERT 插入模板" },
@@ -394,10 +319,7 @@ function ensureCompletionProvider() {
           sortText: "00_2_ins",
         },
         {
-          label: {
-            label: "upd",
-            description: "更新记录模板",
-          },
+          label: "upd",
           kind: monaco.languages.CompletionItemKind.Snippet,
           detail: "UPDATE ... SET ...",
           documentation: { value: "常用 UPDATE 更新模板" },
@@ -440,10 +362,7 @@ function ensureCompletionProvider() {
         }
 
         const dotSuggestions: monaco.languages.CompletionItem[] = cols.map((c) => ({
-          label: {
-            label: c.name,
-            description: c.data_type,
-          },
+          label: c.name,
           kind: c.key === "PRI" ? monaco.languages.CompletionItemKind.Keyword : monaco.languages.CompletionItemKind.Field,
           detail: `${c.key === "PRI" ? "🔑 " : ""}${c.data_type} · ${realTable}`,
           documentation: c.comment ? { value: `**注释:** ${c.comment}` } : undefined,
@@ -468,10 +387,7 @@ function ensureCompletionProvider() {
 
         for (const t of tables) {
           suggestions.push({
-            label: {
-              label: t.name,
-              description: t.is_view ? "视图" : "数据表",
-            },
+            label: t.name,
             kind: t.is_view ? monaco.languages.CompletionItemKind.Interface : monaco.languages.CompletionItemKind.Class,
             detail: t.is_view ? "View 视图" : "Table 数据表",
             documentation: { value: `数据库 **${db}** 中的${t.is_view ? "视图" : "数据表"}` },
@@ -509,10 +425,7 @@ function ensureCompletionProvider() {
           seenCol.add(cl);
 
           suggestions.push({
-            label: {
-              label: c.name,
-              description: `${c.key === "PRI" ? "🔑 " : ""}${c.data_type}`,
-            },
+            label: c.name,
             kind: c.key === "PRI" ? monaco.languages.CompletionItemKind.Keyword : monaco.languages.CompletionItemKind.Field,
             detail: `${c.key === "PRI" ? "🔑 " : ""}${c.data_type} · ${t}`,
             documentation: c.comment ? { value: `**表:** ${t}\n\n**类型:** ${c.data_type}\n\n**注释:** ${c.comment}` } : { value: `**表:** ${t}\n\n**类型:** ${c.data_type}` },
@@ -535,10 +448,7 @@ function ensureCompletionProvider() {
         }
         for (const t of tables) {
           suggestions.push({
-            label: {
-              label: t.name,
-              description: t.is_view ? "视图" : "数据表",
-            },
+            label: t.name,
             kind: t.is_view ? monaco.languages.CompletionItemKind.Interface : monaco.languages.CompletionItemKind.Class,
             detail: t.is_view ? "View 视图" : "Table 数据表",
             insertText: t.name,
@@ -606,7 +516,7 @@ export function createEditor(
   const editor = monaco.editor.create(parent, {
     value: "",
     language: "sql",
-    theme: isDark ? "vs-dark" : "vs",
+    theme: isDark ? "chatquery-dark" : "chatquery-light",
     fontSize: 13,
     fontFamily: "var(--font-mono, 'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace)",
     lineNumbers: "on",
@@ -696,7 +606,7 @@ export function createEditor(
       return doc.slice(s, e).trim();
     },
     setTheme(dark: boolean) {
-      monaco.editor.setTheme(dark ? "vs-dark" : "vs");
+      monaco.editor.setTheme(dark ? "chatquery-dark" : "chatquery-light");
     },
     setAiComplete(
       _enabled: boolean,
