@@ -294,11 +294,11 @@ function badge(n: Node): { icon: IconName; cls: string } {
   }
 }
 
-/// Expanded "表"/"视图" folder: a filter box + windowed list. The folder's
-/// full child list may be 8000+ nodes; we never mount them all — only the
+/// A filter box + windowed child list, shared by the "表"/"视图" folders AND
+/// by a connection's database list (one connection can hold thousands of
+/// databases). We never mount the full child list — only the
 /// filtered+windowed slice is rendered, so the sidebar stays responsive.
-function FolderView(props: {
-  node: Extract<Node, { kind: "folder" }>;
+function ListView(props: {
   kids: Node[];
   depth: number;
   filter: string;
@@ -306,17 +306,16 @@ function FolderView(props: {
   onFilter: (v: string) => void;
   onMore: () => void;
   renderChild: (c: Node) => JSX.Element;
+  /// Does this child match the (already lowercased) query?
+  match: (c: Node, q: string) => boolean;
+  placeholder: string;
+  emptyText: string;
 }) {
-  const { kids, depth, filter, shown, onFilter, onMore, renderChild } = props;
-  const filtered = filter
-    ? kids.filter(
-        (c) =>
-          (c.kind === "table") &&
-          c.name.toLowerCase().includes(filter.toLowerCase())
-      )
-    : kids;
+  const { kids, depth, filter, shown, onFilter, onMore, renderChild, match, placeholder, emptyText } = props;
+  const q = filter.toLowerCase();
+  const filtered = filter ? kids.filter((c) => match(c, q)) : kids;
   const visible = filtered.slice(0, shown);
-  // Align the filter/empty/more rows with the child table rows below them.
+  // Align the filter/empty/more rows with the child rows below them.
   const indent = (depth + 1) * 10 + 4;
   return (
     <>
@@ -330,7 +329,7 @@ function FolderView(props: {
         </span>
         <input
           className="tree-filter-input"
-          placeholder="过滤表名…"
+          placeholder={placeholder}
           value={filter}
           onChange={(e) => onFilter(e.target.value)}
           onContextMenu={(e) => e.preventDefault()}
@@ -350,7 +349,7 @@ function FolderView(props: {
         visible.map(renderChild)
       ) : (
         <div className="tree-empty-child" style={{ paddingLeft: `${indent}px` }}>
-          无匹配表
+          {emptyText}
         </div>
       )}
       {filtered.length > shown && (
@@ -368,6 +367,19 @@ function FolderView(props: {
     </>
   );
 }
+
+/// Child matchers for ListView, keyed by the parent node kind.
+const MATCHERS = {
+  table: (c: Node, q: string) =>
+    c.kind === "table" && c.name.toLowerCase().includes(q),
+  db: (c: Node, q: string) =>
+    (c.kind === "db" && c.db.toLowerCase().includes(q)) ||
+    (c.kind === "redisdb" && `db${c.db}`.toLowerCase().includes(q)),
+} as const;
+
+/// Connections with at least this many databases get the filter box.
+/// Below it the plain list is quicker to scan than a filter field.
+const DB_FILTER_THRESHOLD = 10;
 
 interface TreeProps {
   tree: TreeModel;
@@ -791,8 +803,7 @@ export function Tree(props: TreeProps) {
         </div>
         {isOpen &&
           (node.kind === "folder" ? (
-            <FolderView
-              node={node}
+            <ListView
               kids={kids}
               depth={depth}
               filter={folderFilter[node.key] ?? ""}
@@ -808,6 +819,30 @@ export function Tree(props: TreeProps) {
                 }))
               }
               renderChild={(c) => <div key={c.key}>{renderNode(c, depth + 1)}</div>}
+              match={MATCHERS.table}
+              placeholder="过滤表名…"
+              emptyText="无匹配表"
+            />
+          ) : node.kind === "conn" && kids.length >= DB_FILTER_THRESHOLD ? (
+            <ListView
+              kids={kids}
+              depth={depth}
+              filter={folderFilter[node.key] ?? ""}
+              shown={folderShown[node.key] ?? TREE_PAGE}
+              onFilter={(v) => {
+                setFolderFilter((s) => ({ ...s, [node.key]: v }));
+                setFolderShown((s) => ({ ...s, [node.key]: TREE_PAGE }));
+              }}
+              onMore={() =>
+                setFolderShown((s) => ({
+                  ...s,
+                  [node.key]: (s[node.key] ?? TREE_PAGE) + TREE_PAGE,
+                }))
+              }
+              renderChild={(c) => <div key={c.key}>{renderNode(c, depth + 1)}</div>}
+              match={MATCHERS.db}
+              placeholder="过滤数据库…"
+              emptyText="无匹配数据库"
             />
           ) : kids.length > 0 ? (
             kids.map((c) => <div key={c.key}>{renderNode(c, depth + 1)}</div>)
