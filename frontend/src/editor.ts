@@ -218,6 +218,12 @@ let prefetchedTables: TableMeta[] = [];
 let isPrefetching = false;
 
 const colLruCache = new Map<string, ColumnInfo[]>();
+/// Short-lived negative cache: tables whose last column fetch FAILED or
+/// returned empty. Without this, a single transient failure would either be
+/// retried on every keystroke (request storm) or — worse — get cached as an
+/// empty array forever, permanently hiding that table's columns.
+const failedColTables = new Map<string, number>();
+const FAILED_COL_TTL_MS = 10_000;
 
 const getCachedCols = (table: string): ColumnInfo[] | undefined => {
   const key = table.toLowerCase();
@@ -236,6 +242,38 @@ const setCachedCols = (table: string, cols: ColumnInfo[]) => {
   if (colLruCache.size > 80) {
     const oldestKey = colLruCache.keys().next().value;
     if (oldestKey) colLruCache.delete(oldestKey);
+  }
+};
+
+/// Shared column loader for the completion provider: LRU-cached, with a
+/// short negative TTL so failures are retried later instead of poisoning
+/// the cache with an empty list.
+const loadColumns = async (
+  connId: string,
+  db: string,
+  table: string
+): Promise<ColumnInfo[]> => {
+  const cached = getCachedCols(table);
+  if (cached) return cached;
+
+  const key = table.toLowerCase();
+  const lastFail = failedColTables.get(key);
+  if (lastFail && Date.now() - lastFail < FAILED_COL_TTL_MS) return [];
+
+  try {
+    const cols = await api.listColumns(connId, db, table);
+    if (cols.length > 0) {
+      setCachedCols(table, cols);
+      return cols;
+    }
+    // Empty result: don't cache permanently (the table might be case-
+    // sensitive on the server, or the fetch raced a schema switch).
+    failedColTables.set(key, Date.now());
+    return [];
+  } catch (e) {
+    console.warn(`[editor] listColumns failed for ${db}.${table}:`, e);
+    failedColTables.set(key, Date.now());
+    return [];
   }
 };
 
@@ -387,15 +425,7 @@ function ensureCompletionProvider() {
       if (dotMatch) {
         const ref = dotMatch[1].replace(/[`"]/g, "");
         const realTable = tablesMap.get(ref.toLowerCase()) ?? ref;
-        let cols = getCachedCols(realTable);
-        if (!cols) {
-          try {
-            cols = await api.listColumns(connId, db, realTable);
-          } catch {
-            cols = [];
-          }
-          setCachedCols(realTable, cols);
-        }
+        const cols = await loadColumns(connId, db, realTable);
 
         const dotSuggestions: monaco.languages.CompletionItem[] = cols.map((c) => ({
           label: c.name,
@@ -440,15 +470,7 @@ function ensureCompletionProvider() {
       if (tablesMap.size > 0) {
         const distinctTables = Array.from(new Set(tablesMap.values()));
         const colPromises = distinctTables.map(async (t) => {
-          let cols = getCachedCols(t);
-          if (!cols) {
-            try {
-              cols = await api.listColumns(connId, db, t);
-            } catch {
-              cols = [];
-            }
-            setCachedCols(t, cols);
-          }
+          const cols = await loadColumns(connId, db, t);
           return cols.map((c) => ({ c, t }));
         });
 
@@ -581,6 +603,7 @@ export function createEditor(
       currentDb = db;
       prefetchedTables = [];
       colLruCache.clear();
+      failedColTables.clear();
       if (connId && db) {
         void prefetchTables(connId, db);
       }
