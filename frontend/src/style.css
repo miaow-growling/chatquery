@@ -5305,6 +5305,9 @@ select.field-input:disabled {
   background: var(--brand);
   color: #fff;
 }
+.cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionLabel {
+  color: #ffffff !important;
+}
 .cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionDetail {
   color: rgba(255, 255, 255, 0.85);
 }

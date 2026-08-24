@@ -652,7 +652,7 @@ export function createEditor(
     const statementText = docText.slice(stmtStart, stmtEnd);
     const tablesMap = parseFromTables(statementText);
 
-    // Context analysis: are we in a table position (after FROM / JOIN / INTO / TABLE / UPDATE)?
+    const preWord = word ? before.slice(0, word.from) : before;
     const inTablePos = /\b(FROM|JOIN|INTO|TABLE|UPDATE)\s+[\w`]*$/i.test(before) || /\b(FROM|JOIN|INTO|TABLE|UPDATE)\s*$/i.test(preWord);
     const isJoinPos = /\bJOIN\s+[\w`]*$/i.test(before) || /\bJOIN\s*$/i.test(preWord);
 
@@ -775,6 +775,30 @@ export function createEditor(
           info: c.comment || undefined,
         });
       }
+    } else {
+      // If no tables referenced yet (e.g. typing SELECT col before FROM), suggest columns from ALL prefetched tables
+      if (prefetchedTables.length > 0) {
+        const sampleTables = prefetchedTables.slice(0, 10);
+        const colPromises = sampleTables.map(async (t) => {
+          const cols = await loadTableCols(t.name);
+          return cols.map((c) => ({ c, t: t.name }));
+        });
+        const allCols = (await Promise.all(colPromises)).flat();
+        const seenCol = new Set<string>();
+        for (const { c, t } of allCols) {
+          const cl = c.name.toLowerCase();
+          if (seenCol.has(cl)) continue;
+          seenCol.add(cl);
+          if (lowerPrefix && !cl.startsWith(lowerPrefix) && !cl.includes(lowerPrefix)) continue;
+          completions.push({
+            label: c.name,
+            type: c.key === "PRI" ? "keyword" : "property",
+            boost: c.key === "PRI" ? 75 : 70,
+            detail: colDetail(c, t),
+            info: c.comment || undefined,
+          });
+        }
+      }
     }
 
     // B) Builtin Functions (boost: 10)
@@ -789,7 +813,7 @@ export function createEditor(
     // C) SQL Snippets (boost: 5)
     if (lowerPrefix.length >= 1) {
       for (const snip of SQL_SNIPPETS) {
-        if (snip.label.startsWith(lowerPrefix)) {
+        if (snip.label.toLowerCase().startsWith(lowerPrefix)) {
           completions.push({ ...snip, boost: 5 });
         }
       }
