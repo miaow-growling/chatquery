@@ -478,6 +478,53 @@ function ensureCompletionProvider() {
   });
 }
 
+// Register custom themes with correct suggest-widget foreground colors.
+// Monaco's theme system sets these via JS-injected <style> tags with very high
+// specificity, so this is more reliable than CSS overrides for the suggest widget.
+let _themesRegistered = false;
+function ensureThemes() {
+  if (_themesRegistered) return;
+  _themesRegistered = true;
+
+  monaco.editor.defineTheme("cq-light", {
+    base: "vs",
+    inherit: true,
+    rules: [],
+    colors: {
+      // Suggest widget
+      "editorSuggestWidget.background": "#ffffff",
+      "editorSuggestWidget.border": "#d4d4d8",
+      "editorSuggestWidget.foreground": "#18181b",
+      "editorSuggestWidget.selectedBackground": "#0078d4",
+      "editorSuggestWidget.selectedForeground": "#ffffff",
+      "editorSuggestWidget.highlightForeground": "#0078d4",
+      "editorSuggestWidget.focusHighlightForeground": "#ffffff",
+      // Hover
+      "editorHoverWidget.background": "#ffffff",
+      "editorHoverWidget.border": "#d4d4d8",
+      "editorHoverWidget.foreground": "#18181b",
+    },
+  });
+
+  monaco.editor.defineTheme("cq-dark", {
+    base: "vs-dark",
+    inherit: true,
+    rules: [],
+    colors: {
+      "editorSuggestWidget.background": "#1e1e1e",
+      "editorSuggestWidget.border": "#454545",
+      "editorSuggestWidget.foreground": "#d4d4d4",
+      "editorSuggestWidget.selectedBackground": "#0078d4",
+      "editorSuggestWidget.selectedForeground": "#ffffff",
+      "editorSuggestWidget.highlightForeground": "#18a3ff",
+      "editorSuggestWidget.focusHighlightForeground": "#ffffff",
+      "editorHoverWidget.background": "#252526",
+      "editorHoverWidget.border": "#454545",
+      "editorHoverWidget.foreground": "#d4d4d4",
+    },
+  });
+}
+
 /// Create a Monaco SQL editor mounted into `parent`.
 export function createEditor(
   parent: HTMLElement,
@@ -486,13 +533,14 @@ export function createEditor(
   _aiProvider?: (prefix: string) => Promise<string | null>
 ): EditorHandle {
   ensureCompletionProvider();
+  ensureThemes();
 
   const isDark = document.documentElement.dataset.theme !== "light";
 
   const editor = monaco.editor.create(parent, {
     value: "",
     language: "sql",
-    theme: isDark ? "vs-dark" : "vs",
+    theme: isDark ? "cq-dark" : "cq-light",
     fontSize: 13,
     fontFamily: "var(--font-mono, 'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace)",
     lineNumbers: "on",
@@ -581,7 +629,7 @@ export function createEditor(
       return doc.slice(s, e).trim();
     },
     setTheme(dark: boolean) {
-      monaco.editor.setTheme(dark ? "vs-dark" : "vs");
+      monaco.editor.setTheme(dark ? "cq-dark" : "cq-light");
     },
     setAiComplete(
       _enabled: boolean,
