@@ -862,17 +862,24 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .menu-item:hover:not(.disabled) { background: var(--brand-soft); color: var(--brand); }
 .menu-item.disabled { color: var(--text-disabled); cursor: not-allowed; }
 
-/* Editor host */
+/* Editor host - Monaco Editor Container */
 .editor {
   flex: 1;
   min-height: 0;
   min-width: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
+  position: relative;
   background: var(--bg-surface);
 }
-.editor .cm-editor { height: 100%; }
-.editor .cm-editor.cm-focused { outline: none; }
+.editor .monaco-editor {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 100% !important;
+  width: 100% !important;
+}
 
 /* Database-context chip in editor header */
 .ctx-conn-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
