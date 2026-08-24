@@ -333,6 +333,13 @@ function ListView(props: {
           value={filter}
           onChange={(e) => onFilter(e.target.value)}
           onContextMenu={(e) => e.preventDefault()}
+          // macOS WKWebView pops its own inline suggestions ("Csz" style
+          // auto-capitalize/autocomplete) under the field while typing —
+          // noise over the live-filtered tree below. Turn every flavor off.
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
         />
         {filter && (
           <button

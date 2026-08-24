@@ -529,6 +529,11 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
             placeholder="筛选连接名 / 库名…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
+            // Suppress macOS WKWebView inline suggestions while typing.
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
             autoFocus
           />
           {filter && (
