@@ -880,32 +880,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
   height: 100% !important;
   width: 100% !important;
 }
-/* Ensure suggest widget list labels have proper contrast and line height */
-.monaco-editor .suggest-widget .monaco-list-row .monaco-icon-label {
-  display: flex !important;
-  align-items: center !important;
-  line-height: 20px !important;
-  color: inherit !important;
-}
-.monaco-editor .suggest-widget .monaco-list-row .monaco-icon-label .label-name {
-  color: #d4d4d8 !important;
-  font-size: 12px !important;
-  font-family: var(--font-mono, monospace) !important;
-}
-:root[data-theme="light"] .monaco-editor .suggest-widget .monaco-list-row .monaco-icon-label .label-name {
-  color: #18181b !important;
-}
-.monaco-editor .suggest-widget .monaco-list-row.focused .monaco-icon-label .label-name {
-  color: #ffffff !important;
-}
-.monaco-editor .suggest-widget .monaco-list-row .monaco-icon-label .label-description {
-  color: #a1a1aa !important;
-  font-size: 11px !important;
-  margin-left: 8px !important;
-}
-.monaco-editor .suggest-widget .monaco-list-row.focused .monaco-icon-label .label-description {
-  color: rgba(255, 255, 255, 0.85) !important;
-}
 
 /* Database-context chip in editor header */
 .ctx-conn-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
