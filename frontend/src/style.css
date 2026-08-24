@@ -5276,68 +5276,6 @@ select.field-input:disabled {
   font-weight: 500;
 }
 
-/* Fix Monaco Suggest Widget width & text layout */
-.monaco-editor .suggest-widget {
-  min-width: 320px !important;
-  width: auto !important;
-}
-.monaco-editor .suggest-widget .monaco-list {
-  user-select: none !important;
-}
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row {
-  display: flex !important;
-  align-items: center !important;
-  height: 22px !important;
-  line-height: 22px !important;
-}
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row .contents {
-  display: flex !important;
-  align-items: center !important;
-  width: 100% !important;
-}
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row .contents .main {
-  display: flex !important;
-  align-items: center !important;
-  overflow: visible !important;
-  width: 100% !important;
-}
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row .monaco-icon-label {
-  display: inline-flex !important;
-  align-items: center !important;
-  color: #18181b !important;
-  font-size: 12px !important;
-  width: 100% !important;
-}
-:root[data-theme="dark"] .monaco-editor .suggest-widget .monaco-list .monaco-list-row .monaco-icon-label,
-.monaco-editor.vs-dark .suggest-widget .monaco-list .monaco-list-row .monaco-icon-label {
-  color: #e4e4e7 !important;
-}
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row.focused .monaco-icon-label {
-  color: #ffffff !important;
-}
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row .monaco-icon-label .monaco-icon-label-container {
-  display: inline-flex !important;
-  align-items: center !important;
-  overflow: visible !important;
-  width: 100% !important;
-}
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row .monaco-icon-label .monaco-icon-label-container .label-name {
-  display: inline-block !important;
-  color: inherit !important;
-  font-family: var(--font-mono, monospace) !important;
-  font-size: 12px !important;
-}
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row .monaco-icon-label .monaco-icon-label-container .label-description {
-  display: inline-block !important;
-  margin-left: auto !important;
-  padding-left: 12px !important;
-  color: #a1a1aa !important;
-  font-size: 11px !important;
-}
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row.focused .monaco-icon-label .monaco-icon-label-container .label-description {
-  color: rgba(255, 255, 255, 0.85) !important;
-}
-
 /* ============================================================
    Result cell hover preview (truncated/overflowed cells)
    A custom floating popover — NOT the native `title` (which is

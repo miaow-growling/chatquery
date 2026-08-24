@@ -472,28 +472,7 @@ function ensureCompletionProvider() {
         }
       }
 
-      // 4) If no tables yet, also suggest table names
-      if (tablesMap.size === 0) {
-        let tables = prefetchedTables;
-        if (tables.length === 0) {
-          try {
-            tables = await api.searchTables(connId, db, null, 200);
-          } catch {
-            tables = [];
-          }
-        }
-        for (const t of tables) {
-          suggestions.push({
-            label: t.name,
-            kind: t.is_view ? monaco.languages.CompletionItemKind.Interface : monaco.languages.CompletionItemKind.Class,
-            detail: t.is_view ? "View 视图" : "Table 数据表",
-            insertText: t.name,
-            range,
-            sortText: `10_${t.name}`,
-          });
-        }
-      }
-
+      // 4) If no tables yet, do not dump all tables when typing generic keywords
       return { suggestions };
     },
   });
