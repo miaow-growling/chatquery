@@ -1038,8 +1038,16 @@ pub async fn list_columns(
 ) -> Result<Vec<ColumnInfo>> {
     with_stale_retry("mysql.list_columns", || async {
         let pool = connect_pool_db(cfg, database).await?;
+        // CAST every INFORMATION_SCHEMA text column to CHAR: on some servers
+        // (e.g. older MySQL behind rdsproxy) they are declared with a binary
+        // charset and sqlx decodes them as SQL BLOB, which fails try_get::<String>
+        // and made column completion return an error every time.
         let rows = sqlx::query(
-            "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_KEY, IS_NULLABLE, COLUMN_DEFAULT, \
+            "SELECT CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, \
+                    CAST(DATA_TYPE AS CHAR) AS DATA_TYPE, \
+                    CAST(COLUMN_KEY AS CHAR) AS COLUMN_KEY, \
+                    CAST(IS_NULLABLE AS CHAR) AS IS_NULLABLE, \
+                    CAST(COLUMN_DEFAULT AS CHAR) AS COLUMN_DEFAULT, \
                     CAST(COLUMN_COMMENT AS CHAR) AS COLUMN_COMMENT \
              FROM INFORMATION_SCHEMA.COLUMNS \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
