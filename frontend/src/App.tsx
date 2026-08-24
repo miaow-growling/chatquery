@@ -4609,7 +4609,7 @@ export function App() {
         </div>
       </aside>
 
-      <main className="main">
+      <main className="app-main">
         <div className="tab-bar">
             {tabs.map((t) => (
               <div
