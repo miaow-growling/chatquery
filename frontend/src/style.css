@@ -5277,6 +5277,41 @@ select.field-input:disabled {
 }
 
 /* ============================================================
+   Monaco Suggest Widget Global Fix
+   ============================================================ */
+.monaco-editor .suggest-widget {
+  min-width: 360px !important;
+}
+.monaco-editor .suggest-widget .monaco-list-row .monaco-icon-label {
+  display: flex !important;
+  align-items: center !important;
+  line-height: 20px !important;
+  height: 20px !important;
+}
+.monaco-editor .suggest-widget .monaco-list-row .monaco-icon-label .label-name {
+  color: #18181b !important;
+  font-family: var(--font-mono, monospace) !important;
+  font-size: 12px !important;
+  display: inline-block !important;
+}
+:root[data-theme="dark"] .monaco-editor .suggest-widget .monaco-list-row .monaco-icon-label .label-name,
+.monaco-editor.vs-dark .suggest-widget .monaco-list-row .monaco-icon-label .label-name {
+  color: #e4e4e7 !important;
+}
+.monaco-editor .suggest-widget .monaco-list-row.focused .monaco-icon-label .label-name {
+  color: #ffffff !important;
+}
+.monaco-editor .suggest-widget .monaco-list-row .monaco-icon-label .label-description {
+  color: #71717a !important;
+  font-size: 11px !important;
+  margin-left: 10px !important;
+  display: inline-block !important;
+}
+.monaco-editor .suggest-widget .monaco-list-row.focused .monaco-icon-label .label-description {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+/* ============================================================
    Result cell hover preview (truncated/overflowed cells)
    A custom floating popover — NOT the native `title` (which is
    slow to appear, unstyleable, and truncates long values). Shows
