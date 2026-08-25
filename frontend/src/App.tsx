@@ -2324,8 +2324,20 @@ export function App() {
     if (!t?.connId) return null;
     setAiBusy(true);
     try {
-      const out = await api.completeSql(t.connId, t.db, prefix);
+      // Hard 30s cap so a wedged LLM connection can't pin the ✨ button in
+      // "…" forever.
+      const out = await Promise.race([
+        api.completeSql(t.connId, t.db, prefix),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error("AI 请求超时（30 秒）")), 30_000)
+        ),
+      ]);
       setAiErr((prev) => (prev === null ? prev : null));
+      if (!out.trim()) {
+        // Distinguish "model has nothing" from "nothing happened".
+        setAiErr("模型返回了空建议（换个注释写法或直接输入 SQL 试试）");
+        return null;
+      }
       return out;
     } catch (e) {
       const msg = String(e).replace(/^Error:\s*/, "").slice(0, 160);
