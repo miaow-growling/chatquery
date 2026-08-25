@@ -982,6 +982,33 @@ pub async fn list_tables(cfg: &ConnectionConfig, database: &str) -> Result<Vec<T
 /// editor's lazy autocomplete and the tree's folder filter — it never returns
 /// the full 8000-table set, so the UI stays responsive on large schemas
 /// (the old `list_tables` pulled every table, which froze the tree at scale).
+/// Classic Levenshtein edit distance — powers the fuzzy table-name search
+/// (`~xxx~` mode). One/two-char typos (k_tsk → k_task) survive this.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            cur[j + 1] = if ca == cb {
+                prev[j]
+            } else {
+                1 + prev[j].min(prev[j + 1]).min(cur[j])
+            };
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
 pub async fn search_tables(
     cfg: &ConnectionConfig,
     database: &str,
@@ -990,6 +1017,45 @@ pub async fn search_tables(
 ) -> Result<Vec<TableMeta>> {
     with_stale_retry("mysql.search_tables", || async {
         let pool = connect_pool_db(cfg, database).await?;
+
+        // FUZZY mode: `~k_tsk~` — edit-distance (≤2) match against every
+        // table, sorted by distance. Catches typos the prefix/substring
+        // passes can't (k_tsk → k_task). Pulls the full name list (a few
+        // thousand rows is fine — INFORMATION_SCHEMA scan + in-Rust DP).
+        if let Some(like) = like {
+            if like.starts_with('~') && like.ends_with('~') && like.len() > 2 {
+                let needle = like.trim_matches('~');
+                let rows = sqlx::query(
+                    "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE \
+                     FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ?",
+                )
+                .bind(database)
+                .fetch_all(&pool)
+                .await
+                .map_err(AppError::Sqlx)?;
+                let mut scored: Vec<(usize, TableMeta)> = Vec::new();
+                for row in rows {
+                    let name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
+                    // Length gate: a table 3+ chars longer/shorter can't be
+                    // within 2 edits — skip the DP for it.
+                    if name.len().abs_diff(needle.len()) > 3 {
+                        continue;
+                    }
+                    let d = levenshtein(&name, needle);
+                    if d <= 2 {
+                        let ttype: String = row.try_get("TABLE_TYPE").map_err(AppError::Sqlx)?;
+                        scored.push((d, TableMeta {
+                            name,
+                            is_view: ttype.eq_ignore_ascii_case("VIEW"),
+                        }));
+                    }
+                }
+                scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
+                scored.truncate(limit);
+                return Ok(scored.into_iter().map(|(_, t)| t).collect());
+            }
+        }
+
         let mut sql = String::from(
             "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE \
              FROM INFORMATION_SCHEMA.TABLES \

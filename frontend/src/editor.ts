@@ -556,15 +556,17 @@ function ensureCompletionProvider() {
         let tables: TableMeta[] = [];
         if (typed) {
           try {
-            // Prefix pass (`k_t` → k_task…) + substring pass (`*k*` → any
-            // table containing k, e.g. k_task when only `k` typed), merged
-            // and deduped, capped at 20.
-            const [pre, sub] = await Promise.all([
+            // Three live passes, merged & deduped, capped at 20:
+            //   prefix  (k_t  → k_task…)          — exact start
+            //   substring (*k* → any containing k) — partial memory
+            //   fuzzy   (~k_tsk~ → k_task)         — typo tolerance
+            const [pre, sub, fuzzy] = await Promise.all([
               api.searchTables(connId, db, typed, 20),
               api.searchTables(connId, db, `*${typed}*`, 20),
+              api.searchTables(connId, db, `~${typed}~`, 20),
             ]);
             const seen = new Set<string>();
-            for (const t of [...pre, ...sub]) {
+            for (const t of [...pre, ...sub, ...fuzzy]) {
               if (seen.has(t.name)) continue;
               seen.add(t.name);
               tables.push(t);
