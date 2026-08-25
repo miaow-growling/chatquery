@@ -297,34 +297,6 @@ fn vendor_profiles_path() -> std::path::PathBuf {
 
 // =============================================================================
 // AI-completion model preference — INDEPENDENT from the chat model. Points
-// at a vendor profile + one of its models; the key/base_url/protocol are
-// read from the profile at call time so re-keying a vendor applies here too.
-// Absent file = follow the chat model (legacy behavior).
-// =============================================================================
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AiCompleteConfig {
-    pub vendor_id: String,
-    pub model: String,
-}
-
-pub fn load_ai_complete() -> Option<AiCompleteConfig> {
-    std::fs::read_to_string(crypto::config_dir().join("ai_complete.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-}
-
-pub fn clear_ai_complete() {
-    let _ = std::fs::remove_file(crypto::config_dir().join("ai_complete.json"));
-}
-
-pub fn save_ai_complete(cfg: &AiCompleteConfig) -> Result<(), String> {
-    let path = crypto::config_dir().join("ai_complete.json");
-    let text =
-        serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text).map_err(|e| e.to_string())
-}
-
 /// Load persisted vendor profiles, decrypting api_key per entry. Returns
 /// empty list when file missing or malformed (forward-compat on first run).
 pub fn load_vendor_profiles() -> Vec<VendorProfile> {

@@ -91,21 +91,6 @@ export const api = {
     invoke<WriteRisk[]>("guard_write_sql", { query }),
   getSchema: (connId: string, db?: string | null) =>
     invoke<Schema>("get_schema", { connId, db: db ?? null }),
-  // Inline AI completion (Copilot-style): ask the LLM for the SQL suffix that
-  // completes `prefix`. Returns "" when disabled / no suggestion.
-  completeSql: (connId: string, db: string | null, prefix: string) =>
-    invoke<string>("complete_sql", { connId, db: db ?? null, prefix }),
-  // Independent model preference for AI completion (null = follow chat model).
-  getAiCompleteConfig: () =>
-    invoke<{ vendorId: string; model: string } | null>("get_ai_complete_config"),
-  setAiCompleteConfig: (vendorId: string, model: string) =>
-    invoke<{ vendorId: string; model: string } | null>("set_ai_complete_config", {
-      vendorId,
-      model,
-    }),
-  // Tail of the AI-completion log (model / latency / input / output / error).
-  getAiCompleteLog: (limit?: number) =>
-    invoke<string>("get_ai_complete_log", { limit: limit ?? 100 }),
   // Fetch a vendor's model catalog from its /models endpoint (settings →
   // 模型列表 → 从远程拉取). Empty apiKey falls back to the saved profile key.
   listRemoteModels: (

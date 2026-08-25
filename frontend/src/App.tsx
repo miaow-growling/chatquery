@@ -969,13 +969,6 @@ export function App() {
     return v === "light" ? "light" : "dark";
   });
 
-  // --- Inline AI completion (Tab-accept ghost text) ----------------------
-  // User preference, default OFF (Phase 21): avoids surprise LLM latency/cost.
-  // The backend enforces that a configured model is required.
-  const [aiCompleteOn, setAiCompleteOn] = useState<boolean>(
-    () => localStorage.getItem("cq_ai_complete") === "1"
-  );
-
   // --- Per-call query timeout (seconds) ----------------------------------
   // User preference mirrored from `getQueryTimeoutSecs()` in `api.ts`. The
   // setter also writes to localStorage; `api.executeQuery` always reads the
@@ -2266,101 +2259,6 @@ export function App() {
   useEffect(() => {
     if (active?.connId) loadSchemaRef.current(active.connId, active.db);
   }, [active?.connId, active?.db]);
-
-  // Last AI-completion error, surfaced on the ✨ button (tooltip + warn
-  // color) so a failing LLM (quota exhausted, bad key…) is visible instead
-  // of the ghost text silently never appearing.
-  const [aiErr, setAiErr] = useState<string | null>(null);
-  // In-flight indicator: the LLM round-trip can take seconds; without this
-  // the user can't tell "thinking" from "broken".
-  const [aiBusy, setAiBusy] = useState(false);
-
-  // Independent model preference for AI completion (null = follow chat).
-  // Selected from the ✨ button's dropdown, persisted via the backend.
-  const [aiCfg, setAiCfg] = useState<{ vendorId: string; model: string } | null>(null);
-  const [aiMenuOpen, setAiMenuOpen] = useState(false);
-  // AI-completion log viewer (model / latency / input / output / error).
-  const [aiLog, setAiLog] = useState<string | null>(null);
-  const [aiLogLoading, setAiLogLoading] = useState(false);
-  const showAiLog = async () => {
-    setAiLogLoading(true);
-    setAiMenuOpen(false);
-    try {
-      setAiLog(await api.getAiCompleteLog(120));
-    } catch (e) {
-      setAiLog(String(e));
-    } finally {
-      setAiLogLoading(false);
-    }
-  };
-  const aiMenuRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    api.getAiCompleteConfig().then(setAiCfg).catch(() => {});
-  }, []);
-  useEffect(() => {
-    if (!aiMenuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t && t.closest(".ai-menu-anchor")) return;
-      setAiMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setAiMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [aiMenuOpen]);
-
-  const pickAiModel = async (vendorId: string, model: string) => {
-    try {
-      const cfg = await api.setAiCompleteConfig(vendorId, model);
-      setAiCfg(cfg);
-      if (vendorId) {
-        const v = vendorProfiles.find((p) => p.id === vendorId);
-        showToast?.(`AI 续写模型已设为 ${v?.name ?? vendorId} · ${model}`);
-      } else {
-        showToast?.("AI 续写改为跟随 Chat 模型");
-      }
-    } catch (e) {
-      showToast?.("设置失败: " + String(e));
-    }
-  };
-
-  // Provider for inline AI completion: asks the LLM for the SQL suffix that
-  // completes `prefix`. Returns null on any failure so the editor shows nothing.
-  // Stable (reads live context via refs) — registered once on the editor.
-  const aiProvider = useCallback(async (prefix: string): Promise<string | null> => {
-    const t = activeRef.current;
-    if (!t?.connId) return null;
-    setAiBusy(true);
-    try {
-      // Hard 30s cap so a wedged LLM connection can't pin the ✨ button in
-      // "…" forever.
-      const out = await Promise.race([
-        api.completeSql(t.connId, t.db, prefix),
-        new Promise<never>((_, rej) =>
-          setTimeout(() => rej(new Error("AI 请求超时（30 秒）")), 30_000)
-        ),
-      ]);
-      setAiErr((prev) => (prev === null ? prev : null));
-      if (!out.trim()) {
-        // Distinguish "model has nothing" from "nothing happened".
-        setAiErr("模型返回了空建议（换个注释写法或直接输入 SQL 试试）");
-        return null;
-      }
-      return out;
-    } catch (e) {
-      const msg = String(e).replace(/^Error:\s*/, "").slice(0, 160);
-      setAiErr((prev) => (prev === msg ? prev : msg));
-      return null;
-    } finally {
-      setAiBusy(false);
-    }
-  }, []);
 
   // Build a status-bar entry from a finished query result + elapsed ms.
   // Errors arrive as a `redis` result with `note` set (errOut), so we detect
@@ -4447,19 +4345,13 @@ export function App() {
         const id = activeTabIdRef.current;
         setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, sql: doc } : t)));
       },
-      () => runQueryRef.current(),
-      aiProvider
+      () => runQueryRef.current()
     );
     editorRef.current = editor;
     const init = tabs.find((t) => t.id === activeTabId);
     if (init) editor.replaceValue(init.sql);
     return () => editor.view.destroy();
   }, []);
-
-  // Push the AI-completion toggle to the editor whenever it flips.
-  useEffect(() => {
-    editorRef.current?.setAiComplete(aiCompleteOn, aiProvider);
-  }, [aiCompleteOn, aiProvider]);
 
   // Streaming chat event listeners.
   useEffect(() => {
@@ -4822,100 +4714,6 @@ export function App() {
               <span className="hint"> (Ctrl/Cmd+Enter 执行)</span>
             </span>
             <div className="pane-actions">
-              <div className="ai-menu-anchor" ref={aiMenuRef}>
-                <button
-                  type="button"
-                  className={
-                    "ai-toggle-btn" +
-                    (aiCompleteOn ? " active" : "") +
-                    (aiErr ? " ai-err" : "")
-                  }
-                  aria-haspopup="menu"
-                  aria-expanded={aiMenuOpen}
-                  onClick={() => setAiMenuOpen((v) => !v)}
-                  title={
-                    aiErr
-                      ? `✨ AI 续写异常：${aiErr}（请检查模型配置/额度）`
-                      : "✨ AI 续写：点击选择模型与开关（模型独立于 Chat）"
-                  }
-                >
-                  ✨ AI 续写 {aiCompleteOn ? (aiBusy ? "…" : "开") : "关"}
-                  {aiCompleteOn && !aiBusy && (aiCfg?.model || llmCfg?.model) ? (
-                    <span className="ai-model-chip">{aiCfg?.model || llmCfg?.model}</span>
-                  ) : null}
-                  {aiErr ? " ⚠" : ""}
-                </button>
-                {aiMenuOpen && (
-                  <ul className="menu-pop ai-model-menu" role="menu">
-                    <li
-                      role="menuitemcheckbox"
-                      aria-checked={aiCompleteOn}
-                      className="menu-item ai-menu-toggle"
-                      onClick={() => {
-                        const next = !aiCompleteOn;
-                        setAiCompleteOn(next);
-                        localStorage.setItem("cq_ai_complete", next ? "1" : "0");
-                      }}
-                    >
-                      <span className={"ai-check " + (aiCompleteOn ? "on" : "off")}>
-                        {aiCompleteOn ? "✓" : ""}
-                      </span>
-                      启用 AI 续写（Tab 采纳）
-                    </li>
-                    <li className="ai-menu-sep" />
-                    <li className="menu-item ai-menu-head">AI 续写模型（独立于 Chat）</li>
-                    <li
-                      role="menuitem"
-                      className={
-                        "menu-item ai-menu-model" + (aiCfg == null ? " active" : "")
-                      }
-                      onClick={() => {
-                        setAiMenuOpen(false);
-                        void pickAiModel("", "");
-                      }}
-                    >
-                      <span className="ai-menu-model-name">跟随 Chat 模型</span>
-                      <span className="ai-menu-model-vendor">
-                        {llmCfg?.model || "未选择"}
-                      </span>
-                    </li>
-                    {vendorProfiles.flatMap((p) =>
-                      p.models.length === 0
-                        ? []
-                        : p.models.map((m) => {
-                            const active = aiCfg?.vendorId === p.id && aiCfg?.model === m.name;
-                            return (
-                              <li
-                                key={"ai:" + p.id + ":" + m.name}
-                                role="menuitem"
-                                className={
-                                  "menu-item ai-menu-model" + (active ? " active" : "")
-                                }
-                                onClick={() => {
-                                  setAiMenuOpen(false);
-                                  void pickAiModel(p.id, m.name);
-                                }}
-                              >
-                                <span className="ai-menu-model-name">{m.name}</span>
-                                <span className="ai-menu-model-vendor">{p.name}</span>
-                              </li>
-                            );
-                          })
-                    )}
-                    {vendorProfiles.every((p) => p.models.length === 0) && (
-                      <li className="menu-item disabled">还没有可选模型 — 去 设置 → 模型 添加</li>
-                    )}
-                    <li className="ai-menu-sep" />
-                    <li
-                      role="menuitem"
-                      className="menu-item"
-                      onClick={() => void showAiLog()}
-                    >
-                      查看 AI 续写日志
-                    </li>
-                  </ul>
-                )}
-              </div>
               <button className="primary" onClick={() => void runQuery()} title="执行查询 (Ctrl/Cmd+Enter)">
                 执行
               </button>
@@ -6939,24 +6737,7 @@ export function App() {
                 <div className="settings-page">
                   <h3>通用</h3>
                   <div className="settings-group">
-                  <label className="cfg-check">
-                    <input
-                      type="checkbox"
-                      checked={aiCompleteOn}
-                      onChange={(e) => {
-                        const v = e.target.checked;
-                        setAiCompleteOn(v);
-                        localStorage.setItem("cq_ai_complete", v ? "1" : "0");
-                      }}
-                    />
-                    <span>
-                      AI 内联补全（Tab 接受灰色建议）
-                      <small>
-                        输入停顿后由 LLM 续写 SQL；需先配置模型。默认关闭，以免产生延迟与费用。
-                      </small>
-                    </span>
-                  </label>
-                  <label className="cfg-input" style={{ marginTop: 16 }}>
+                  <label className="cfg-input">
                     <span>
                       单条查询超时（秒）
                       <small>
@@ -7162,41 +6943,6 @@ export function App() {
             >
               ×
             </button>
-          </div>
-        </div>
-      )}
-
-      {aiLog !== null && (
-        <div className="modal-mask" onClick={() => setAiLog(null)}>
-          <div
-            className="modal ai-log-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="ai-log-head">
-              <h3>AI 续写日志</h3>
-              <button
-                className="icon-btn"
-                onClick={() => setAiLog(null)}
-                title="关闭"
-              >
-                ×
-              </button>
-            </div>
-            <div className="ai-log-body">
-              {aiLogLoading ? (
-                <div className="empty">读取中…</div>
-              ) : (
-                <pre className="ai-log-pre">{aiLog}</pre>
-              )}
-            </div>
-            <div className="ai-log-foot">
-              <span className="dim">
-                每次 AI 续写调用都会记录：模型 · 耗时 · 输入 · 返回/错误
-              </span>
-              <button className="primary" onClick={() => void showAiLog()}>
-                刷新
-              </button>
-            </div>
           </div>
         </div>
       )}

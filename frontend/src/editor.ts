@@ -30,10 +30,6 @@ export interface EditorHandle {
   changeCase(upper: boolean): void;
   indent(): void;
   outdent(): void;
-  setAiComplete(
-    enabled: boolean,
-    provider?: (prefix: string) => Promise<string | null>
-  ): void;
 }
 
 // SQL statement splitting & boundaries
@@ -294,114 +290,6 @@ const prefetchTables = async (connId: string, db: string) => {
 
 // Register Monaco MySQL Completion Item Provider ONCE
 let providerRegistered = false;
-
-// --- Inline AI completion (Copilot-style ghost text) ------------------------
-// Module-level because Monaco providers are registered per-language (global),
-// while our editor instance (and its aiProvider closure) may be recreated.
-let aiEnabled = false;
-let aiProviderFn: ((prefix: string) => Promise<string | null>) | undefined;
-let aiInlineRegistered = false;
-/// Set by createEditor — the provider needs to close the suggest widget
-/// when an AI suggestion arrives, or the widget suppresses the ghost.
-let activeEditor: monaco.editor.IStandaloneCodeEditor | null = null;
-
-/// Trim overlapping prefix from LLM response. Many models repeat the last few
-/// tokens (e.g. prompt ends with "SELECT ", model returns "SELECT * FROM t").
-function trimOverlap(prefix: string, suggestion: string): string {
-  let s = suggestion.trimStart();
-  const cleanPrefix = prefix.trimEnd();
-  for (let len = Math.min(cleanPrefix.length, s.length); len > 0; len--) {
-    if (cleanPrefix.endsWith(s.slice(0, len))) {
-      s = s.slice(len);
-      break;
-    }
-  }
-  return s;
-}
-
-function ensureAiInlineProvider() {
-  if (aiInlineRegistered) return;
-  aiInlineRegistered = true;
-
-  monaco.languages.registerInlineCompletionsProvider("sql", {
-    async provideInlineCompletions(model, position, _context, token) {
-      if (!aiEnabled || !aiProviderFn) return { items: [] };
-      const offset = model.getOffsetAt(position);
-      const prefix = model.getValue().slice(0, offset);
-      if (!prefix.trim()) return { items: [] };
-
-      // Debounce: wait for a brief typing pause before invoking the LLM.
-      // Monaco invokes on every keystroke; wait for a typing pause before
-      // spending an LLM call. 600ms — long enough to skip fast typing
-      // bursts (each would otherwise cancel the previous request on slow
-      // models), short enough to feel responsive.
-      await new Promise((r) => setTimeout(r, 600));
-      if (token.isCancellationRequested) return { items: [] };
-
-      try {
-        let suggestion = await aiProviderFn!(prefix);
-        if (token.isCancellationRequested || !suggestion || !suggestion.trim()) {
-          return { items: [] };
-        }
-
-        suggestion = trimOverlap(prefix, suggestion);
-        if (!suggestion) return { items: [] };
-
-        // Monaco suppresses a first-time ghost while the suggest widget has
-        // a selected item (the schema/keyword popup opens on nearly every
-        // keystroke). Close it so the AI ghost can render at all; later
-        // keystrokes reopen the popup and the ghost stays visible via
-        // inlineSuggest.experimental.showOnSuggestConflict:"always".
-        activeEditor?.trigger("ai", "hideSuggestWidget", {});
-
-        // Copilot-style replacement range: when the cursor is mid-word
-        // (`ins|`), replace from the word START so accepting the suggestion
-        // yields `insert into …` instead of `insinsert into …`. The ghost
-        // preview only shows the part after the cursor.
-        const word = model.getWordUntilPosition(position);
-        // The model may restart from the beginning of the current word
-        // (`ins` typed, LLM returns `insert into …`): strip that leading
-        // word overlap so insertion yields `insert into …`, not `insinsert…`.
-        {
-          const wl = (word.word || "").toLowerCase();
-          const sl = suggestion.toLowerCase();
-          if (wl && sl.startsWith(wl)) {
-            suggestion = suggestion.slice(wl.length);
-          }
-        }
-        const replaceRange: monaco.IRange =
-          word.word && word.word.length > 0
-            ? {
-                startLineNumber: position.lineNumber,
-                startColumn: word.startColumn,
-                endLineNumber: position.lineNumber,
-                endColumn: position.column,
-              }
-            : {
-                startLineNumber: position.lineNumber,
-                startColumn: position.column,
-                endLineNumber: position.lineNumber,
-                endColumn: position.column,
-              };
-
-        return {
-          items: [
-            {
-              // Full text from word start; Monaco displays only the suffix
-              // beyond the cursor as ghost and replaces the word on accept.
-              insertText: (word.word || "") + suggestion,
-              range: replaceRange,
-            },
-          ],
-        };
-      } catch {
-        // network/LLM error — silently skip this suggestion
-        return { items: [] };
-      }
-    },
-    disposeInlineCompletions() {},
-  });
-}
 
 function ensureCompletionProvider() {
   if (providerRegistered) return;
@@ -708,16 +596,10 @@ function ensureThemes() {
 export function createEditor(
   parent: HTMLElement,
   _onChange: (value: string) => void,
-  onRun: () => void,
-  _aiProvider?: (prefix: string) => Promise<string | null>
+  onRun: () => void
 ): EditorHandle {
   ensureCompletionProvider();
   ensureThemes();
-  ensureAiInlineProvider();
-  if (_aiProvider) {
-    aiProviderFn = _aiProvider;
-    aiEnabled = true;
-  }
 
   const isDark = document.documentElement.dataset.theme !== "light";
 
@@ -739,21 +621,6 @@ export function createEditor(
     tabSize: 2,
     wordWrap: "on",
     fixedOverflowWidgets: true,
-    // Inline AI ghost text (Tab accepts) — provider in ensureAiInlineProvider.
-    // showOnSuggestConflict: "always" — our SQL schema popup opens on nearly
-    // every keystroke and Monaco hides inline suggestions while it is open,
-    // so with the default "never" the ghost text could never appear. The
-    // 0.56 typings don't expose `experimental` yet; the runtime honors it.
-    inlineSuggest: {
-      enabled: true,
-      experimental: { showOnSuggestConflict: "always" },
-    } as monaco.editor.IInlineSuggestOptions,
-    // Monaco's default for quickSuggestions.other is 'offWhenInlineCompletions':
-    // merely enabling inlineSuggest (above) silently disabled the schema/keyword
-    // popup while typing — both completions vanished. 'on' restores the popup;
-    // the AI ghost coexists via showOnSuggestConflict above. (Monaco's inline
-    // auto-trigger only runs while a suggest item is selected, so the popup is
-    // also what makes the ghost appear automatically.)
     quickSuggestions: { other: "on", comments: false, strings: false },
     // Use the app's own Navicat-style context menu (App.tsx buildEditorMenu:
     // 运行/格式化/注释/大小写/AI 引用…). Monaco's built-in menu would open
@@ -765,85 +632,13 @@ export function createEditor(
   editor.onDidChangeModelContent(() => {
     _onChange(editor.getValue());
   });
-  // "写注释回车生成 SQL": Enter/Paste don't fire onDidType, so the inline
-  // model won't refetch on its own. When a newline lands and AI completion
-  // is on, explicitly trigger the ghost (the provider debounces the LLM call).
-  editor.onDidChangeModelContent((e) => {
-    if (!aiEnabled || !aiProviderFn) return;
-    const last = e.changes[e.changes.length - 1];
-    if (!last || !last.text.includes("\n")) return;
-    setTimeout(() => {
-      if (!aiEnabled) return;
-      editor.trigger("ai", "editor.action.inlineSuggest.trigger", {});
-    }, 120);
-  });
-  // Comment-to-SQL: while typing a `-- comment` (cursor at line end) or on
-  // the blank line below it, ask the AI for the SQL and INSERT it directly
-  // below the comment (Cmd/Ctrl+Z undoes). Monaco's inline ghost trigger is
-  // unreliable on comment tokens, and a slow model makes a ghost feel
-  // broken — a direct insert is deterministic and visible.
-  let commentInsertBusy = false;
-  let commentInsertTimer: ReturnType<typeof setTimeout> | null = null;
-  const isCommentIntent = (): boolean => {
-    if (!aiEnabled || !aiProviderFn) return false;
-    const model = editor.getModel();
-    const pos = editor.getPosition();
-    if (!model || !pos) return false;
-    const line = model.getLineContent(pos.lineNumber);
-    const textBefore = line.slice(0, pos.column - 1).trimEnd();
-    if (/^--\s*\S/.test(textBefore)) return true;
-    // On an empty line whose PREVIOUS line is a comment.
-    if (textBefore === "" && pos.lineNumber > 1) {
-      const prev = model.getLineContent(pos.lineNumber - 1).trim();
-      return /^--\s*\S/.test(prev);
-    }
-    return false;
-  };
-  editor.onDidChangeModelContent(() => {
-    if (commentInsertBusy) return;
-    if (!isCommentIntent()) return;
-    if (commentInsertTimer) clearTimeout(commentInsertTimer);
-    commentInsertTimer = setTimeout(async () => {
-      if (commentInsertBusy || !isCommentIntent()) return;
-      const model = editor.getModel();
-      const pos = editor.getPosition();
-      if (!model || !pos) return;
-      const prefix = model.getValue().slice(0, model.getOffsetAt(pos));
-      commentInsertBusy = true;
-      try {
-        const suggestion = await aiProviderFn!(prefix);
-        if (!suggestion || !suggestion.trim()) return;
-        // Insert below the comment (at end of the current line).
-        const lineEnd = model.getLineMaxColumn(pos.lineNumber);
-        editor.executeEdits("ai-comment-sql", [
-          {
-            range: {
-              startLineNumber: pos.lineNumber,
-              endLineNumber: pos.lineNumber,
-              startColumn: lineEnd,
-              endColumn: lineEnd,
-            },
-            text: "\n" + suggestion.trim() + "\n",
-          },
-        ]);
-        _onChange(editor.getValue());
-      } catch {
-        // silently skip — the ✨ button already surfaces errors
-      } finally {
-        commentInsertBusy = false;
-      }
-    }, 500);
-  });
+
   // While the suggest popup is open, Monaco filters the ORIGINAL provider
   // result locally on every keystroke — a fuzzy hit like k_task (which
   // doesn't contain the typed k_tsk) is dropped before our fuzzy query can
   // run again. Re-trigger suggest on each change: Monaco re-invokes the
   // provider in place (no flicker) and the live prefix/substring/fuzzy
   // search keeps matching the CURRENT input.
-  //
-  // Scope this to TABLE positions only: re-triggering elsewhere (SELECT,
-  // WHERE, …) also resets the inline AI ghost on every keystroke, which
-  // made the AI continuation feel broken ("打一个字建议就没了").
   let refreshSuggestTimer: ReturnType<typeof setTimeout> | null = null;
   editor.onDidChangeModelContent(() => {
     const model = editor.getModel();
@@ -856,29 +651,8 @@ export function createEditor(
     if (!widgetVisible) return;
     if (refreshSuggestTimer) clearTimeout(refreshSuggestTimer);
     refreshSuggestTimer = setTimeout(() => {
-      editor.trigger("ai", "editor.action.triggerSuggest", {});
+      editor.trigger("keyword", "editor.action.triggerSuggest", {});
     }, 60);
-  });
-  // Expose this instance to the module-level AI inline provider (it must be
-  // able to close the suggest widget when a suggestion arrives).
-  activeEditor = editor;
-
-  // macOS IMK error bubbles (IMKCFRunLoopWakeUpReliable) steal WebView focus,
-  // and Monaco cancels the in-flight AI request on blur (its controller calls
-  // model.stop('automatic') on editor blur). Refocusing should re-trigger the
-  // ghost so the AI suggestion isn't silently lost after dismissing the bubble.
-  editor.onDidFocusEditorText(() => {
-    if (!aiEnabled || !aiProviderFn) return;
-    const model = editor.getModel();
-    if (!model) return;
-    const pos = editor.getPosition();
-    if (!pos) return;
-    const prefix = model.getValue().slice(0, model.getOffsetAt(pos));
-    if (!prefix.trim()) return;
-    setTimeout(() => {
-      if (!aiEnabled) return;
-      editor.trigger("ai", "editor.action.inlineSuggest.trigger", {});
-    }, 150);
   });
 
   // Shortcut: Cmd/Ctrl + Enter => onRun()
@@ -950,13 +724,6 @@ export function createEditor(
     },
     setTheme(dark: boolean) {
       monaco.editor.setTheme(dark ? "cq-dark" : "cq-light");
-    },
-    setAiComplete(
-      enabled: boolean,
-      provider?: (prefix: string) => Promise<string | null>
-    ): void {
-      aiEnabled = enabled;
-      if (provider) aiProviderFn = provider;
     },
     formatSql() {
       const model = editor.getModel();
