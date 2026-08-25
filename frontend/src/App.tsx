@@ -2228,6 +2228,11 @@ export function App() {
     if (active?.connId) loadSchemaRef.current(active.connId, active.db);
   }, [active?.connId, active?.db]);
 
+  // Last AI-completion error, surfaced on the ✨ button (tooltip + warn
+  // color) so a failing LLM (quota exhausted, bad key…) is visible instead
+  // of the ghost text silently never appearing.
+  const [aiErr, setAiErr] = useState<string | null>(null);
+
   // Provider for inline AI completion: asks the LLM for the SQL suffix that
   // completes `prefix`. Returns null on any failure so the editor shows nothing.
   // Stable (reads live context via refs) — registered once on the editor.
@@ -2235,8 +2240,12 @@ export function App() {
     const t = activeRef.current;
     if (!t?.connId) return null;
     try {
-      return await api.completeSql(t.connId, t.db, prefix);
-    } catch {
+      const out = await api.completeSql(t.connId, t.db, prefix);
+      setAiErr((prev) => (prev === null ? prev : null));
+      return out;
+    } catch (e) {
+      const msg = String(e).replace(/^Error:\s*/, "").slice(0, 160);
+      setAiErr((prev) => (prev === msg ? prev : msg));
       return null;
     }
   }, []);
@@ -4703,19 +4712,26 @@ export function App() {
             <div className="pane-actions">
               <button
                 type="button"
-                className={"ai-toggle-btn" + (aiCompleteOn ? " active" : "")}
+                className={
+                  "ai-toggle-btn" +
+                  (aiCompleteOn ? " active" : "") +
+                  (aiErr ? " ai-err" : "")
+                }
                 onClick={() => {
                   const next = !aiCompleteOn;
                   setAiCompleteOn(next);
                   localStorage.setItem("cq_ai_complete", next ? "1" : "0");
                 }}
                 title={
-                  aiCompleteOn
+                  aiErr
+                    ? `✨ AI 续写异常：${aiErr}（请检查模型配置/额度）`
+                    : aiCompleteOn
                     ? "✨ AI 补全已开启（输入停顿后灰色提示，Tab 采纳，Alt+\\ 手动触发）"
                     : "✨ AI 补全已关闭（点击开启，输入 SQL 停顿后由 LLM 续写）"
                 }
               >
                 ✨ AI 续写 {aiCompleteOn ? "开" : "关"}
+                {aiErr ? " ⚠" : ""}
               </button>
               <button className="primary" onClick={() => void runQuery()} title="执行查询 (Ctrl/Cmd+Enter)">
                 执行
