@@ -95,6 +95,14 @@ export const api = {
   // completes `prefix`. Returns "" when disabled / no suggestion.
   completeSql: (connId: string, db: string | null, prefix: string) =>
     invoke<string>("complete_sql", { connId, db: db ?? null, prefix }),
+  // Independent model preference for AI completion (null = follow chat model).
+  getAiCompleteConfig: () =>
+    invoke<{ vendorId: string; model: string } | null>("get_ai_complete_config"),
+  setAiCompleteConfig: (vendorId: string, model: string) =>
+    invoke<{ vendorId: string; model: string } | null>("set_ai_complete_config", {
+      vendorId,
+      model,
+    }),
   // Fetch a vendor's model catalog from its /models endpoint (settings →
   // 模型列表 → 从远程拉取). Empty apiKey falls back to the saved profile key.
   listRemoteModels: (

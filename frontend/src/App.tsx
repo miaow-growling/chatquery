@@ -2272,6 +2272,47 @@ export function App() {
   // of the ghost text silently never appearing.
   const [aiErr, setAiErr] = useState<string | null>(null);
 
+  // Independent model preference for AI completion (null = follow chat).
+  // Selected from the ✨ button's dropdown, persisted via the backend.
+  const [aiCfg, setAiCfg] = useState<{ vendorId: string; model: string } | null>(null);
+  const [aiMenuOpen, setAiMenuOpen] = useState(false);
+  const aiMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    api.getAiCompleteConfig().then(setAiCfg).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!aiMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest(".ai-menu-anchor")) return;
+      setAiMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAiMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [aiMenuOpen]);
+
+  const pickAiModel = async (vendorId: string, model: string) => {
+    try {
+      const cfg = await api.setAiCompleteConfig(vendorId, model);
+      setAiCfg(cfg);
+      if (vendorId) {
+        const v = vendorProfiles.find((p) => p.id === vendorId);
+        showToast?.(`AI 续写模型已设为 ${v?.name ?? vendorId} · ${model}`);
+      } else {
+        showToast?.("AI 续写改为跟随 Chat 模型");
+      }
+    } catch (e) {
+      showToast?.("设置失败: " + String(e));
+    }
+  };
+
   // Provider for inline AI completion: asks the LLM for the SQL suffix that
   // completes `prefix`. Returns null on any failure so the editor shows nothing.
   // Stable (reads live context via refs) — registered once on the editor.
@@ -4749,30 +4790,92 @@ export function App() {
               <span className="hint"> (Ctrl/Cmd+Enter 执行)</span>
             </span>
             <div className="pane-actions">
-              <button
-                type="button"
-                className={
-                  "ai-toggle-btn" +
-                  (aiCompleteOn ? " active" : "") +
-                  (aiErr ? " ai-err" : "")
-                }
-                onClick={() => {
-                  const next = !aiCompleteOn;
-                  setAiCompleteOn(next);
-                  localStorage.setItem("cq_ai_complete", next ? "1" : "0");
-                }}
-                title={
-                  aiErr
-                    ? `✨ AI 续写异常：${aiErr}（请检查模型配置/额度）`
-                    : `✨ AI 续写跟随 Chat 输入框当前选中的模型（现在：${llmCfg?.model || "未选择"}）。输入停顿后灰色提示，Tab 采纳，Alt+\\ 手动触发`
-                }
-              >
-                ✨ AI 续写 {aiCompleteOn ? "开" : "关"}
-                {aiCompleteOn && llmCfg?.model ? (
-                  <span className="ai-model-chip">{llmCfg.model}</span>
-                ) : null}
-                {aiErr ? " ⚠" : ""}
-              </button>
+              <div className="ai-menu-anchor" ref={aiMenuRef}>
+                <button
+                  type="button"
+                  className={
+                    "ai-toggle-btn" +
+                    (aiCompleteOn ? " active" : "") +
+                    (aiErr ? " ai-err" : "")
+                  }
+                  aria-haspopup="menu"
+                  aria-expanded={aiMenuOpen}
+                  onClick={() => setAiMenuOpen((v) => !v)}
+                  title={
+                    aiErr
+                      ? `✨ AI 续写异常：${aiErr}（请检查模型配置/额度）`
+                      : "✨ AI 续写：点击选择模型与开关（模型独立于 Chat）"
+                  }
+                >
+                  ✨ AI 续写 {aiCompleteOn ? "开" : "关"}
+                  {aiCompleteOn && (aiCfg?.model || llmCfg?.model) ? (
+                    <span className="ai-model-chip">{aiCfg?.model || llmCfg?.model}</span>
+                  ) : null}
+                  {aiErr ? " ⚠" : ""}
+                </button>
+                {aiMenuOpen && (
+                  <ul className="menu-pop ai-model-menu" role="menu">
+                    <li
+                      role="menuitemcheckbox"
+                      aria-checked={aiCompleteOn}
+                      className="menu-item ai-menu-toggle"
+                      onClick={() => {
+                        const next = !aiCompleteOn;
+                        setAiCompleteOn(next);
+                        localStorage.setItem("cq_ai_complete", next ? "1" : "0");
+                      }}
+                    >
+                      <span className={"ai-check " + (aiCompleteOn ? "on" : "off")}>
+                        {aiCompleteOn ? "✓" : ""}
+                      </span>
+                      启用 AI 续写（Tab 采纳）
+                    </li>
+                    <li className="ai-menu-sep" />
+                    <li className="menu-item ai-menu-head">AI 续写模型（独立于 Chat）</li>
+                    <li
+                      role="menuitem"
+                      className={
+                        "menu-item ai-menu-model" + (aiCfg == null ? " active" : "")
+                      }
+                      onClick={() => {
+                        setAiMenuOpen(false);
+                        void pickAiModel("", "");
+                      }}
+                    >
+                      <span className="ai-menu-model-name">跟随 Chat 模型</span>
+                      <span className="ai-menu-model-vendor">
+                        {llmCfg?.model || "未选择"}
+                      </span>
+                    </li>
+                    {vendorProfiles.flatMap((p) =>
+                      p.models.length === 0
+                        ? []
+                        : p.models.map((m) => {
+                            const active = aiCfg?.vendorId === p.id && aiCfg?.model === m.name;
+                            return (
+                              <li
+                                key={"ai:" + p.id + ":" + m.name}
+                                role="menuitem"
+                                className={
+                                  "menu-item ai-menu-model" + (active ? " active" : "")
+                                }
+                                onClick={() => {
+                                  setAiMenuOpen(false);
+                                  void pickAiModel(p.id, m.name);
+                                }}
+                              >
+                                <span className="ai-menu-model-name">{m.name}</span>
+                                <span className="ai-menu-model-vendor">{p.name}</span>
+                              </li>
+                            );
+                          })
+                    )}
+                    {vendorProfiles.every((p) => p.models.length === 0) && (
+                      <li className="menu-item disabled">还没有可选模型 — 去 设置 → 模型 添加</li>
+                    )}
+                  </ul>
+                )}
+              </div>
               <button className="primary" onClick={() => void runQuery()} title="执行查询 (Ctrl/Cmd+Enter)">
                 执行
               </button>

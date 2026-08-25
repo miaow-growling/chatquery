@@ -846,7 +846,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   color: #fb923c;
   border-color: rgba(251, 146, 60, 0.45);
 }
-/* Current model chip inside the ✨ button (follows the chat composer pick). */
+/* Current model chip inside the ✨ button (independent AI-completion model). */
 .ai-model-chip {
   margin-left: 4px;
   padding: 0 5px;
@@ -858,6 +858,76 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 :root[data-theme="dark"] .ai-model-chip {
   background: rgba(168, 85, 247, 0.2);
+}
+
+/* ✨ button dropdown: on/off toggle + model picker (independent of chat). */
+.ai-menu-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.ai-model-menu {
+  min-width: 260px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.ai-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+.ai-menu-head {
+  font-size: var(--fs-2xs) !important;
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-tertiary) !important;
+  cursor: default !important;
+  padding: 4px 10px 2px !important;
+}
+.ai-menu-head:hover { background: transparent !important; color: var(--text-tertiary) !important; }
+.ai-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  font-size: 10px;
+  color: #fff;
+  vertical-align: -2px;
+}
+.ai-check.on {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+.ai-check.off { background: transparent; }
+.ai-menu-model {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ai-menu-model-name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-menu-model-vendor {
+  flex-shrink: 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-tertiary);
+}
+.ai-menu-model.active {
+  color: var(--brand);
+  font-weight: var(--fw-semibold);
+}
+.ai-menu-model.active::before {
+  content: "✓ ";
+  font-weight: var(--fw-bold);
 }
 
 .hint {

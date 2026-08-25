@@ -909,7 +909,32 @@ pub async fn complete_sql(
     db: Option<String>,
     prefix: String,
 ) -> Result<String, String> {
-    let llm = state.llm.lock().unwrap().clone();
+    // The AI-completion model is independent from the chat model: when the
+    // user picked one (settings chip in the ✨ menu), build the runtime
+    // config from that vendor profile; otherwise fall back to the chat LLM.
+    let llm = match chatquery::config::load_ai_complete() {
+        Some(ai) => {
+            let profile = chatquery::config::load_vendor_profiles()
+                .into_iter()
+                .find(|p| p.id == ai.vendor_id);
+            match profile {
+                Some(p) => chatquery::config::LlmConfig {
+                    provider: if p.api_format == "anthropic" {
+                        chatquery::config::LlmProvider::Anthropic
+                    } else {
+                        chatquery::config::LlmProvider::OpenAi
+                    },
+                    vendor: p.id.clone(),
+                    base_url: p.base_url.clone(),
+                    api_key: p.api_key.clone(),
+                    model: ai.model.clone(),
+                },
+                // Stale reference (vendor deleted) — fall through to chat LLM.
+                None => state.llm.lock().unwrap().clone(),
+            }
+        }
+        None => state.llm.lock().unwrap().clone(),
+    };
     if !llm.enabled() {
         return Err("LLM 未配置".to_string());
     }
@@ -946,9 +971,40 @@ pub async fn complete_sql(
     Ok(out.trim().to_string())
 }
 
+/// AI-completion model preference (independent from chat). `None` = follow
+/// the chat model.
+#[tauri::command]
+pub fn get_ai_complete_config() -> Option<chatquery::config::AiCompleteConfig> {
+    chatquery::config::load_ai_complete()
+}
+
+/// Set (or clear, with an empty vendor_id) the AI-completion model. The
+/// referenced vendor must exist and list the model, so the ✨ menu can't
+/// persist a dangling selection.
+#[tauri::command]
+pub fn set_ai_complete_config(
+    vendor_id: String,
+    model: String,
+) -> Result<Option<chatquery::config::AiCompleteConfig>, String> {
+    if vendor_id.is_empty() {
+        chatquery::config::clear_ai_complete();
+        return Ok(None);
+    }
+    let p = chatquery::config::load_vendor_profiles()
+        .into_iter()
+        .find(|p| p.id == vendor_id)
+        .ok_or_else(|| "供应商不存在".to_string())?;
+    if !model.is_empty() && !p.models.iter().any(|m| m.name == model) {
+        return Err(format!("模型「{}」不在该供应商列表中", model));
+    }
+    let cfg = chatquery::config::AiCompleteConfig { vendor_id, model };
+    chatquery::config::save_ai_complete(&cfg)?;
+    Ok(Some(cfg))
+}
+
 /// Fetch a vendor's remote model catalog (`GET {base}/models`). The draft
 /// api_key wins; when empty (the settings form hides the saved key), the
-/// stored profile's key for `vendor_id` is used, so "从远程拉取" works
+/// stored profile's key for `vendor_id` is used, so the combobox works
 /// without re-typing the key.
 #[tauri::command]
 pub async fn list_remote_models(
