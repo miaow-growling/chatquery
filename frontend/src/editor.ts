@@ -301,6 +301,9 @@ let providerRegistered = false;
 let aiEnabled = false;
 let aiProviderFn: ((prefix: string) => Promise<string | null>) | undefined;
 let aiInlineRegistered = false;
+/// Set by createEditor — the provider needs to close the suggest widget
+/// when an AI suggestion arrives, or the widget suppresses the ghost.
+let activeEditor: monaco.editor.IStandaloneCodeEditor | null = null;
 
 /// Trim overlapping prefix from LLM response. Many models repeat the last few
 /// tokens (e.g. prompt ends with "SELECT ", model returns "SELECT * FROM t").
@@ -339,6 +342,13 @@ function ensureAiInlineProvider() {
 
         suggestion = trimOverlap(prefix, suggestion);
         if (!suggestion) return { items: [] };
+
+        // Monaco suppresses a first-time ghost while the suggest widget has
+        // a selected item (the schema/keyword popup opens on nearly every
+        // keystroke). Close it so the AI ghost can render at all; later
+        // keystrokes reopen the popup and the ghost stays visible via
+        // inlineSuggest.experimental.showOnSuggestConflict:"always".
+        activeEditor?.trigger("ai", "hideSuggestWidget", {});
 
         const range: monaco.IRange = {
           startLineNumber: position.lineNumber,
@@ -656,7 +666,21 @@ export function createEditor(
     wordWrap: "on",
     fixedOverflowWidgets: true,
     // Inline AI ghost text (Tab accepts) — provider in ensureAiInlineProvider.
-    inlineSuggest: { enabled: true },
+    // showOnSuggestConflict: "always" — our SQL schema popup opens on nearly
+    // every keystroke and Monaco hides inline suggestions while it is open,
+    // so with the default "never" the ghost text could never appear. The
+    // 0.56 typings don't expose `experimental` yet; the runtime honors it.
+    inlineSuggest: {
+      enabled: true,
+      experimental: { showOnSuggestConflict: "always" },
+    } as monaco.editor.IInlineSuggestOptions,
+    // Monaco's default for quickSuggestions.other is 'offWhenInlineCompletions':
+    // merely enabling inlineSuggest (above) silently disabled the schema/keyword
+    // popup while typing — both completions vanished. 'on' restores the popup;
+    // the AI ghost coexists via showOnSuggestConflict above. (Monaco's inline
+    // auto-trigger only runs while a suggest item is selected, so the popup is
+    // also what makes the ghost appear automatically.)
+    quickSuggestions: { other: "on", comments: false, strings: false },
     // Use the app's own Navicat-style context menu (App.tsx buildEditorMenu:
     // 运行/格式化/注释/大小写/AI 引用…). Monaco's built-in menu would open
     // on top of it with only cut/copy/paste entries.
@@ -667,6 +691,9 @@ export function createEditor(
   editor.onDidChangeModelContent(() => {
     _onChange(editor.getValue());
   });
+  // Expose this instance to the module-level AI inline provider (it must be
+  // able to close the suggest widget when a suggestion arrives).
+  activeEditor = editor;
 
   // Shortcut: Cmd/Ctrl + Enter => onRun()
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
