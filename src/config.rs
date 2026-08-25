@@ -41,12 +41,20 @@ pub struct VendorPreset {
 pub const VENDOR_PRESETS: &[VendorPreset] = &[
     // --- 1. Coding Plan 分组 (订阅制代码计划) ---
     VendorPreset {
-        id: "minimax-coding",
-        label: "MiniMax (Coding Plan)",
+        id: "minimax-coding-intl",
+        label: "MiniMax (Coding Plan / 国际站)",
+        provider: LlmProvider::OpenAi,
+        base_url: "https://api.minimax.chat/v1",
+        category: "coding_plan",
+        note: "MiniMax 国际站 Coding 套餐 (api.minimax.chat)",
+    },
+    VendorPreset {
+        id: "minimax-coding-cn",
+        label: "MiniMax (国内开放平台)",
         provider: LlmProvider::OpenAi,
         base_url: "https://api.minimaxi.chat/v1",
         category: "coding_plan",
-        note: "MiniMax Coding 订阅套餐",
+        note: "MiniMax 国内站 (api.minimaxi.chat)",
     },
     VendorPreset {
         id: "zhipu-coding",
@@ -131,12 +139,20 @@ pub const VENDOR_PRESETS: &[VendorPreset] = &[
         note: "BigModel 开放平台接口",
     },
     VendorPreset {
+        id: "minimax-intl",
+        label: "MiniMax (国际站 API)",
+        provider: LlmProvider::OpenAi,
+        base_url: "https://api.minimax.chat/v1",
+        category: "api",
+        note: "MiniMax 国际站接口 (api.minimax.chat)",
+    },
+    VendorPreset {
         id: "minimax",
-        label: "MiniMax (标准 API)",
+        label: "MiniMax (国内站 API)",
         provider: LlmProvider::OpenAi,
         base_url: "https://api.minimaxi.chat/v1",
         category: "api",
-        note: "MiniMax 开放平台接口",
+        note: "MiniMax 国内站接口 (api.minimaxi.chat)",
     },
     VendorPreset {
         id: "tencent",
