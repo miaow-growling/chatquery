@@ -103,6 +103,9 @@ export const api = {
       vendorId,
       model,
     }),
+  // Tail of the AI-completion log (model / latency / input / output / error).
+  getAiCompleteLog: (limit?: number) =>
+    invoke<string>("get_ai_complete_log", { limit: limit ?? 100 }),
   // Fetch a vendor's model catalog from its /models endpoint (settings →
   // 模型列表 → 从远程拉取). Empty apiKey falls back to the saved profile key.
   listRemoteModels: (

@@ -3808,6 +3808,48 @@ select.field-input:disabled {
   color: var(--text-tertiary);
   text-align: center;
 }
+
+/* AI-completion log viewer (✨ menu → 查看 AI 续写日志) */
+.ai-log-modal {
+  width: min(720px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+.ai-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 8px;
+}
+.ai-log-head h3 { margin: 0; font-size: var(--fs-md); }
+.ai-log-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 16px;
+}
+.ai-log-pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-primary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 10px;
+}
+.ai-log-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 16px 14px;
+}
+.ai-log-foot .dim { font-size: var(--fs-2xs); }
 .composer-model-bare { opacity: 0.6; cursor: not-allowed; }
 
 /* =====================  CHAT COMPOSER (dsh-style toolbar)  ===================== */

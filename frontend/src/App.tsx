@@ -2279,6 +2279,20 @@ export function App() {
   // Selected from the ✨ button's dropdown, persisted via the backend.
   const [aiCfg, setAiCfg] = useState<{ vendorId: string; model: string } | null>(null);
   const [aiMenuOpen, setAiMenuOpen] = useState(false);
+  // AI-completion log viewer (model / latency / input / output / error).
+  const [aiLog, setAiLog] = useState<string | null>(null);
+  const [aiLogLoading, setAiLogLoading] = useState(false);
+  const showAiLog = async () => {
+    setAiLogLoading(true);
+    setAiMenuOpen(false);
+    try {
+      setAiLog(await api.getAiCompleteLog(120));
+    } catch (e) {
+      setAiLog(String(e));
+    } finally {
+      setAiLogLoading(false);
+    }
+  };
   const aiMenuRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     api.getAiCompleteConfig().then(setAiCfg).catch(() => {});
@@ -4891,6 +4905,14 @@ export function App() {
                     {vendorProfiles.every((p) => p.models.length === 0) && (
                       <li className="menu-item disabled">还没有可选模型 — 去 设置 → 模型 添加</li>
                     )}
+                    <li className="ai-menu-sep" />
+                    <li
+                      role="menuitem"
+                      className="menu-item"
+                      onClick={() => void showAiLog()}
+                    >
+                      查看 AI 续写日志
+                    </li>
                   </ul>
                 )}
               </div>
@@ -7140,6 +7162,41 @@ export function App() {
             >
               ×
             </button>
+          </div>
+        </div>
+      )}
+
+      {aiLog !== null && (
+        <div className="modal-mask" onClick={() => setAiLog(null)}>
+          <div
+            className="modal ai-log-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ai-log-head">
+              <h3>AI 续写日志</h3>
+              <button
+                className="icon-btn"
+                onClick={() => setAiLog(null)}
+                title="关闭"
+              >
+                ×
+              </button>
+            </div>
+            <div className="ai-log-body">
+              {aiLogLoading ? (
+                <div className="empty">读取中…</div>
+              ) : (
+                <pre className="ai-log-pre">{aiLog}</pre>
+              )}
+            </div>
+            <div className="ai-log-foot">
+              <span className="dim">
+                每次 AI 续写调用都会记录：模型 · 耗时 · 输入 · 返回/错误
+              </span>
+              <button className="primary" onClick={() => void showAiLog()}>
+                刷新
+              </button>
+            </div>
           </div>
         </div>
       )}

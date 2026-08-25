@@ -16,12 +16,40 @@ use chatquery::model::{
     StoredChatMessage,
 };
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::time::timeout;
 
 use crate::state::AppState;
+
+/// Append a line to the AI-completion log (~/.config/chatquery/ai_complete.log).
+/// Lets users see exactly what the LLM returned (or why it failed) instead
+/// of a silent "AI 续写没反应".
+fn log_ai_complete(line: String) {
+    let dir = chatquery::crypto::config_dir();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("ai_complete.log"))
+    {
+        let _ = writeln!(f, "{}", line);
+    }
+}
+
+/// Read the tail of the AI-completion log (last N lines) for the settings UI.
+#[tauri::command]
+pub fn get_ai_complete_log(limit: Option<usize>) -> String {
+    let n = limit.unwrap_or(100).min(500);
+    let path = chatquery::crypto::config_dir().join("ai_complete.log");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return "(暂无日志)".to_string();
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].join("\n")
+}
 
 /// 单条 ad-hoc 查询的服务端兜底超时（秒）。当 UI 没传 `timeout_secs`
 /// 时用这个值。UI 在设置页可改，传过来的值覆盖这里。慢查询 / 卡死的
@@ -1000,9 +1028,35 @@ pub async fn complete_sql(
         },
         ChatMessage::user(prefix),
     ];
-    let choice = stream_chat(&llm, &messages, &[], &mut |_| {})
-        .await
-        .map_err(|e| e.to_string())?;
+    let t0 = std::time::Instant::now();
+    let result = stream_chat(&llm, &messages, &[], &mut |_| {}).await;
+    let ms = t0.elapsed().as_millis();
+    // Log every call: model, latency, input (truncated), output/error — so
+    // "AI 续写没反应" is diagnosable instead of a black box.
+    let prefix_short: String = prefix.chars().take(120).collect();
+    let line = match &result {
+        Ok(choice) => {
+            let out_short: String = choice.content.chars().take(300).collect();
+            format!(
+                "[{}] model={} {}ms in={:?} -> {:?}",
+                std::process::id(),
+                llm.model,
+                ms,
+                prefix_short,
+                out_short
+            )
+        }
+        Err(e) => format!(
+            "[{}] model={} {}ms in={:?} -> ERR: {}",
+            std::process::id(),
+            llm.model,
+            ms,
+            prefix_short,
+            e
+        ),
+    };
+    log_ai_complete(line);
+    let choice = result.map_err(|e| e.to_string())?;
     let mut out = choice.content;
     if let Some(stripped) = strip_code_fence(&out) {
         out = stripped;

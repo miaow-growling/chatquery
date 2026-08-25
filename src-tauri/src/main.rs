@@ -67,6 +67,7 @@ fn main() {
             list_remote_models,
             get_ai_complete_config,
             set_ai_complete_config,
+            get_ai_complete_log,
             chat_turn,
             cancel_turn,
             resolve_confirm,
