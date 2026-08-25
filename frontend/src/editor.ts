@@ -777,6 +777,25 @@ export function createEditor(
       editor.trigger("ai", "editor.action.inlineSuggest.trigger", {});
     }, 120);
   });
+  // Comment-to-SQL: cursor right after a `-- comment` (no Enter yet) is an
+  // intent position — proactively ask for the AI ghost. Monaco's inline
+  // trigger is unreliable there (comment tokens aren't "typing SQL").
+  let commentTriggerTimer: ReturnType<typeof setTimeout> | null = null;
+  editor.onDidChangeModelContent(() => {
+    if (!aiEnabled || !aiProviderFn) return;
+    const model = editor.getModel();
+    const pos = editor.getPosition();
+    if (!model || !pos) return;
+    const line = model.getLineContent(pos.lineNumber);
+    const textBefore = line.slice(0, pos.column - 1).trimEnd();
+    // Whole line is a comment and the cursor is at its end.
+    if (!/^--\s*\S/.test(textBefore)) return;
+    if (commentTriggerTimer) clearTimeout(commentTriggerTimer);
+    commentTriggerTimer = setTimeout(() => {
+      if (!aiEnabled) return;
+      editor.trigger("ai", "editor.action.inlineSuggest.trigger", {});
+    }, 400);
+  });
   // While the suggest popup is open, Monaco filters the ORIGINAL provider
   // result locally on every keystroke — a fuzzy hit like k_task (which
   // doesn't contain the typed k_tsk) is dropped before our fuzzy query can

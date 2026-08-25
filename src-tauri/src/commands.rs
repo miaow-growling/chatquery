@@ -965,7 +965,12 @@ pub async fn complete_sql(
     // only slows the model down. Skip schema entirely; the model writes the
     // statement straight away. Normal continuation still gets the schema so
     // table/column names complete correctly.
-    let ends_with_comment_line = prefix
+    //
+    // "Ends with a comment" covers BOTH the cursor-on-blank-line-below case
+    // (prefix ends "...\n\n") and the cursor-right-after-a-comment case
+    // (prefix is exactly one comment line, no trailing newline yet).
+    let trimmed_prefix = prefix.trim_end();
+    let ends_with_comment_line = trimmed_prefix
         .lines()
         .rev()
         .take_while(|l| l.trim().is_empty() || l.trim_start().starts_with("--"))
