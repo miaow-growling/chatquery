@@ -82,6 +82,13 @@ pub const VENDOR_PRESETS: &[VendorPreset] = &[
         model: "glm-4-flash",
     },
     VendorPreset {
+        id: "minimax",
+        label: "MiniMax",
+        provider: LlmProvider::OpenAi,
+        base_url: "https://api.minimaxi.chat/v1",
+        model: "MiniMax-Text-01",
+    },
+    VendorPreset {
         id: "openrouter",
         label: "OpenRouter",
         provider: LlmProvider::OpenAi,
