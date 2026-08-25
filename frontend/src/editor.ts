@@ -331,7 +331,11 @@ function ensureAiInlineProvider() {
       if (!prefix.trim()) return { items: [] };
 
       // Debounce: wait for a brief typing pause before invoking the LLM.
-      await new Promise((r) => setTimeout(r, 350));
+      // Monaco invokes on every keystroke; wait for a typing pause before
+      // spending an LLM call. 600ms — long enough to skip fast typing
+      // bursts (each would otherwise cancel the previous request on slow
+      // models), short enough to feel responsive.
+      await new Promise((r) => setTimeout(r, 600));
       if (token.isCancellationRequested) return { items: [] };
 
       try {
@@ -779,8 +783,18 @@ export function createEditor(
   // run again. Re-trigger suggest on each change: Monaco re-invokes the
   // provider in place (no flicker) and the live prefix/substring/fuzzy
   // search keeps matching the CURRENT input.
+  //
+  // Scope this to TABLE positions only: re-triggering elsewhere (SELECT,
+  // WHERE, …) also resets the inline AI ghost on every keystroke, which
+  // made the AI continuation feel broken ("打一个字建议就没了").
   let refreshSuggestTimer: ReturnType<typeof setTimeout> | null = null;
   editor.onDidChangeModelContent(() => {
+    const model = editor.getModel();
+    const pos = editor.getPosition();
+    if (!model || !pos) return;
+    const line = model.getLineContent(pos.lineNumber);
+    const textBefore = line.slice(0, pos.column - 1);
+    if (!/\b(?:FROM|JOIN|INTO|TABLE|UPDATE)\s+[\w`]*$/i.test(textBefore)) return;
     const widgetVisible = !!document.querySelector(".suggest-widget.visible");
     if (!widgetVisible) return;
     if (refreshSuggestTimer) clearTimeout(refreshSuggestTimer);
