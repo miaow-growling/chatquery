@@ -8,15 +8,13 @@ use chatquery::db::mysql::{
     ColumnInfo, ExplainVisual, ForeignKeyInfo, QueryResult, Schema, TableMeta, TableStructure,
 };
 use chatquery::db::redis::{KeyMeta, RedisValueView};
-use chatquery::llm::client::stream_chat;
 use chatquery::llm::control::TurnControl;
 use chatquery::model::BackendMsg;
 use chatquery::model::{
-    ChatMessage, ChatRole, ConversationRef, ConversationSummary, NewChatMessage, SqlReference,
+    ChatMessage, ConversationRef, ConversationSummary, NewChatMessage, SqlReference,
     StoredChatMessage,
 };
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -866,50 +864,6 @@ async fn load_schema_cached(
         .unwrap()
         .insert(key, schema.clone());
     Ok(schema)
-}
-
-/// Build a compact, LLM-friendly description of a schema: one line per table
-/// with a bounded column preview. Full column lists make the prompt huge on
-/// wide schemas (a 99-column table alone eats most of the budget) which
-/// slows the completion request to a crawl — cap per table instead.
-fn summarize_schema(schema: &Schema, db: &str) -> String {
-    if schema.tables.is_empty() {
-        return format!("(no tables found in `{}`)", db);
-    }
-    let mut lines: Vec<String> = Vec::with_capacity(schema.tables.len());
-    for t in &schema.tables {
-        let total = t.columns.len();
-        let preview: Vec<&str> = t
-            .columns
-            .iter()
-            .take(8)
-            .map(|c| c.name.as_str())
-            .collect();
-        let cols = if total > 8 {
-            format!("{}, …(+{})", preview.join(", "), total - 8)
-        } else {
-            preview.join(", ")
-        };
-        lines.push(format!("- `{}`({})", t.name, cols));
-    }
-    lines.join("\n")
-}
-
-/// Strip a leading/trailing markdown code fence (```sql … ```) if the model
-/// wrapped its answer. Returns None when no fence is present.
-fn strip_code_fence(text: &str) -> Option<String> {
-    let t = text.trim();
-    if !t.starts_with("```") {
-        return None;
-    }
-    let end = t.rfind("```")?;
-    if end == 0 {
-        return None;
-    }
-    let body = &t[3..end];
-    // drop an optional language tag on the opening fence (e.g. "```sql")
-    let body = body.lines().skip(1).collect::<Vec<_>>().join("\n");
-    Some(body.trim().to_string())
 }
 
 /// Fetch a vendor's remote model catalog (`GET {base}/models`). The draft
