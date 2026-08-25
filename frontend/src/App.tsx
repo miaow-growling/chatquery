@@ -1392,6 +1392,62 @@ export function App() {
   };
 
   // -------------------------------------------------------------------
+  // Remote model catalog: call the vendor's /models endpoint and merge the
+  // ids into the draft's model list (existing entries kept, new appended).
+  // In edit mode the merged list persists immediately, same as addModel.
+  // -------------------------------------------------------------------
+  const [modelsFetching, setModelsFetching] = useState(false);
+  const pullRemoteModels = async () => {
+    if (modelsFetching) return;
+    setModelsFetching(true);
+    try {
+      const ids = await api.listRemoteModels(
+        vendorDraft.base_url.trim(),
+        vendorDraft.api_key.trim(),
+        vendorDraft.api_format,
+        editingVendor
+      );
+      if (ids.length === 0) {
+        showToast("远程返回 0 个模型");
+        return;
+      }
+      const existing = new Set(vendorDraft.models.map((m) => m.name));
+      const added = ids.filter((i) => !existing.has(i)).map((name) => ({ name }));
+      const merged = [...vendorDraft.models, ...added];
+      setVendorDraft({ ...vendorDraft, models: merged });
+      showToast(
+        added.length > 0
+          ? `已拉取 ${ids.length} 个模型，新增 ${added.length} 个`
+          : `已拉取 ${ids.length} 个模型（均已在列表中）`
+      );
+      if (editingVendor) {
+        const v = vendorProfiles.find((p) => p.id === editingVendor);
+        if (v) {
+          try {
+            await api.saveModelAlias({
+              id: v.id,
+              name: v.name,
+              vendor: v.id,
+              base_url: v.base_url,
+              model: "",
+              api_key: "",
+              api_format: v.api_format,
+              models: merged,
+            });
+            setVendorProfiles(await api.listModelAliases());
+          } catch (e) {
+            showToast("保存模型列表失败: " + String(e));
+          }
+        }
+      }
+    } catch (e) {
+      showToast("拉取失败: " + String(e));
+    } finally {
+      setModelsFetching(false);
+    }
+  };
+
+  // -------------------------------------------------------------------
   // Field — labeled single-line input used by the vendor-edit form.
   // The label is a small uppercase mini-header (matches the macOS
   // settings aesthetic). Adornment is rendered to the right of the
@@ -6453,7 +6509,18 @@ export function App() {
                          *     mutates the draft. The list is included in the
                          *     "添加供应商" save at the bottom. */}
                         <div className="vendor-models">
-                          <div className="vendor-models-title">模型列表</div>
+                          <div className="vendor-models-head">
+                            <div className="vendor-models-title">模型列表</div>
+                            <button
+                              type="button"
+                              className="vendor-pull-btn"
+                              disabled={modelsFetching || !vendorDraft.base_url.trim()}
+                              onClick={() => void pullRemoteModels()}
+                              title="调用该供应商的 /models 接口，把可用模型一键填入列表（已配置密钥即可，无需手动输入）"
+                            >
+                              {modelsFetching ? "拉取中…" : "↻ 从远程拉取"}
+                            </button>
+                          </div>
                           {vendorDraft.models.length === 0 && (
                             <div className="dim" style={{ fontSize: "var(--fs-xs)" }}>
                               还没有 model

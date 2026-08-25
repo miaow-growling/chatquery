@@ -95,6 +95,20 @@ export const api = {
   // completes `prefix`. Returns "" when disabled / no suggestion.
   completeSql: (connId: string, db: string | null, prefix: string) =>
     invoke<string>("complete_sql", { connId, db: db ?? null, prefix }),
+  // Fetch a vendor's model catalog from its /models endpoint (settings →
+  // 模型列表 → 从远程拉取). Empty apiKey falls back to the saved profile key.
+  listRemoteModels: (
+    baseUrl: string,
+    apiKey: string,
+    apiFormat: string,
+    vendorId: string | null
+  ) =>
+    invoke<string[]>("list_remote_models", {
+      baseUrl,
+      apiKey,
+      apiFormat,
+      vendorId,
+    }),
   getStatus: () => invoke<StatusInfo>("get_status"),
   // LLM vendor/key/model configuration (settings page).
   getLlmConfig: () => invoke<LlmConfigDto>("get_llm_config"),

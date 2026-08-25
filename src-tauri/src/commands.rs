@@ -946,6 +946,39 @@ pub async fn complete_sql(
     Ok(out.trim().to_string())
 }
 
+/// Fetch a vendor's remote model catalog (`GET {base}/models`). The draft
+/// api_key wins; when empty (the settings form hides the saved key), the
+/// stored profile's key for `vendor_id` is used, so "从远程拉取" works
+/// without re-typing the key.
+#[tauri::command]
+pub async fn list_remote_models(
+    base_url: String,
+    api_key: String,
+    api_format: String,
+    vendor_id: Option<String>,
+) -> Result<Vec<String>, String> {
+    let mut key = api_key.trim().to_string();
+    if key.is_empty() {
+        if let Some(vid) = vendor_id.as_deref() {
+            if let Some(p) = chatquery::config::load_vendor_profiles()
+                .into_iter()
+                .find(|p| p.id == vid)
+            {
+                key = p.api_key;
+            }
+        }
+    }
+    if key.is_empty() {
+        return Err("未配置 API 密钥，无法拉取模型列表".into());
+    }
+    if base_url.trim().is_empty() {
+        return Err("接口地址为空".into());
+    }
+    chatquery::llm::client::list_models(&base_url, &key, api_format == "anthropic")
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Resolve a stored connection config by id (cloned out of the lock so we
 /// don't hold the MutexGuard across an await — std Mutex + async is a footgun).
 fn resolve_cfg(state: &State<AppState>, conn_id: &str) -> Option<ConnectionConfig> {

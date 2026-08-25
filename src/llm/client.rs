@@ -13,6 +13,63 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
+/// Fetch a vendor's model catalog: OpenAI-compatible `GET {base}/models`
+/// (Bearer auth) or Anthropic's `GET {base}/models` (x-api-key). Powers the
+/// settings UI's "从远程拉取" button so users never hand-type model ids.
+/// Returns sorted, deduped ids.
+pub async fn list_models(base_url: &str, api_key: &str, anthropic: bool) -> Result<Vec<String>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(AppError::Reqwest)?;
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let resp = if anthropic {
+        client
+            .get(&url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .send()
+            .await
+            .map_err(AppError::Reqwest)?
+    } else {
+        client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()
+            .await
+            .map_err(AppError::Reqwest)?
+    };
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        // Keep (a slice of) the body: providers put the actionable reason
+        // there — quota exhausted, invalid key, wrong region …
+        let short: String = text.chars().take(300).collect();
+        return Err(AppError::Msg(format!("HTTP {}: {}", status, short)));
+    }
+    #[derive(serde::Deserialize)]
+    struct Catalog {
+        #[serde(default)]
+        data: Vec<Entry>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        #[serde(default)]
+        id: String,
+    }
+    let cat: Catalog = serde_json::from_str(&text)
+        .map_err(|e| AppError::Msg(format!("响应不是 /models 目录格式: {}", e)))?;
+    let mut ids: Vec<String> = cat
+        .data
+        .into_iter()
+        .map(|m| m.id)
+        .filter(|s| !s.is_empty())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
 /// The assembled assistant choice after a streaming call completes.
 pub struct ChatChoice {
     pub content: String,

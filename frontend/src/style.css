@@ -3653,13 +3653,45 @@ select.field-input:disabled {
 }
 
 .vendor-models { margin-top: 8px; }
+.vendor-models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: 6px;
+}
 .vendor-models-title {
   font-size: var(--fs-2xs);
   font-weight: var(--fw-semibold);
   text-transform: uppercase;
   letter-spacing: var(--tracking-wide);
   color: var(--text-tertiary);
-  margin-bottom: 6px;
+}
+/* "↻ 从远程拉取" — fetches the vendor's /models catalog */
+.vendor-pull-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.vendor-pull-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.vendor-pull-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .composer-model-bare { opacity: 0.6; cursor: not-allowed; }
 

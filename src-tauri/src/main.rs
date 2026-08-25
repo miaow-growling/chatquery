@@ -64,6 +64,7 @@ fn main() {
             delete_query,
             get_schema,
             complete_sql,
+            list_remote_models,
             chat_turn,
             cancel_turn,
             resolve_confirm,
