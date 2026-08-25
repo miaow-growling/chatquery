@@ -846,6 +846,19 @@ button, input, select, textarea { font: inherit; color: inherit; }
   color: #fb923c;
   border-color: rgba(251, 146, 60, 0.45);
 }
+/* Current model chip inside the ✨ button (follows the chat composer pick). */
+.ai-model-chip {
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  opacity: 0.85;
+  background: rgba(147, 51, 234, 0.12);
+}
+:root[data-theme="dark"] .ai-model-chip {
+  background: rgba(168, 85, 247, 0.2);
+}
 
 .hint {
   color: var(--text-tertiary);

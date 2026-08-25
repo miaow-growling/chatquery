@@ -4764,12 +4764,13 @@ export function App() {
                 title={
                   aiErr
                     ? `✨ AI 续写异常：${aiErr}（请检查模型配置/额度）`
-                    : aiCompleteOn
-                    ? "✨ AI 补全已开启（输入停顿后灰色提示，Tab 采纳，Alt+\\ 手动触发）"
-                    : "✨ AI 补全已关闭（点击开启，输入 SQL 停顿后由 LLM 续写）"
+                    : `✨ AI 续写跟随 Chat 输入框当前选中的模型（现在：${llmCfg?.model || "未选择"}）。输入停顿后灰色提示，Tab 采纳，Alt+\\ 手动触发`
                 }
               >
                 ✨ AI 续写 {aiCompleteOn ? "开" : "关"}
+                {aiCompleteOn && llmCfg?.model ? (
+                  <span className="ai-model-chip">{llmCfg.model}</span>
+                ) : null}
                 {aiErr ? " ⚠" : ""}
               </button>
               <button className="primary" onClick={() => void runQuery()} title="执行查询 (Ctrl/Cmd+Enter)">
