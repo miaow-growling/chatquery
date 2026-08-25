@@ -757,6 +757,23 @@ export function App() {
       document.removeEventListener("keydown", onKey);
     };
   }, [moreOpen]);
+
+  // "引用到 Chat" dropdown on editor toolbar
+  const [refMenuOpen, setRefMenuOpen] = useState(false);
+  const refMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!refMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (refMenuRef.current && !refMenuRef.current.contains(e.target as Node)) setRefMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setRefMenuOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [refMenuOpen]);
   // Current page size for query results / table browse. Selectable 100..1000.
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE);
   // Raw text of the "jump to page" input (kept as string for controlled input).
@@ -2202,11 +2219,14 @@ export function App() {
   const refLabel = useCallback(
     (r: SqlReference) => {
       const c = findConn(r.conn_id);
+      let scopeText = "单条语句";
+      if (r.scope === "full") scopeText = "整个查询";
+      else if (r.scope === "selection") scopeText = "选中语句";
       return {
         icon: c?.db_type === "redis" ? "🔴" : "🐬",
         name: c?.name ?? "未知连接",
         db: r.db || "默认库",
-        scope: r.scope === "full" ? "整个查询" : "单条语句",
+        scope: scopeText,
       };
     },
     [findConn],
@@ -2464,11 +2484,32 @@ export function App() {
   ///
   /// `prompt` pre-fills the input only when it is empty, so a half-typed
   /// question is never clobbered.
-  const attachSqlRef = (scope: "statement" | "full", prompt?: string) => {
+  const attachSqlRef = (scope: "statement" | "selection" | "full", prompt?: string) => {
     const ed = editorRef.current;
     const t = active;
     if (!ed || !t) return;
-    const sql = (scope === "full" ? ed.getDoc() : ed.getStatement()).trim();
+
+    const sel = ed.getSelection().trim();
+    let sql = "";
+    let actualScope: "statement" | "selection" | "full" = scope;
+
+    if (scope === "full") {
+      sql = ed.getDoc().trim();
+      actualScope = "full";
+    } else if (scope === "selection") {
+      sql = sel || ed.getStatement().trim();
+      actualScope = sel ? "selection" : "statement";
+    } else {
+      // "statement"
+      if (sel) {
+        sql = sel;
+        actualScope = "selection";
+      } else {
+        sql = ed.getStatement().trim();
+        actualScope = "statement";
+      }
+    }
+
     if (!sql) {
       showToast("没有可引用的 SQL");
       return;
@@ -2477,22 +2518,43 @@ export function App() {
       showToast("请先为当前查询选择连接 / 数据库");
       return;
     }
+
     const ref: SqlReference = {
       conn_id: t.connId,
       tab_id: t.id,
-      db: t.db,
-      scope,
+      db: t.db ?? null,
+      scope: actualScope,
       sql,
     };
+
+    // 将编辑器的数据库与连接信息同步到 Chat 会话
+    setChatConnId(t.connId);
+    setChatDb(t.db ?? null);
+
     setPendingRefs((prev) =>
       prev.some(
-        (r) => r.sql === ref.sql && r.conn_id === ref.conn_id && r.db === ref.db,
+        (r) =>
+          r.sql === ref.sql &&
+          r.conn_id === ref.conn_id &&
+          r.db === ref.db &&
+          r.scope === ref.scope,
       )
         ? prev
         : [...prev, ref],
     );
     setChatOpen(true);
     localStorage.setItem("cq_chat_open", "1");
+
+    const connName = findConn(t.connId)?.name ?? "未知连接";
+    const dbName = t.db || "默认库";
+    const scopeDesc =
+      actualScope === "full"
+        ? "整个查询"
+        : actualScope === "selection"
+        ? "选中的单条 SQL"
+        : "当前单条 SQL";
+    showToast(`已将【${connName} · ${dbName}】的${scopeDesc}引用到 Chat`);
+
     // The panel may be mounting this same tick; reach for its textarea after.
     window.setTimeout(() => {
       const input = document.getElementById(
@@ -2531,7 +2593,7 @@ export function App() {
       {
         type: "item",
         label: hasSel ? "💬 引用选中语句到 Chat" : "💬 引用当前语句到 Chat",
-        onClick: () => attachSqlRef("statement"),
+        onClick: () => attachSqlRef(hasSel ? "selection" : "statement"),
       },
       {
         type: "item",
@@ -2542,14 +2604,17 @@ export function App() {
         type: "item",
         label: "💬 问 AI：解释这段 SQL",
         onClick: () =>
-          attachSqlRef("statement", "请解释这段 SQL 的执行逻辑与潜在问题。"),
+          attachSqlRef(
+            hasSel ? "selection" : "statement",
+            "请解释这段 SQL 的执行逻辑与潜在问题。",
+          ),
       },
       {
         type: "item",
         label: "💬 问 AI：优化这段 SQL",
         onClick: () =>
           attachSqlRef(
-            "statement",
+            hasSel ? "selection" : "statement",
             "请分析这段 SQL 的性能瓶颈并给出优化建议（含索引建议）。",
           ),
       },
@@ -2557,10 +2622,14 @@ export function App() {
         type: "item",
         label: "💬 问 AI：运行并分析这段 SQL",
         onClick: () => {
-          const sql = (editorRef.current?.getStatement() ?? "").trim();
+          const sql = (
+            hasSel
+              ? editorRef.current?.getSelection()
+              : editorRef.current?.getStatement()
+          )?.trim() ?? "";
           if (sql && active.connId) void runSqlExplicit(active.connId, sql, active.db);
           attachSqlRef(
-            "statement",
+            hasSel ? "selection" : "statement",
             "请分析这段 SQL 的执行计划与运行结果（结果已在右侧结果区展示），指出性能瓶颈与优化方向。",
           );
         },
@@ -4714,6 +4783,69 @@ export function App() {
               <span className="hint"> (Ctrl/Cmd+Enter 执行)</span>
             </span>
             <div className="pane-actions">
+              <div className="menu-anchor" ref={refMenuRef}>
+                <button
+                  type="button"
+                  className="ref-chat-btn"
+                  aria-haspopup="menu"
+                  aria-expanded={refMenuOpen}
+                  onClick={() => setRefMenuOpen((v) => !v)}
+                  title="引用当前编辑器 SQL 到 Chat（附带数据库与连接信息）"
+                >
+                  💬 引用到 Chat ▾
+                </button>
+                {refMenuOpen && (
+                  <ul className="menu-pop" role="menu">
+                    <li
+                      role="menuitem"
+                      className="menu-item"
+                      onClick={() => {
+                        setRefMenuOpen(false);
+                        attachSqlRef("statement");
+                      }}
+                    >
+                      💬 引用单条 / 选中 SQL
+                    </li>
+                    <li
+                      role="menuitem"
+                      className="menu-item"
+                      onClick={() => {
+                        setRefMenuOpen(false);
+                        attachSqlRef("full");
+                      }}
+                    >
+                      💬 引用整个查询 SQL
+                    </li>
+                    <li className="ai-menu-sep" />
+                    <li
+                      role="menuitem"
+                      className="menu-item"
+                      onClick={() => {
+                        setRefMenuOpen(false);
+                        attachSqlRef(
+                          "statement",
+                          "请解释这段 SQL 的执行逻辑与潜在问题。",
+                        );
+                      }}
+                    >
+                      💡 解释这段 SQL
+                    </li>
+                    <li
+                      role="menuitem"
+                      className="menu-item"
+                      onClick={() => {
+                        setRefMenuOpen(false);
+                        attachSqlRef(
+                          "statement",
+                          "请分析这段 SQL 的性能瓶颈并给出优化建议（含索引建议）。",
+                        );
+                      }}
+                    >
+                      ⚡ 优化这段 SQL
+                    </li>
+                  </ul>
+                )}
+              </div>
               <button className="primary" onClick={() => void runQuery()} title="执行查询 (Ctrl/Cmd+Enter)">
                 执行
               </button>
@@ -4740,10 +4872,19 @@ export function App() {
                       role="menuitem"
                       className={"menu-item" + (active?.connId ? "" : " disabled")}
                       aria-disabled={!active?.connId}
-                      title="把光标所在语句（或选中部分，按 ; 补全边界）引用到 Chat"
+                      title="把光标所在单条（或选中的）SQL 引用到 Chat（带数据库信息）"
                       onClick={() => { if (!active?.connId) return; setMoreOpen(false); attachSqlRef("statement"); }}
                     >
-                      问 AI
+                      💬 引用单条 SQL 到 Chat
+                    </li>
+                    <li
+                      role="menuitem"
+                      className={"menu-item" + (active?.connId ? "" : " disabled")}
+                      aria-disabled={!active?.connId}
+                      title="把当前标签页的整个查询 SQL 引用到 Chat（带数据库信息）"
+                      onClick={() => { if (!active?.connId) return; setMoreOpen(false); attachSqlRef("full"); }}
+                    >
+                      💬 引用整个查询到 Chat
                     </li>
                     <li
                       role="menuitem"
@@ -5450,8 +5591,18 @@ export function App() {
                     attachSqlRef("statement");
                   }}
                 >
-                  <span className="composer-plus-item-title">引用 SQL</span>
-                  <span className="composer-plus-item-sub">把编辑器光标所在语句加到本轮</span>
+                  <span className="composer-plus-item-title">💬 引用单条 / 选中 SQL</span>
+                  <span className="composer-plus-item-sub">将编辑器单条或选中的 SQL 及数据库带入 Chat</span>
+                </button>
+                <button
+                  className="composer-plus-item"
+                  onClick={() => {
+                    setPlusOpen(false);
+                    attachSqlRef("full");
+                  }}
+                >
+                  <span className="composer-plus-item-title">💬 引用整个查询 SQL</span>
+                  <span className="composer-plus-item-sub">将编辑器全部 SQL 及数据库带入 Chat</span>
                 </button>
                 <button
                   className="composer-plus-item"

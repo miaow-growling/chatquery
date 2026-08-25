@@ -243,8 +243,8 @@ export interface SqlReference {
   /// can jump back to it. `null` when not applicable (e.g. TUI).
   tab_id: string | null;
   db: string | null;
-  /// `statement` = one statement snapped to `;` boundaries; `full` = whole tab.
-  scope: "statement" | "full";
+  /// `statement` = one statement snapped to `;` boundaries; `selection` = selected text; `full` = whole tab.
+  scope: "statement" | "selection" | "full";
   sql: string;
 }
 

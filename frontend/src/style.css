@@ -819,6 +819,23 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .warn { color: var(--warning-500); font-weight: var(--fw-regular); font-size: var(--fs-xs); }
 
+/* ---- 引用到 Chat toolbar button ---- */
+.pane-actions button.ref-chat-btn {
+  font-size: var(--fs-xs);
+  color: var(--brand);
+  border-color: color-mix(in srgb, var(--brand) 35%, var(--border));
+  background: color-mix(in srgb, var(--brand) 8%, var(--bg-surface));
+  font-weight: var(--fw-medium);
+  transition: all var(--t-fast);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+}
+.pane-actions button.ref-chat-btn:hover {
+  background: color-mix(in srgb, var(--brand) 16%, var(--bg-surface));
+  border-color: var(--brand);
+  color: var(--brand-hover);
+}
+
 /* ---- "More actions" dropdown (⋯) inside pane-actions -------------------- */
 .menu-anchor { position: relative; display: inline-flex; }
 .menu-trigger {
@@ -2827,7 +2844,11 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .ref-sep { flex: none; color: var(--text-tertiary); }
 .ref-db {
   flex: none;
-  color: var(--text-secondary);
+  font-weight: var(--fw-medium);
+  color: var(--brand);
+  background: var(--bg-inset);
+  padding: 1px 5px;
+  border-radius: 3px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2840,6 +2861,7 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   background: var(--bg-inset);
   color: var(--text-tertiary);
   font-size: 10px;
+  font-weight: var(--fw-medium);
 }
 /* The SQL preview is the only elastic part — it yields first when the
    panel is narrow, so the provenance (which instance / which db) never

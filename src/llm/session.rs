@@ -643,7 +643,7 @@ fn render_refs(refs: &[SqlReference], conns: &[ConnectionConfig]) -> Option<Stri
     }
     let mut p = String::from(
         "[用户引用的 SQL]\n以下 SQL 来自用户的查询编辑器，是本次提问的对象。\
-         若需要执行，请使用每段标注的连接与库（以引用为准，不要改用其他连接）。\n",
+         若需要执行查询或生成优化建议，请严格使用每段引图标注的连接与数据库（以引用为准，不要改用其他连接或数据库）。\n",
     );
     for (i, r) in refs.iter().enumerate() {
         let conn_name = conns
@@ -653,12 +653,13 @@ fn render_refs(refs: &[SqlReference], conns: &[ConnectionConfig]) -> Option<Stri
             .unwrap_or("未知连接");
         let scope = match r.scope.as_str() {
             "statement" => "单条语句",
+            "selection" => "选中的 SQL",
             "full" => "整个查询",
             _ => "片段",
         };
         let db = r.db.as_deref().unwrap_or("默认库");
         p.push_str(&format!(
-            "\n引用 {} · 连接：{} · 库：{} · 范围：{}\n```sql\n",
+            "\n引用 {} · 连接：{} · 数据库：{} · 范围：{}\n```sql\n",
             i + 1,
             conn_name,
             db,
