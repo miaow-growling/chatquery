@@ -3692,6 +3692,21 @@ select.field-input:disabled {
   box-shadow: var(--shadow-pop);
   overflow: hidden;
 }
+.remote-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-soft);
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+  font-weight: var(--fw-medium);
+}
+.remote-picker-loading {
+  color: var(--brand);
+  font-size: var(--fs-2xs);
+}
 .remote-picker-list {
   max-height: 260px;
   overflow-y: auto;

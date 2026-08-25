@@ -183,6 +183,7 @@ export interface VendorPreset {
   provider: string;
   base_url: string;
   model: string;
+  models: string[];
   category: "coding_plan" | "api" | string;
   note?: string;
 }

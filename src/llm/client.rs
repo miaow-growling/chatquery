@@ -19,7 +19,7 @@ pub struct ToolCall {
 /// Returns sorted, deduped ids.
 pub async fn list_models(base_url: &str, api_key: &str, anthropic: bool) -> Result<Vec<String>> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(8))
         .build()
         .map_err(AppError::Reqwest)?;
     let url = format!("{}/models", base_url.trim_end_matches('/'));
@@ -47,26 +47,45 @@ pub async fn list_models(base_url: &str, api_key: &str, anthropic: bool) -> Resu
         let short: String = text.chars().take(300).collect();
         return Err(AppError::Msg(format!("HTTP {}: {}", status, short)));
     }
-    #[derive(serde::Deserialize)]
-    struct Catalog {
-        #[serde(default)]
-        data: Vec<Entry>,
+
+    let val: Value = serde_json::from_str(&text)
+        .map_err(|e| AppError::Msg(format!("响应解析 JSON 失败: {}", e)))?;
+
+    let mut ids = Vec::new();
+    let array_opt = val
+        .get("data")
+        .or_else(|| val.get("models"))
+        .or_else(|| val.get("items"))
+        .and_then(|v| v.as_array())
+        .or_else(|| val.as_array());
+
+    if let Some(arr) = array_opt {
+        for item in arr {
+            if let Some(s) = item.as_str() {
+                if !s.is_empty() {
+                    ids.push(s.to_string());
+                }
+            } else if let Some(obj) = item.as_object() {
+                let id = obj
+                    .get("id")
+                    .or_else(|| obj.get("name"))
+                    .or_else(|| obj.get("model_name"))
+                    .or_else(|| obj.get("model"))
+                    .and_then(|v| v.as_str());
+                if let Some(s) = id {
+                    if !s.is_empty() {
+                        ids.push(s.to_string());
+                    }
+                }
+            }
+        }
     }
-    #[derive(serde::Deserialize)]
-    struct Entry {
-        #[serde(default)]
-        id: String,
-    }
-    let cat: Catalog = serde_json::from_str(&text)
-        .map_err(|e| AppError::Msg(format!("响应不是 /models 目录格式: {}", e)))?;
-    let mut ids: Vec<String> = cat
-        .data
-        .into_iter()
-        .map(|m| m.id)
-        .filter(|s| !s.is_empty())
-        .collect();
+
     ids.sort();
     ids.dedup();
+    if ids.is_empty() {
+        return Err(AppError::Msg("接口返回的模型列表为空".into()));
+    }
     Ok(ids)
 }
 

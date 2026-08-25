@@ -1611,6 +1611,10 @@ export function App() {
 
   const ensureCatalog = async () => {
     if (remoteCatalog || modelsFetching || !vendorDraft.base_url.trim()) return;
+    const hasKey =
+      !!vendorDraft.api_key.trim() ||
+      !!(editingVendor && vendorProfiles.find((p) => p.id === editingVendor)?.enabled);
+    if (!hasKey) return;
     setModelsFetching(true);
     try {
       const ids = await api.listRemoteModels(
@@ -1619,9 +1623,11 @@ export function App() {
         vendorDraft.api_format,
         editingVendor
       );
-      setRemoteCatalog(ids);
+      if (ids && ids.length > 0) {
+        setRemoteCatalog(ids);
+      }
     } catch {
-      // Catalog unavailable — the input still works as a plain manual field.
+      // Catalog unavailable — fallback to preset models
     } finally {
       setModelsFetching(false);
     }
@@ -6466,14 +6472,21 @@ export function App() {
                                   const codingList = presets.filter((p) => p.category === "coding_plan");
                                   const apiList = presets.filter((p) => p.category !== "coding_plan");
                                   const pick = (p: VendorPreset) => {
+                                    const defaultModels =
+                                      p.models && p.models.length > 0
+                                        ? p.models.map((name) => ({ name }))
+                                        : p.model
+                                        ? [{ name: p.model }]
+                                        : [];
                                     setVendorDraft({
                                       ...vendorDraft,
                                       name: p.label,
                                       base_url: p.base_url,
                                       api_format: (p.provider === "anthropic" ? "anthropic" : "openai"),
-                                      models: p.model ? [{ name: p.model }] : [],
+                                      models: defaultModels,
                                       newModel: "",
                                     });
+                                    setRemoteCatalog(null);
                                     setPresetMenuOpen(false);
                                   };
                                   return (
@@ -6676,7 +6689,7 @@ export function App() {
                                   ? "正在获取远程模型目录…"
                                   : remoteCatalog
                                   ? `输入过滤远程模型（共 ${remoteCatalog.length} 个）`
-                                  : "添加 model（聚焦后自动拉取远程列表）"
+                                  : "输入 model 名称 或 聚焦选择推荐模型"
                               }
                               value={vendorDraft.newModel}
                               autoComplete="off"
@@ -6726,62 +6739,78 @@ export function App() {
                             >
                               + 添加
                             </button>
-                            {/* Remote-catalog suggestions, filtered live by the
-                             * input text. Already-added ids are hidden — they
-                             * are in the list right above. */}
-                            {modelMenuOpen && remoteCatalog && remoteCatalog.length > 0 && (
-                              <div className="remote-picker">
-                                <div className="remote-picker-list">
-                                  {(() => {
-                                    const q = vendorDraft.newModel.trim().toLowerCase();
-                                    const owned = new Set(vendorDraft.models.map((m) => m.name));
-                                    const pool = remoteCatalog.filter((m) => !owned.has(m));
-                                    const filtered = q
-                                      ? pool.filter((m) => m.toLowerCase().includes(q))
-                                      : pool;
-                                    const visible = filtered.slice(0, 50);
-                                    if (visible.length === 0) {
-                                      return (
-                                        <div className="remote-picker-empty">
-                                          {q
-                                            ? "无匹配模型 — Enter 直接添加自定义名称"
-                                            : "已全部添加"}
-                                        </div>
-                                      );
-                                    }
-                                    return visible.map((m) => (
-                                      <button
-                                        key={m}
-                                        type="button"
-                                        className="remote-picker-item"
-                                        // onMouseDown (not onClick): fires before
-                                        // the input's blur would close the menu.
-                                        onMouseDown={(e) => {
-                                          e.preventDefault();
-                                          addModel(m);
-                                        }}
-                                        title="点击添加到模型列表"
-                                      >
-                                        <span className="remote-picker-name">{m}</span>
-                                      </button>
-                                    ));
-                                  })()}
-                                  {(() => {
-                                    const q = vendorDraft.newModel.trim().toLowerCase();
-                                    const owned = new Set(vendorDraft.models.map((m) => m.name));
-                                    const pool = remoteCatalog.filter((m) => !owned.has(m));
-                                    const filtered = q
-                                      ? pool.filter((m) => m.toLowerCase().includes(q))
-                                      : pool;
-                                    return filtered.length > 50 ? (
-                                      <div className="remote-picker-more">
-                                        仅显示前 50 个，继续输入缩小范围（共 {filtered.length} 个）
+                            {/* Suggestions dropdown: shows remote models when fetched,
+                             * or preset recommended models as immediate fallback. */}
+                            {(() => {
+                              const currentPreset = presets.find(
+                                (p) =>
+                                  p.label === vendorDraft.name ||
+                                  (p.base_url &&
+                                    vendorDraft.base_url &&
+                                    p.base_url.replace(/\/+$/, "") ===
+                                      vendorDraft.base_url.replace(/\/+$/, ""))
+                              );
+                              const fallbackModels = currentPreset?.models || [];
+                              const hasRemote = !!(remoteCatalog && remoteCatalog.length > 0);
+                              const poolList = hasRemote ? remoteCatalog! : fallbackModels;
+
+                              if (!modelMenuOpen || poolList.length === 0) return null;
+
+                              const q = vendorDraft.newModel.trim().toLowerCase();
+                              const owned = new Set(vendorDraft.models.map((m) => m.name));
+                              const pool = poolList.filter((m) => !owned.has(m));
+                              const filtered = q
+                                ? pool.filter((m) => m.toLowerCase().includes(q))
+                                : pool;
+                              const visible = filtered.slice(0, 50);
+
+                              return (
+                                <div className="remote-picker">
+                                  <div className="remote-picker-header">
+                                    {hasRemote ? (
+                                      <span>🌐 远程拉取的模型（共 {remoteCatalog!.length} 个）</span>
+                                    ) : (
+                                      <span>⭐ {currentPreset ? currentPreset.label : "推荐"}常用模型（点击添加）</span>
+                                    )}
+                                    {modelsFetching && (
+                                      <span className="remote-picker-loading">· 正在尝试拉取远程…</span>
+                                    )}
+                                  </div>
+                                  <div className="remote-picker-list">
+                                    {visible.length === 0 ? (
+                                      <div className="remote-picker-empty">
+                                        {q
+                                          ? "无匹配模型 — 按 Enter 或点击右侧「+ 添加」"
+                                          : "已全部添加到模型列表中"}
                                       </div>
-                                    ) : null;
-                                  })()}
+                                    ) : (
+                                      visible.map((m) => (
+                                        <button
+                                          key={m}
+                                          type="button"
+                                          className="remote-picker-item"
+                                          onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            addModel(m);
+                                          }}
+                                          title="点击添加到模型列表"
+                                        >
+                                          <span className="remote-picker-name">{m}</span>
+                                          {!hasRemote && (
+                                            <span className="remote-picker-tag">推荐</span>
+                                          )}
+                                        </button>
+                                      ))
+                                    )}
+                                    {filtered.length > 50 && (
+                                      <div className="remote-picker-more">
+                                        仅显示前 50 个，继续输入以缩小范围（共 {filtered.length} 个）
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
-                            )}
+                              );
+                            })()}
                           </div>
                         </div>
                         {/* EDIT-mode action row. User feedback: the previous
