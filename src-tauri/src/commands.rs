@@ -28,7 +28,7 @@ use crate::state::AppState;
 /// Lets users see exactly what the LLM returned (or why it failed) instead
 /// of a silent "AI 续写没反应".
 fn log_ai_complete(line: String) {
-    let dir = chatquery::crypto::config_dir();
+    let dir = chatquery::config::config_dir();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -42,7 +42,7 @@ fn log_ai_complete(line: String) {
 #[tauri::command]
 pub fn get_ai_complete_log(limit: Option<usize>) -> String {
     let n = limit.unwrap_or(100).min(500);
-    let path = chatquery::crypto::config_dir().join("ai_complete.log");
+    let path = chatquery::config::config_dir().join("ai_complete.log");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return "(暂无日志)".to_string();
     };
@@ -1019,6 +1019,8 @@ pub async fn complete_sql(
         "You are a MySQL SQL completion engine. The user has typed the partial SQL shown after 'Partial SQL:'. The cursor is at the end of that text. Return ONLY the SQL text that should be inserted at the cursor — do not repeat anything already typed before the cursor, do not add a trailing semicolon unless the statement is clearly complete, output raw SQL only with no markdown fences, no comments, and no explanation. If there is no sensible completion, return an empty string.\n\nCOMMENT-TO-SQL: when the text ends with one or more comment lines (or the cursor is on an empty line directly below comments), treat the comments as the user's intent and write the COMPLETE SQL statement that implements it, starting at the cursor. Prefer the tables/columns listed in the schema below.{}",
         schema_block
     );
+    // Capture the prefix for logging BEFORE it's moved into the messages.
+    let prefix_short: String = prefix.chars().take(120).collect();
     let messages = vec![
         ChatMessage {
             role: ChatRole::System,
@@ -1033,7 +1035,6 @@ pub async fn complete_sql(
     let ms = t0.elapsed().as_millis();
     // Log every call: model, latency, input (truncated), output/error — so
     // "AI 续写没反应" is diagnosable instead of a black box.
-    let prefix_short: String = prefix.chars().take(120).collect();
     let line = match &result {
         Ok(choice) => {
             let out_short: String = choice.content.chars().take(300).collect();

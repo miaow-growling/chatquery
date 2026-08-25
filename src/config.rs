@@ -230,6 +230,12 @@ fn env_or(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// Public config directory (~/.config/chatquery or $XDG_CONFIG_HOME/chatquery).
+/// The tauri shell (a separate crate) needs this for app-level log files.
+pub fn config_dir() -> std::path::PathBuf {
+    crypto::config_dir()
+}
+
 fn llm_config_path() -> std::path::PathBuf {
     crypto::config_dir().join("llm.json")
 }
