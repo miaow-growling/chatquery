@@ -958,12 +958,38 @@ pub async fn complete_sql(
     if prefix.trim().is_empty() {
         return Ok(String::new());
     }
-    let schema = load_schema_cached(&state, &conn_id, db.as_deref()).await?;
     let db_name = db.clone().unwrap_or_else(|| cfg.database.clone());
-    let schema_text = summarize_schema(&schema, &db_name);
+
+    // Comment-to-SQL is a FAST path: the comment already states the intent,
+    // so shipping the whole schema (thousands of tokens on wide databases)
+    // only slows the model down. Skip schema entirely; the model writes the
+    // statement straight away. Normal continuation still gets the schema so
+    // table/column names complete correctly.
+    let ends_with_comment_line = prefix
+        .lines()
+        .rev()
+        .take_while(|l| l.trim().is_empty() || l.trim_start().starts_with("--"))
+        .any(|l| l.trim_start().starts_with("--"));
+
+    let schema_text = if ends_with_comment_line {
+        String::new()
+    } else {
+        let schema = load_schema_cached(&state, &conn_id, db.as_deref()).await?;
+        summarize_schema(&schema, &db_name)
+    };
+    let schema_block = if schema_text.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nSchema (database `{}`):\n{}", db_name, schema_text)
+    };
+    // Fast-path model preference: inline completion is a high-frequency,
+    // latency-sensitive call — "pro"-grade models take 30-60s per generation
+    // here. If the configured AI model looks like a slow variant, switch to
+    // a "flash"-class model of the same vendor (fetched async, cached).
+    let llm = prefer_fast_model(llm, &chatquery::config::load_vendor_profiles()).await;
     let system = format!(
-        "You are a MySQL SQL completion engine. The user has typed the partial SQL shown after 'Partial SQL:'. The cursor is at the end of that text. Return ONLY the SQL text that should be inserted at the cursor — do not repeat anything already typed before the cursor, do not add a trailing semicolon unless the statement is clearly complete, output raw SQL only with no markdown fences, no comments, and no explanation. If there is no sensible completion, return an empty string.\n\nCOMMENT-TO-SQL: when the text ends with one or more comment lines (or the cursor is on an empty line directly below comments), treat the comments as the user's intent and write the COMPLETE SQL statement that implements it, starting at the cursor. Prefer the tables/columns listed in the schema below.\n\nSchema (database `{}`):\n{}",
-        db_name, schema_text
+        "You are a MySQL SQL completion engine. The user has typed the partial SQL shown after 'Partial SQL:'. The cursor is at the end of that text. Return ONLY the SQL text that should be inserted at the cursor — do not repeat anything already typed before the cursor, do not add a trailing semicolon unless the statement is clearly complete, output raw SQL only with no markdown fences, no comments, and no explanation. If there is no sensible completion, return an empty string.\n\nCOMMENT-TO-SQL: when the text ends with one or more comment lines (or the cursor is on an empty line directly below comments), treat the comments as the user's intent and write the COMPLETE SQL statement that implements it, starting at the cursor. Prefer the tables/columns listed in the schema below.{}",
+        schema_block
     );
     let messages = vec![
         ChatMessage {
@@ -989,6 +1015,75 @@ pub async fn complete_sql(
 #[tauri::command]
 pub fn get_ai_complete_config() -> Option<chatquery::config::AiCompleteConfig> {
     chatquery::config::load_ai_complete()
+}
+
+/// If the configured AI-completion model looks like a slow "pro/max"-class
+/// model, and the same vendor profile lists a "flash/lite"-class one, switch
+/// completions to the fast model. Inline completion is latency-sensitive
+/// (deepseek-v4-pro took ~46s for a trivial comment→SQL here); the flash
+/// model typically answers in 1-3s. Uses the SAME vendor key/base_url.
+/// Once per vendor per process: fetch the /models catalog and cache it.
+/// Used by `prefer_fast_model` so completion latency doesn't pay for the
+/// catalog round-trip more than once.
+static FAST_MODEL_CACHE: std::sync::Mutex<Option<(String, Vec<String>)>> =
+    std::sync::Mutex::new(None);
+
+async fn prefer_fast_model(
+    llm: chatquery::config::LlmConfig,
+    profiles: &[chatquery::config::VendorProfile],
+) -> chatquery::config::LlmConfig {
+    let slow_markers = ["pro", "max", "turbo", "premium", "sonnet", "opus"];
+    let fast_markers = ["flash", "lite", "mini", "fast", "haiku", "nano"];
+    let m = llm.model.to_lowercase();
+    let is_slow = slow_markers.iter().any(|s| m.contains(s));
+    if !is_slow {
+        return llm;
+    }
+    // Find the vendor this model belongs to (id or base_url).
+    let vendor = profiles
+        .iter()
+        .find(|p| p.id == llm.vendor || p.base_url == llm.base_url);
+    let Some(v) = vendor else {
+        return llm;
+    };
+    let pick = |names: &[String]| {
+        names.iter().map(|x| x.as_str()).find(|name| {
+            let n = name.to_lowercase();
+            fast_markers.iter().any(|f| n.contains(f))
+                && !slow_markers.iter().any(|s| n.contains(s))
+        })
+    };
+    // 1) Fast model already registered in the profile — no network needed.
+    let profile_models: Vec<String> = v.models.iter().map(|x| x.name.clone()).collect();
+    if let Some(f) = pick(&profile_models) {
+        let mut out = llm;
+        out.model = f.to_string();
+        return out;
+    }
+    // 2) Fallback: fetch the /models catalog (cached per vendor) and pick a
+    // fast model from there — the profile often lists only a handful of
+    // models while the endpoint exposes every available id.
+    {
+        let cache = &mut *FAST_MODEL_CACHE.lock().unwrap();
+        if cache.as_ref().map(|(vid, _)| vid != &v.id).unwrap_or(true) {
+            let fetched = chatquery::llm::client::list_models(
+                &v.base_url,
+                &v.api_key,
+                v.api_format == "anthropic",
+            )
+            .await
+            .unwrap_or_default();
+            *cache = Some((v.id.clone(), fetched));
+        }
+        if let Some((_, catalog)) = cache.as_ref() {
+            if let Some(f) = pick(catalog) {
+                let mut out = llm;
+                out.model = f.to_string();
+                return out;
+            }
+        }
+    }
+    llm
 }
 
 /// Set (or clear, with an empty vendor_id) the AI-completion model. The
