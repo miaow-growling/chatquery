@@ -998,14 +998,23 @@ pub async fn search_tables(
         let mut binds: Vec<String> = Vec::new();
         if let Some(like) = like {
             if !like.is_empty() {
-                // Prefix match; escape LIKE wildcards in the user's input so a
+                // `*k*` = SUBSTRING match (`%k%`); anything else = prefix match
+                // (`k%`). Either way the user's wildcards are escaped so a
                 // literal `%` / `_` is matched literally, not as a wildcard.
+                let (pre, post) = if like.starts_with('*') && like.ends_with('*') && like.len() > 2 {
+                    ("%", "%")
+                } else {
+                    ("", "%")
+                };
                 sql.push_str(" AND TABLE_NAME LIKE ? ESCAPE '\\\\'");
+                let inner = like.trim_matches('*');
                 let pat = format!(
-                    "{}%",
-                    like.replace('\\', "\\\\")
+                    "{}{}{}",
+                    pre,
+                    inner.replace('\\', "\\\\")
                         .replace('%', "\\%")
-                        .replace('_', "\\_")
+                        .replace('_', "\\_"),
+                    post
                 );
                 binds.push(pat);
             }

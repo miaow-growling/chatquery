@@ -546,12 +546,41 @@ function ensureCompletionProvider() {
 
       // 2) In Table position (FROM, JOIN, INTO, UPDATE)
       if (inTablePos) {
-        let tables = prefetchedTables;
-        if (tables.length === 0) {
+        // LIVE keyword search — databases can hold thousands of tables and a
+        // fixed first-200 list never reaches alphabetically-late names like
+        // k_task. Query by the typed text (limit 20): PREFIX first (k_t →
+        // k_task), plus a SUBSTRING pass (k → anything containing k) merged
+        // and deduped so short prefixes still surface likely matches. Typing
+        // more narrows everything.
+        const typed = word.word || "";
+        let tables: TableMeta[] = [];
+        if (typed) {
           try {
-            tables = await api.searchTables(connId, db, null, 200);
+            // Prefix pass (`k_t` → k_task…) + substring pass (`*k*` → any
+            // table containing k, e.g. k_task when only `k` typed), merged
+            // and deduped, capped at 20.
+            const [pre, sub] = await Promise.all([
+              api.searchTables(connId, db, typed, 20),
+              api.searchTables(connId, db, `*${typed}*`, 20),
+            ]);
+            const seen = new Set<string>();
+            for (const t of [...pre, ...sub]) {
+              if (seen.has(t.name)) continue;
+              seen.add(t.name);
+              tables.push(t);
+              if (tables.length >= 20) break;
+            }
           } catch {
             tables = [];
+          }
+        } else {
+          tables = prefetchedTables;
+          if (tables.length === 0) {
+            try {
+              tables = await api.searchTables(connId, db, null, 20);
+            } catch {
+              tables = [];
+            }
           }
         }
 
@@ -564,6 +593,17 @@ function ensureCompletionProvider() {
             insertText: t.name,
             range,
             sortText: `00_${t.name}`,
+          });
+        }
+
+        // Tell the user how to see more when the result is at the cap.
+        if (tables.length >= 20) {
+          suggestions.push({
+            label: `… 继续输入以缩小范围（已显示 ${tables.length} 个匹配）`,
+            kind: monaco.languages.CompletionItemKind.Text,
+            insertText: "",
+            range,
+            sortText: "99_more",
           });
         }
 
