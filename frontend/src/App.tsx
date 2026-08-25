@@ -261,6 +261,193 @@ function DropdownSelect({ label, value, options, onChange, disabled }: DropdownS
   );
 }
 
+type FieldProps = {
+  label: string;
+  value?: string;
+  onChange?: (v: string) => void;
+  onBlur?: () => void;
+  placeholder?: string;
+  type?: "text" | "password";
+  /** Use the monospace font for the input (URLs / model names). */
+  mono?: boolean;
+  /** Right-side decoration (e.g. status badge, chevron). */
+  adornment?: React.ReactNode;
+  disabled?: boolean;
+  /** When provided, this replaces the default <input> with custom
+   * content (e.g. a <select>). Use this when the field needs a
+   * non-text control that still benefits from the Field layout. */
+  children?: React.ReactNode;
+};
+
+function Field({
+  label,
+  value,
+  onChange,
+  onBlur,
+  placeholder,
+  type = "text",
+  mono,
+  adornment,
+  disabled,
+  children,
+}: FieldProps) {
+  return (
+    <label className="field">
+      <span className="field-label">{label}</span>
+      <span className="field-row">
+        {children ?? (
+          <input
+            className={"field-input" + (mono ? " mono" : "")}
+            type={type}
+            value={value ?? ""}
+            placeholder={placeholder}
+            disabled={disabled}
+            onChange={(e) => onChange?.(e.target.value)}
+            onBlur={onBlur}
+          />
+        )}
+        {adornment && <span className="field-adornment">{adornment}</span>}
+      </span>
+    </label>
+  );
+}
+
+/// Render a structured Redis value with type-appropriate layout.
+function RedisValueViewer(props: {
+  value: RedisValueView;
+  ttl?: number;
+  size?: number;
+}) {
+  const { value, ttl, size } = props;
+
+  // Metadata header
+  const metaParts: string[] = [];
+  if (ttl != null) {
+    metaParts.push(ttl < 0 ? "持久" : `TTL ${ttl}s`);
+  }
+  if (size != null) {
+    metaParts.push(
+      size < 1024
+        ? `${size} B`
+        : size < 1024 * 1024
+        ? `${(size / 1024).toFixed(1)} KB`
+        : `${(size / (1024 * 1024)).toFixed(1)} MB`
+    );
+  }
+
+  const metaEl =
+    metaParts.length > 0 ? (
+      <div className="redis-meta">{metaParts.join(" · ")}</div>
+    ) : null;
+
+  switch (value.type) {
+    case "string":
+      return (
+        <div className="redis-view">
+          {metaEl}
+          <div className="redis-head">String</div>
+          <pre className="redis-string-value">{value.value}</pre>
+        </div>
+      );
+
+    case "hash":
+      return (
+        <div className="redis-view">
+          {metaEl}
+          <div className="redis-head">
+            Hash · {value.entries.length} 字段
+          </div>
+          <div className="redis-kv-table">
+            <div className="kv-header">
+              <span className="kv-field">Field</span>
+              <span className="kv-value">Value</span>
+            </div>
+            {value.entries.map((e, i) => (
+              <div key={i} className="kv-row">
+                <span className="kv-field">{e.field}</span>
+                <span className="kv-value">{e.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+
+    case "list":
+      return (
+        <div className="redis-view">
+          {metaEl}
+          <div className="redis-head">
+            List · {value.entries.length} 项
+            {value.truncated && "（已截断）"}
+          </div>
+          <div className="redis-list-view">
+            {value.entries.map((e) => (
+              <div key={e.index} className="redis-list-item">
+                <span className="list-idx">{e.index}</span>
+                <span className="list-val">{e.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+
+    case "set":
+      return (
+        <div className="redis-view">
+          {metaEl}
+          <div className="redis-head">
+            Set · {value.members.length} 成员
+            {value.truncated && "（已截断）"}
+          </div>
+          <div className="redis-set-grid">
+            {value.members.map((m, i) => (
+              <span key={i} className="redis-set-tag">
+                {m}
+              </span>
+            ))}
+          </div>
+        </div>
+      );
+
+    case "zset":
+      return (
+        <div className="redis-view">
+          {metaEl}
+          <div className="redis-head">
+            Sorted Set · {value.entries.length} 项
+            {value.truncated && "（已截断）"}
+          </div>
+          <div className="redis-kv-table">
+            <div className="kv-header">
+              <span className="kv-field">Member</span>
+              <span className="kv-value right">Score</span>
+            </div>
+            {value.entries.map((e, i) => (
+              <div key={i} className="kv-row">
+                <span className="kv-field">{e.member}</span>
+                <span className="kv-value right">{e.score}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+
+    case "none":
+      return (
+        <div className="redis-view">
+          <div className="redis-note redis-error">键不存在</div>
+        </div>
+      );
+
+    default:
+      return (
+        <div className="redis-view">
+          <div className="redis-note">未知类型: {(value as any).type}</div>
+        </div>
+      );
+  }
+}
+
 interface ConnForm {
   open: boolean;
   editing: boolean;
@@ -1439,63 +1626,6 @@ export function App() {
       setModelsFetching(false);
     }
   };
-
-  // -------------------------------------------------------------------
-  // Field — labeled single-line input used by the vendor-edit form.
-  // The label is a small uppercase mini-header (matches the macOS
-  // settings aesthetic). Adornment is rendered to the right of the
-  // input (e.g. the API-key "已配/未配" status indicator, or a
-  // chevron for a <select> rendered via `children`).
-  // -------------------------------------------------------------------
-  type FieldProps = {
-    label: string;
-    value?: string;
-    onChange?: (v: string) => void;
-    onBlur?: () => void;
-    placeholder?: string;
-    type?: "text" | "password";
-    /** Use the monospace font for the input (URLs / model names). */
-    mono?: boolean;
-    /** Right-side decoration (e.g. status badge, chevron). */
-    adornment?: React.ReactNode;
-    disabled?: boolean;
-    /** When provided, this replaces the default <input> with custom
-     * content (e.g. a <select>). Use this when the field needs a
-     * non-text control that still benefits from the Field layout. */
-    children?: React.ReactNode;
-  };
-  function Field({
-    label,
-    value,
-    onChange,
-    onBlur,
-    placeholder,
-    type = "text",
-    mono,
-    adornment,
-    disabled,
-    children,
-  }: FieldProps) {
-    return (
-      <label className="field">
-        <span className="field-label">{label}</span>
-        <span className="field-row">
-          {children ?? (
-            <input
-              className={"field-input" + (mono ? " mono" : "")}
-              type={type}
-              value={value ?? ""}
-              placeholder={placeholder}
-              disabled={disabled}
-              onChange={(e) => onChange?.(e.target.value)}
-              onBlur={onBlur}
-            />
-          )}
-          {adornment && <span className="field-adornment">{adornment}</span>}
-        </span>
-      </label>
-    );
-  }
 
   /// Clear all edit overlays (edits + deletes + inserts + active cell). Called
   /// on tab switch, re-query, page change, save, and undo.
@@ -2994,144 +3124,6 @@ export function App() {
       next[ii] = { ...(next[ii] ?? {}), [ci]: val };
       return next;
     });
-  };
-
-  // --- Redis type-aware value viewer (ADR-025 Phase A1) ------------------
-
-  /// Render a structured Redis value with type-appropriate layout.
-  const RedisValueViewer = (props: {
-    value: RedisValueView;
-    ttl?: number;
-    size?: number;
-  }) => {
-    const { value, ttl, size } = props;
-
-    // Metadata header
-    const metaParts: string[] = [];
-    if (ttl != null) {
-      metaParts.push(ttl < 0 ? "持久" : `TTL ${ttl}s`);
-    }
-    if (size != null) {
-      metaParts.push(
-        size < 1024
-          ? `${size} B`
-          : size < 1024 * 1024
-          ? `${(size / 1024).toFixed(1)} KB`
-          : `${(size / (1024 * 1024)).toFixed(1)} MB`
-      );
-    }
-
-    const metaEl =
-      metaParts.length > 0 ? (
-        <div className="redis-meta">{metaParts.join(" · ")}</div>
-      ) : null;
-
-    switch (value.type) {
-      case "string":
-        return (
-          <div className="redis-view">
-            {metaEl}
-            <div className="redis-head">String</div>
-            <pre className="redis-string-value">{value.value}</pre>
-          </div>
-        );
-
-      case "hash":
-        return (
-          <div className="redis-view">
-            {metaEl}
-            <div className="redis-head">
-              Hash · {value.entries.length} 字段
-            </div>
-            <div className="redis-kv-table">
-              <div className="kv-header">
-                <span className="kv-field">Field</span>
-                <span className="kv-value">Value</span>
-              </div>
-              {value.entries.map((e, i) => (
-                <div key={i} className="kv-row">
-                  <span className="kv-field">{e.field}</span>
-                  <span className="kv-value">{e.value}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-
-      case "list":
-        return (
-          <div className="redis-view">
-            {metaEl}
-            <div className="redis-head">
-              List · {value.entries.length} 项
-              {value.truncated && "（已截断）"}
-            </div>
-            <div className="redis-list-view">
-              {value.entries.map((e) => (
-                <div key={e.index} className="redis-list-item">
-                  <span className="list-idx">{e.index}</span>
-                  <span className="list-val">{e.value}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-
-      case "set":
-        return (
-          <div className="redis-view">
-            {metaEl}
-            <div className="redis-head">
-              Set · {value.members.length} 成员
-              {value.truncated && "（已截断）"}
-            </div>
-            <div className="redis-set-grid">
-              {value.members.map((m, i) => (
-                <span key={i} className="redis-set-tag">
-                  {m}
-                </span>
-              ))}
-            </div>
-          </div>
-        );
-
-      case "zset":
-        return (
-          <div className="redis-view">
-            {metaEl}
-            <div className="redis-head">
-              Sorted Set · {value.entries.length} 项
-              {value.truncated && "（已截断）"}
-            </div>
-            <div className="redis-kv-table">
-              <div className="kv-header">
-                <span className="kv-field">Member</span>
-                <span className="kv-value right">Score</span>
-              </div>
-              {value.entries.map((e, i) => (
-                <div key={i} className="kv-row">
-                  <span className="kv-field">{e.member}</span>
-                  <span className="kv-value right">{e.score}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-
-      case "none":
-        return (
-          <div className="redis-view">
-            <div className="redis-note redis-error">键不存在</div>
-          </div>
-        );
-
-      default:
-        return (
-          <div className="redis-view">
-            <div className="redis-note">未知类型: {(value as any).type}</div>
-          </div>
-        );
-    }
   };
 
   // Render the result grid. When `editable`, cells become double-click-to-edit
