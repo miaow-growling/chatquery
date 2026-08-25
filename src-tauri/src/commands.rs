@@ -868,15 +868,28 @@ async fn load_schema_cached(
 }
 
 /// Build a compact, LLM-friendly description of a schema: one line per table
-/// with its column names. Bounded to the selected database (ADR-006).
+/// with a bounded column preview. Full column lists make the prompt huge on
+/// wide schemas (a 99-column table alone eats most of the budget) which
+/// slows the completion request to a crawl — cap per table instead.
 fn summarize_schema(schema: &Schema, db: &str) -> String {
     if schema.tables.is_empty() {
         return format!("(no tables found in `{}`)", db);
     }
     let mut lines: Vec<String> = Vec::with_capacity(schema.tables.len());
     for t in &schema.tables {
-        let cols: Vec<&str> = t.columns.iter().map(|c| c.name.as_str()).collect();
-        lines.push(format!("- `{}`({})", t.name, cols.join(", ")));
+        let total = t.columns.len();
+        let preview: Vec<&str> = t
+            .columns
+            .iter()
+            .take(8)
+            .map(|c| c.name.as_str())
+            .collect();
+        let cols = if total > 8 {
+            format!("{}, …(+{})", preview.join(", "), total - 8)
+        } else {
+            preview.join(", ")
+        };
+        lines.push(format!("- `{}`({})", t.name, cols));
     }
     lines.join("\n")
 }

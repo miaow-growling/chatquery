@@ -2271,6 +2271,9 @@ export function App() {
   // color) so a failing LLM (quota exhausted, bad key…) is visible instead
   // of the ghost text silently never appearing.
   const [aiErr, setAiErr] = useState<string | null>(null);
+  // In-flight indicator: the LLM round-trip can take seconds; without this
+  // the user can't tell "thinking" from "broken".
+  const [aiBusy, setAiBusy] = useState(false);
 
   // Independent model preference for AI completion (null = follow chat).
   // Selected from the ✨ button's dropdown, persisted via the backend.
@@ -2319,6 +2322,7 @@ export function App() {
   const aiProvider = useCallback(async (prefix: string): Promise<string | null> => {
     const t = activeRef.current;
     if (!t?.connId) return null;
+    setAiBusy(true);
     try {
       const out = await api.completeSql(t.connId, t.db, prefix);
       setAiErr((prev) => (prev === null ? prev : null));
@@ -2327,6 +2331,8 @@ export function App() {
       const msg = String(e).replace(/^Error:\s*/, "").slice(0, 160);
       setAiErr((prev) => (prev === msg ? prev : msg));
       return null;
+    } finally {
+      setAiBusy(false);
     }
   }, []);
 
@@ -4807,8 +4813,8 @@ export function App() {
                       : "✨ AI 续写：点击选择模型与开关（模型独立于 Chat）"
                   }
                 >
-                  ✨ AI 续写 {aiCompleteOn ? "开" : "关"}
-                  {aiCompleteOn && (aiCfg?.model || llmCfg?.model) ? (
+                  ✨ AI 续写 {aiCompleteOn ? (aiBusy ? "…" : "开") : "关"}
+                  {aiCompleteOn && !aiBusy && (aiCfg?.model || llmCfg?.model) ? (
                     <span className="ai-model-chip">{aiCfg?.model || llmCfg?.model}</span>
                   ) : null}
                   {aiErr ? " ⚠" : ""}
