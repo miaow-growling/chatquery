@@ -713,8 +713,20 @@ export function createEditor(
   });
 
   // Subscribe to changes
-  editor.onDidChangeModelContent(() => {
+  editor.onDidChangeModelContent((e) => {
     _onChange(editor.getValue());
+  });
+  // "写注释回车生成 SQL": Enter/Paste don't fire onDidType, so the inline
+  // model won't refetch on its own. When a newline lands and AI completion
+  // is on, explicitly trigger the ghost (the provider debounces the LLM call).
+  editor.onDidChangeModelContent((e) => {
+    if (!aiEnabled || !aiProviderFn) return;
+    const last = e.changes[e.changes.length - 1];
+    if (!last || !last.text.includes("\n")) return;
+    setTimeout(() => {
+      if (!aiEnabled) return;
+      editor.trigger("ai", "editor.action.inlineSuggest.trigger", {});
+    }, 120);
   });
   // Expose this instance to the module-level AI inline provider (it must be
   // able to close the suggest widget when a suggestion arrives).

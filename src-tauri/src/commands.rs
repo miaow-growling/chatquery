@@ -949,7 +949,7 @@ pub async fn complete_sql(
     let db_name = db.clone().unwrap_or_else(|| cfg.database.clone());
     let schema_text = summarize_schema(&schema, &db_name);
     let system = format!(
-        "You are a MySQL SQL completion engine. The user has typed the partial SQL shown after 'Partial SQL:'. The cursor is at the end of that text. Return ONLY the remaining SQL tokens that complete the current statement — do not repeat the prefix, do not add a trailing semicolon unless the statement is clearly complete, output raw SQL only with no markdown fences, no comments, and no explanation. If there is no sensible completion, return an empty string.\n\nSchema (database `{}`):\n{}",
+        "You are a MySQL SQL completion engine. The user has typed the partial SQL shown after 'Partial SQL:'. The cursor is at the end of that text. Return ONLY the SQL text that should be inserted at the cursor — do not repeat anything already typed before the cursor, do not add a trailing semicolon unless the statement is clearly complete, output raw SQL only with no markdown fences, no comments, and no explanation. If there is no sensible completion, return an empty string.\n\nCOMMENT-TO-SQL: when the text ends with one or more comment lines (or the cursor is on an empty line directly below comments), treat the comments as the user's intent and write the COMPLETE SQL statement that implements it, starting at the cursor. Prefer the tables/columns listed in the schema below.\n\nSchema (database `{}`):\n{}",
         db_name, schema_text
     );
     let messages = vec![
