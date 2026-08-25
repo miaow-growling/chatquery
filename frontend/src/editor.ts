@@ -777,24 +777,62 @@ export function createEditor(
       editor.trigger("ai", "editor.action.inlineSuggest.trigger", {});
     }, 120);
   });
-  // Comment-to-SQL: cursor right after a `-- comment` (no Enter yet) is an
-  // intent position — proactively ask for the AI ghost. Monaco's inline
-  // trigger is unreliable there (comment tokens aren't "typing SQL").
-  let commentTriggerTimer: ReturnType<typeof setTimeout> | null = null;
-  editor.onDidChangeModelContent(() => {
-    if (!aiEnabled || !aiProviderFn) return;
+  // Comment-to-SQL: while typing a `-- comment` (cursor at line end) or on
+  // the blank line below it, ask the AI for the SQL and INSERT it directly
+  // below the comment (Cmd/Ctrl+Z undoes). Monaco's inline ghost trigger is
+  // unreliable on comment tokens, and a slow model makes a ghost feel
+  // broken — a direct insert is deterministic and visible.
+  let commentInsertBusy = false;
+  let commentInsertTimer: ReturnType<typeof setTimeout> | null = null;
+  const isCommentIntent = (): boolean => {
+    if (!aiEnabled || !aiProviderFn) return false;
     const model = editor.getModel();
     const pos = editor.getPosition();
-    if (!model || !pos) return;
+    if (!model || !pos) return false;
     const line = model.getLineContent(pos.lineNumber);
     const textBefore = line.slice(0, pos.column - 1).trimEnd();
-    // Whole line is a comment and the cursor is at its end.
-    if (!/^--\s*\S/.test(textBefore)) return;
-    if (commentTriggerTimer) clearTimeout(commentTriggerTimer);
-    commentTriggerTimer = setTimeout(() => {
-      if (!aiEnabled) return;
-      editor.trigger("ai", "editor.action.inlineSuggest.trigger", {});
-    }, 400);
+    if (/^--\s*\S/.test(textBefore)) return true;
+    // On an empty line whose PREVIOUS line is a comment.
+    if (textBefore === "" && pos.lineNumber > 1) {
+      const prev = model.getLineContent(pos.lineNumber - 1).trim();
+      return /^--\s*\S/.test(prev);
+    }
+    return false;
+  };
+  editor.onDidChangeModelContent(() => {
+    if (commentInsertBusy) return;
+    if (!isCommentIntent()) return;
+    if (commentInsertTimer) clearTimeout(commentInsertTimer);
+    commentInsertTimer = setTimeout(async () => {
+      if (commentInsertBusy || !isCommentIntent()) return;
+      const model = editor.getModel();
+      const pos = editor.getPosition();
+      if (!model || !pos) return;
+      const prefix = model.getValue().slice(0, model.getOffsetAt(pos));
+      commentInsertBusy = true;
+      try {
+        const suggestion = await aiProviderFn!(prefix);
+        if (!suggestion || !suggestion.trim()) return;
+        // Insert below the comment (at end of the current line).
+        const lineEnd = model.getLineMaxColumn(pos.lineNumber);
+        editor.executeEdits("ai-comment-sql", [
+          {
+            range: {
+              startLineNumber: pos.lineNumber,
+              endLineNumber: pos.lineNumber,
+              startColumn: lineEnd,
+              endColumn: lineEnd,
+            },
+            text: "\n" + suggestion.trim() + "\n",
+          },
+        ]);
+        _onChange(editor.getValue());
+      } catch {
+        // silently skip — the ✨ button already surfaces errors
+      } finally {
+        commentInsertBusy = false;
+      }
+    }, 500);
   });
   // While the suggest popup is open, Monaco filters the ORIGINAL provider
   // result locally on every keystroke — a fuzzy hit like k_task (which
