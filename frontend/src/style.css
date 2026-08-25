@@ -3653,54 +3653,22 @@ select.field-input:disabled {
 }
 
 .vendor-models { margin-top: 8px; }
-.vendor-models-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2);
-  margin-bottom: 6px;
-}
 .vendor-models-title {
   font-size: var(--fs-2xs);
   font-weight: var(--fw-semibold);
   text-transform: uppercase;
   letter-spacing: var(--tracking-wide);
   color: var(--text-tertiary);
+  margin-bottom: 6px;
 }
-/* "↻ 从远程拉取" — fetches the vendor's /models catalog */
-.vendor-pull-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding: 0 10px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-subtle);
-  color: var(--text-secondary);
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-medium);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
-}
-.vendor-pull-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-  border-color: var(--border-strong);
-}
-.vendor-pull-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-/* Searchable remote-model picker (opens below the vendor-models head). */
-.vendor-models { position: relative; }
+/* Remote-catalog combobox — dropdown anchored to the "添加 model" input. */
+.alias-add { position: relative; }
 .remote-picker {
   position: absolute;
+  left: 0;
   right: 0;
-  top: 28px;
+  top: calc(100% + 4px);
   z-index: 30;
-  width: min(420px, 100%);
   display: flex;
   flex-direction: column;
   background: var(--panel-bg, var(--bg-surface));
@@ -3709,26 +3677,10 @@ select.field-input:disabled {
   box-shadow: var(--shadow-pop);
   overflow: hidden;
 }
-.remote-picker-input {
-  margin: 8px;
-  padding: 0 10px;
-  height: 28px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-subtle);
-  color: var(--text-primary);
-  font-size: var(--fs-xs);
-  font-family: var(--font-mono);
-  outline: none;
-}
-.remote-picker-input:focus {
-  border-color: var(--brand);
-  box-shadow: 0 0 0 3px rgba(0, 122, 255, .12);
-}
 .remote-picker-list {
   max-height: 260px;
   overflow-y: auto;
-  padding: 0 4px 6px;
+  padding: 4px;
 }
 .remote-picker-item {
   display: flex;
