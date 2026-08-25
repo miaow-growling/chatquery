@@ -713,7 +713,7 @@ export function createEditor(
   });
 
   // Subscribe to changes
-  editor.onDidChangeModelContent((e) => {
+  editor.onDidChangeModelContent(() => {
     _onChange(editor.getValue());
   });
   // "写注释回车生成 SQL": Enter/Paste don't fire onDidType, so the inline
