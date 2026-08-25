@@ -587,12 +587,20 @@ function ensureCompletionProvider() {
         }
 
         for (const t of tables) {
+          // Skip the literal typed word itself (Monaco already echoes it as
+          // the top suggestion; listing it again is noise).
+          if (t.name === typed) continue;
+          // Fuzzy/typo hits don't contain the typed text, so Monaco's
+          // in-widget local filter (applied on every keystroke while the
+          // popup stays open) would drop them. filterText = typed keeps
+          // them visible; Monaco highlights the label's best match.
           suggestions.push({
             label: t.name,
             kind: t.is_view ? monaco.languages.CompletionItemKind.Interface : monaco.languages.CompletionItemKind.Class,
             detail: t.is_view ? "View 视图" : "Table 数据表",
             documentation: `数据库 ${db} 中的${t.is_view ? "视图" : "数据表"}`,
             insertText: t.name,
+            filterText: typed ? `${typed} ${t.name}` : undefined,
             range,
             sortText: `00_${t.name}`,
           });
