@@ -3678,6 +3678,26 @@ select.field-input:disabled {
 }
 /* Remote-catalog combobox — dropdown anchored to the "添加 model" input. */
 .alias-add { position: relative; }
+.btn-fetch-models {
+  font-size: var(--fs-xs);
+  padding: 4px 10px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--t-fast);
+}
+.btn-fetch-models:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.btn-fetch-models:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .remote-picker {
   position: absolute;
   left: 0;

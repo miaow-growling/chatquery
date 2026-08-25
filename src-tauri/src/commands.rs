@@ -1237,8 +1237,6 @@ pub struct VendorPresetDto {
     pub label: String,
     pub provider: String,
     pub base_url: String,
-    pub model: String,
-    pub models: Vec<String>,
     pub category: String,
     pub note: String,
 }
@@ -1252,8 +1250,6 @@ pub fn get_vendor_presets() -> Vec<VendorPresetDto> {
             label: p.label.to_string(),
             provider: p.provider.as_str().to_string(),
             base_url: p.base_url.to_string(),
-            model: p.model.to_string(),
-            models: p.models.iter().map(|m| m.to_string()).collect(),
             category: p.category.to_string(),
             note: p.note.to_string(),
         })
