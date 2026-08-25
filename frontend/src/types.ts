@@ -183,6 +183,8 @@ export interface VendorPreset {
   provider: string;
   base_url: string;
   model: string;
+  category: "coding_plan" | "api" | string;
+  note?: string;
 }
 
 /// User-defined model alias — a (vendor, base_url, model) shortcut that

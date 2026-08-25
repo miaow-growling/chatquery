@@ -1238,6 +1238,8 @@ pub struct VendorPresetDto {
     pub provider: String,
     pub base_url: String,
     pub model: String,
+    pub category: String,
+    pub note: String,
 }
 
 #[tauri::command]
@@ -1250,6 +1252,8 @@ pub fn get_vendor_presets() -> Vec<VendorPresetDto> {
             provider: p.provider.as_str().to_string(),
             base_url: p.base_url.to_string(),
             model: p.model.to_string(),
+            category: p.category.to_string(),
+            note: p.note.to_string(),
         })
         .collect()
 }

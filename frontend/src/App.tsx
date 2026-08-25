@@ -6462,29 +6462,78 @@ export function App() {
                                   <div className="dim" style={{ padding: 8, fontSize: "var(--fs-xs)" }}>
                                     暂无可用预设
                                   </div>
-                                ) : (
-                                  presets.map((p) => (
-                                    <button
-                                      key={p.id}
-                                      type="button"
-                                      className="field-preset-item"
-                                      onClick={() => {
-                                        setVendorDraft({
-                                          ...vendorDraft,
-                                          name: p.label,
-                                          base_url: p.base_url,
-                                          api_format: "openai",
-                                        });
-                                        setPresetMenuOpen(false);
-                                      }}
-                                    >
-                                      <span className="field-preset-item-name">{p.label}</span>
-                                      <span className="field-preset-item-meta">
-                                        {p.provider} · {p.base_url}
-                                      </span>
-                                    </button>
-                                  ))
-                                )}
+                                ) : (() => {
+                                  const codingList = presets.filter((p) => p.category === "coding_plan");
+                                  const apiList = presets.filter((p) => p.category !== "coding_plan");
+                                  const pick = (p: VendorPreset) => {
+                                    setVendorDraft({
+                                      ...vendorDraft,
+                                      name: p.label,
+                                      base_url: p.base_url,
+                                      api_format: (p.provider === "anthropic" ? "anthropic" : "openai"),
+                                      models: p.model ? [{ name: p.model }] : [],
+                                      newModel: "",
+                                    });
+                                    setPresetMenuOpen(false);
+                                  };
+                                  return (
+                                    <>
+                                      {codingList.length > 0 && (
+                                        <>
+                                          <div className="field-preset-group-title">
+                                            📦 Coding Plan 专区（订阅计划）
+                                          </div>
+                                          {codingList.map((p) => (
+                                            <button
+                                              key={p.id}
+                                              type="button"
+                                              className="field-preset-item"
+                                              onClick={() => pick(p)}
+                                            >
+                                              <div className="field-preset-item-header">
+                                                <span className="field-preset-item-name">{p.label}</span>
+                                                {p.model && (
+                                                  <span className="field-preset-item-chip">{p.model}</span>
+                                                )}
+                                              </div>
+                                              <span className="field-preset-item-meta">
+                                                {p.note || `${p.provider} · ${p.base_url}`}
+                                              </span>
+                                            </button>
+                                          ))}
+                                        </>
+                                      )}
+                                      {apiList.length > 0 && (
+                                        <>
+                                          <div
+                                            className="field-preset-group-title"
+                                            style={{ marginTop: codingList.length > 0 ? 8 : 0 }}
+                                          >
+                                            ⚡ 标准 API 模式（按量计费 / 聚合）
+                                          </div>
+                                          {apiList.map((p) => (
+                                            <button
+                                              key={p.id}
+                                              type="button"
+                                              className="field-preset-item"
+                                              onClick={() => pick(p)}
+                                            >
+                                              <div className="field-preset-item-header">
+                                                <span className="field-preset-item-name">{p.label}</span>
+                                                {p.model && (
+                                                  <span className="field-preset-item-chip">{p.model}</span>
+                                                )}
+                                              </div>
+                                              <span className="field-preset-item-meta">
+                                                {p.note || `${p.provider} · ${p.base_url}`}
+                                              </span>
+                                            </button>
+                                          ))}
+                                        </>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                               </div>
                             )}
                           </div>

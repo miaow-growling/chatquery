@@ -3506,23 +3506,35 @@ select.field-input:disabled {
   z-index: 20;
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  padding: 4px;
+  gap: 2px;
+  padding: 6px;
   background: var(--panel-bg);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
   backdrop-filter: blur(20px) saturate(180%);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-pop);
-  max-height: 240px;
+  max-height: 320px;
   overflow-y: auto;
   animation: pop-in var(--t-fast);
+}
+.field-preset-group-title {
+  display: flex;
+  align-items: center;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-tertiary);
+  padding: 6px 8px 3px;
+  user-select: none;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 2px;
 }
 .field-preset-item {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 1px;
+  gap: 2px;
   padding: 6px 8px;
   background: transparent;
   border: 1px solid transparent;
@@ -3542,8 +3554,25 @@ select.field-input:disabled {
   background: var(--bg-hover);
   border-color: var(--brand);
 }
+.field-preset-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+}
 .field-preset-item-name {
   font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+.field-preset-item-chip {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 10%, var(--bg-inset));
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
   font-weight: var(--fw-medium);
 }
 .field-preset-item-meta {
