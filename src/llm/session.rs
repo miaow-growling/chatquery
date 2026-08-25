@@ -643,7 +643,10 @@ fn render_refs(refs: &[SqlReference], conns: &[ConnectionConfig]) -> Option<Stri
     }
     let mut p = String::from(
         "[用户引用的 SQL]\n以下 SQL 来自用户的查询编辑器，是本次提问的对象。\
-         若需要执行查询或生成优化建议，请严格使用每段引图标注的连接与数据库（以引用为准，不要改用其他连接或数据库）。\n",
+         重要说明：\n\
+         - 若用户意图是「解释 SQL」、「分析 SQL 逻辑/含义」、「审查 SQL 语法」、「优化建议」等咨询性提问，请直接针对 SQL 文本本身进行详细解析与解答，严禁擅自执行该 SQL 或查询数据库数据。\n\
+         - 只有当用户明确要求「执行」、「运行」、「查询实际数据」或「查看执行结果」时，才允许调用 execute_query 工具。\n\
+         - 若确需执行查询，请严格使用每段引图标注的连接与数据库（以引用为准，不要改用其他连接或数据库）。\n",
     );
     for (i, r) in refs.iter().enumerate() {
         let conn_name = conns
@@ -926,6 +929,7 @@ async fn build_system_prompt(
     let mut p = context_block(conns, memory, kb).await;
     p.push_str(
         "\n规则：\n\
+         - 按需调用工具（严禁非必要执行）：用户提问如果是「解释 SQL」、「分析 SQL 含义/结构」、「优化建议」、「语法检查」或一般性咨询，请直接基于 SQL 文本及上下文作答，严禁私自调用 execute_query 去运行 SQL 或查询数据；只有当用户明确要求「执行/运行」、「查询具体数据/统计」时才调用 execute_query。\n\
          - 只使用 execute_query 工具，并指定已知连接名。\n\
          - 优先只读查询；不要臆造表名或列名。\n\
          - 回答简洁（降噪 2026-08-12）：直接给结论与关键数据，不复述问题、不客套、\

@@ -20,14 +20,18 @@ use crate::model::{ChatMessage, ChatRole};
 
 /// Cheap, zero-LLM heuristic: should this task be planned before execution?
 pub fn needs_planning(user_query: &str, history_len: usize) -> bool {
-    // Meta / help questions never need a plan — they are answered directly.
+    // Meta / help / explain questions never need a plan — they are answered directly.
     const META_WORDS: &[&str] = &[
         "介绍一下", "介绍", "用法", "怎么用", "如何使用", "你能做什么", "你是谁",
         "你可以做什么", "功能", "help", "怎么使用", "使用说明", "使用教程", "教程",
         "what can you do", "how to use", "who are you", "introduce yourself",
+        "解释", "解释一下", "解读", "什么意思", "含义", "explain",
     ];
     let lower = user_query.to_lowercase();
-    if META_WORDS.iter().any(|w| user_query.contains(w) || lower.contains(w)) {
+    if META_WORDS.iter().any(|w| user_query.contains(w) || lower.contains(w))
+        && !user_query.contains("运行")
+        && !user_query.contains("执行并")
+    {
         return false;
     }
 
