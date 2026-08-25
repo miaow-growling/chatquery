@@ -350,18 +350,43 @@ function ensureAiInlineProvider() {
         // inlineSuggest.experimental.showOnSuggestConflict:"always".
         activeEditor?.trigger("ai", "hideSuggestWidget", {});
 
-        const range: monaco.IRange = {
-          startLineNumber: position.lineNumber,
-          startColumn: position.column,
-          endLineNumber: position.lineNumber,
-          endColumn: position.column,
-        };
+        // Copilot-style replacement range: when the cursor is mid-word
+        // (`ins|`), replace from the word START so accepting the suggestion
+        // yields `insert into …` instead of `insinsert into …`. The ghost
+        // preview only shows the part after the cursor.
+        const word = model.getWordUntilPosition(position);
+        // The model may restart from the beginning of the current word
+        // (`ins` typed, LLM returns `insert into …`): strip that leading
+        // word overlap so insertion yields `insert into …`, not `insinsert…`.
+        {
+          const wl = (word.word || "").toLowerCase();
+          const sl = suggestion.toLowerCase();
+          if (wl && sl.startsWith(wl)) {
+            suggestion = suggestion.slice(wl.length);
+          }
+        }
+        const replaceRange: monaco.IRange =
+          word.word && word.word.length > 0
+            ? {
+                startLineNumber: position.lineNumber,
+                startColumn: word.startColumn,
+                endLineNumber: position.lineNumber,
+                endColumn: position.column,
+              }
+            : {
+                startLineNumber: position.lineNumber,
+                startColumn: position.column,
+                endLineNumber: position.lineNumber,
+                endColumn: position.column,
+              };
 
         return {
           items: [
             {
-              insertText: suggestion,
-              range,
+              // Full text from word start; Monaco displays only the suffix
+              // beyond the cursor as ghost and replaces the word on accept.
+              insertText: (word.word || "") + suggestion,
+              range: replaceRange,
             },
           ],
         };
