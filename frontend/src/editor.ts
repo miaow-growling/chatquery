@@ -732,6 +732,24 @@ export function createEditor(
   // able to close the suggest widget when a suggestion arrives).
   activeEditor = editor;
 
+  // macOS IMK error bubbles (IMKCFRunLoopWakeUpReliable) steal WebView focus,
+  // and Monaco cancels the in-flight AI request on blur (its controller calls
+  // model.stop('automatic') on editor blur). Refocusing should re-trigger the
+  // ghost so the AI suggestion isn't silently lost after dismissing the bubble.
+  editor.onDidFocusEditorText(() => {
+    if (!aiEnabled || !aiProviderFn) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const pos = editor.getPosition();
+    if (!pos) return;
+    const prefix = model.getValue().slice(0, model.getOffsetAt(pos));
+    if (!prefix.trim()) return;
+    setTimeout(() => {
+      if (!aiEnabled) return;
+      editor.trigger("ai", "editor.action.inlineSuggest.trigger", {});
+    }, 150);
+  });
+
   // Shortcut: Cmd/Ctrl + Enter => onRun()
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
     onRun();
