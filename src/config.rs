@@ -44,9 +44,9 @@ pub const VENDOR_PRESETS: &[VendorPreset] = &[
         id: "minimax-coding",
         label: "MiniMax (Coding Plan)",
         provider: LlmProvider::OpenAi,
-        base_url: "https://api.minimaxi.chat/v1",
+        base_url: "https://api.minimaxi.com/v1",
         category: "coding_plan",
-        note: "MiniMax 国内站 Coding 订阅计划 (api.minimaxi.chat)",
+        note: "MiniMax 国内站 Coding 计划 (api.minimaxi.com)",
     },
     VendorPreset {
         id: "zhipu-coding",
@@ -134,9 +134,9 @@ pub const VENDOR_PRESETS: &[VendorPreset] = &[
         id: "minimax",
         label: "MiniMax (开放平台 API)",
         provider: LlmProvider::OpenAi,
-        base_url: "https://api.minimaxi.chat/v1",
+        base_url: "https://api.minimaxi.com/v1",
         category: "api",
-        note: "MiniMax 国内站接口 (api.minimaxi.chat)",
+        note: "MiniMax 国内站接口 (api.minimaxi.com)",
     },
     VendorPreset {
         id: "tencent",
