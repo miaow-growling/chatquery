@@ -6690,11 +6690,7 @@ export function App() {
           }}
         >
           <div
-            className={
-              "modal settings-modal" +
-              (settingsTab === "kb" ? " kb-wide" : "") +
-              (settingsTab === "model" ? " model-wide" : "")
-            }
+            className="modal settings-modal"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="settings-nav">

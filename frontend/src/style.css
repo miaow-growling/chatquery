@@ -4154,10 +4154,10 @@ select.field-input:disabled {
   border: 1px solid var(--border);
   border-radius: var(--r-xl);
   padding: var(--sp-5);
-  width: 460px;
+  width: 480px;
   max-width: 94vw;
-  max-height: 84vh;
-  overflow: auto;
+  max-height: 86vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
@@ -4290,7 +4290,15 @@ select.field-input:disabled {
   box-shadow: 0 1px 3px rgb(0 122 255 / .25);
 }
 .modal-actions .primary:hover:not(:disabled) { background: var(--brand-hover); color: #fff; border-color: transparent; box-shadow: 0 2px 8px rgb(0 122 255 / .32); }
-.modal.wide { width: 640px; max-width: 94vw; display: flex; flex-direction: column; }
+.modal.wide {
+  width: 760px;
+  max-width: 94vw;
+  height: 620px;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .modal-msg { margin: 0; color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.6; word-break: break-word; }
 
 /* Destructive confirm action — the "执行" button on an AI write request must
@@ -4435,7 +4443,15 @@ select.field-input:disabled {
 }
 
 /* DB picker modal (env → group → conn) */
-.db-picker-modal { width: 420px; max-width: 92vw; max-height: 76vh; }
+.db-picker-modal {
+  width: 480px;
+  max-width: 94vw;
+  height: 580px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .db-pick-filter {
   display: flex;
   align-items: center;
@@ -4458,8 +4474,8 @@ select.field-input:disabled {
 }
 .db-pick-filter input::placeholder { color: var(--text-tertiary); }
 .db-pick-filter-clear {
-  background: none;
   border: none;
+  background: transparent;
   cursor: pointer;
   color: var(--text-tertiary);
   font-size: 14px;
@@ -4474,7 +4490,6 @@ select.field-input:disabled {
 .db-pick-tree {
   flex: 1;
   min-height: 0;
-  max-height: 56vh;
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
@@ -4516,12 +4531,14 @@ select.field-input:disabled {
 
 /* =====================  HISTORY / SNIPPETS  ===================== */
 .history-list {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   margin: var(--sp-2) 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  max-height: 64vh;
+  padding-right: 4px;
 }
 .history-item {
   border: 1px solid var(--border);
@@ -4573,12 +4590,14 @@ select.field-input:disabled {
 
 /* ---- Write-guardrail audit trail (ADR-AI-1 决策3) ---- */
 .audit-list {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   margin: var(--sp-2) 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
-  max-height: 60vh;
+  padding-right: 4px;
 }
 .audit-item {
   border: 1px solid var(--border);
@@ -4762,7 +4781,13 @@ select.field-input:disabled {
 /* The connection modal becomes a fixed-height flex column: title + tab bar
    stay put, only `.conn-tab-body` scrolls. */
 .conn-modal {
+  width: 540px;
+  max-width: 94vw;
+  height: 620px;
+  max-height: 88vh;
   padding: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   gap: 0;
 }
@@ -5013,10 +5038,13 @@ select.field-input:disabled {
 /* =====================  设置 · 左侧模块导航  ===================== */
 .settings-modal {
   position: relative;
+  display: flex;
   flex-direction: row;
   align-items: stretch;
-  width: 720px;
-  max-width: 94vw;
+  width: 880px;
+  max-width: 95vw;
+  height: 640px;
+  max-height: 88vh;
   padding: 0;
   overflow: hidden;
 }
@@ -5028,6 +5056,8 @@ select.field-input:disabled {
   padding: var(--sp-3) var(--sp-2);
   background: var(--bg-subtle);
   border-right: 1px solid var(--border);
+  height: 100%;
+  overflow-y: auto;
 }
 .settings-nav-title {
   font-size: var(--fs-xs);
@@ -5057,7 +5087,8 @@ select.field-input:disabled {
 .settings-content {
   flex: 1 1 auto;
   min-width: 0;
-  max-height: 86vh;
+  min-height: 0;
+  height: 100%;
   overflow-y: auto;
   padding: var(--sp-5);
   display: flex;
@@ -5097,16 +5128,11 @@ select.field-input:disabled {
 }
 .settings-close:hover { background: var(--bg-subtle); color: var(--text-primary); }
 
-/* --- Knowledge base (ADR-AI-6) --- */
-/* Widen the settings modal so the KB two-pane layout has enough room. */
-.settings-modal.kb-wide { width: 880px; max-width: 96vw; }
-
-/* --- Model providers (settings → model) --- */
-/* The two-pane vendor list + form is tight at 720px (the list eats 220px
- * of the content area, leaving the form ~460px). Widen to 840px so the
- * right form has room for full URL + key + the "+ 添加" button without
- * being clipped on common laptop widths. */
-.settings-modal.model-wide { width: 860px; max-width: 96vw; }
+/* --- Knowledge base (ADR-AI-6) & Model providers: unified into fixed-size container --- */
+.settings-modal.kb-wide,
+.settings-modal.model-wide {
+  width: 880px;
+}
 
 /* ===== PHP UNSERIALIZER TOOL ===== */
 .php-tool-modal {
@@ -5594,10 +5620,13 @@ select.field-input:disabled {
    tokens so the user can select and copy the whole value.
 */
 .cell-view-modal {
-  width: 760px;
-  max-width: 92vw;
-  max-height: 82vh;
+  width: 780px;
+  max-width: 94vw;
+  height: 580px;
+  max-height: 86vh;
   padding: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 .cell-view-head {
