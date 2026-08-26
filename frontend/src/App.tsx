@@ -696,6 +696,24 @@ interface DbPickerProps {
   onClose: () => void;
 }
 
+/** 渲染带有搜索关键词高亮的文本 */
+function highlightMatch(text: string, query: string): React.ReactNode {
+  const q = query.trim();
+  if (!q) return text;
+  const idx = text.toLowerCase().indexOf(q.toLowerCase());
+  if (idx === -1) return text;
+  const before = text.slice(0, idx);
+  const matched = text.slice(idx, idx + q.length);
+  const after = text.slice(idx + q.length);
+  return (
+    <>
+      {before}
+      <span className="search-match">{matched}</span>
+      {highlightMatch(after, query)}
+    </>
+  );
+}
+
 function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerProps) {
   const roots = useMemo(() => buildPickerRoots(tree), [tree]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -706,8 +724,8 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
   /// trade-off to keep the picker fast on large accounts).
   const [filter, setFilter] = useState("");
 
-  // Auto-expand type and env nodes whenever the tree changes so the user
-  // starts at the group level.
+  // Auto-expand type, env, and active connection whenever the tree changes so the user
+  // starts with the active connection expanded and loaded.
   useEffect(() => {
     if (roots.length === 0) return;
     setExpanded((prev) => {
@@ -715,12 +733,38 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
       for (const r of roots) {
         next[r.key] = true;
         if (r.kind === "type") {
-          for (const e of r.children) next[e.key] = true;
+          for (const e of r.children) {
+            next[e.key] = true;
+            if (e.kind === "env") {
+              for (const g of e.children) {
+                next[g.key] = true;
+              }
+            }
+          }
         }
+      }
+      if (activeConnId) {
+        next[`conn:${activeConnId}`] = true;
       }
       return next;
     });
-  }, [roots]);
+
+    // 打开弹框时若当前已有连接，自动触发拉取其数据库列表
+    if (activeConnId) {
+      const key = `conn:${activeConnId}`;
+      if (!(key in dbs) && !loading[key]) {
+        for (const env of tree.environments) {
+          for (const g of env.groups) {
+            const found = g.connections.find((c) => c.id === activeConnId);
+            if (found) {
+              void toggleConn(found);
+              break;
+            }
+          }
+        }
+      }
+    }
+  }, [roots, activeConnId]);
 
   // Does this node (or any of its descendants) match the active filter?
   // Used at render time to skip non-matching branches. We don't touch
@@ -830,42 +874,76 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
             {node.kind === "conn" ? (isOpen ? "▾" : "▸") : hasChildren ? (isOpen ? "▾" : "▸") : ""}
           </span>
           <span className="badge">{iconFor(node)}</span>
-          <span className="tree-label">{node.kind === "conn" ? node.conn.name : node.name}</span>
+          <span className="tree-label">
+            {highlightMatch(node.kind === "conn" ? node.conn.name : node.name, filter)}
+          </span>
           {node.kind === "conn" && loading[`conn:${node.conn.id}`] && (
             <span className="tree-loading">…</span>
           )}
         </div>
-        {node.kind === "conn" && isOpen && (
-          <div>
-            <div
-              className={
-                "tree-row db-pick-item" +
-                (node.conn.id === activeConnId && activeDb == null ? " active" : "")
-              }
-              style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
-              onClick={() => onSelect(node.conn.id, null)}
-            >
-              <span className="tw leaf" />
-              <span className="badge">🏠</span>
-              <span className="tree-label">连接默认库</span>
+        {node.kind === "conn" && isOpen && (() => {
+          const q = filter.trim().toLowerCase();
+          const allDbs = dbs[`conn:${node.conn.id}`] ?? [];
+          const hasDbMatch = q ? allDbs.some((db) => db.toLowerCase().includes(q)) : false;
+          const connNameMatches = q ? node.conn.name.toLowerCase().includes(q) : false;
+
+          // 筛选可见数据库：若有明确匹配搜索词的数据库，仅展示匹配项；若仅连接名命中，则展示全部
+          const visibleDbs = q && hasDbMatch
+            ? allDbs.filter((db) => db.toLowerCase().includes(q))
+            : allDbs;
+
+          const showDefaultDb =
+            !q || (!hasDbMatch && connNameMatches) || "连接默认库".includes(q) || "default".includes(q);
+
+          return (
+            <div>
+              {showDefaultDb && (
+                <div
+                  className={
+                    "tree-row db-pick-item" +
+                    (node.conn.id === activeConnId && activeDb == null ? " active" : "")
+                  }
+                  style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
+                  onClick={() => onSelect(node.conn.id, null)}
+                >
+                  <span className="tw leaf" />
+                  <span className="badge">🏠</span>
+                  <span className="tree-label">
+                    {highlightMatch("连接默认库", filter)}
+                  </span>
+                </div>
+              )}
+              {visibleDbs.map((db) => (
+                <div
+                  key={db}
+                  className={
+                    "tree-row db-pick-item" +
+                    (node.conn.id === activeConnId && activeDb === db ? " active" : "")
+                  }
+                  style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
+                  onClick={() => onSelect(node.conn.id, db)}
+                >
+                  <span className="tw leaf" />
+                  <span className="badge">🗄</span>
+                  <span className="tree-label">{highlightMatch(db, filter)}</span>
+                </div>
+              ))}
+              {q && visibleDbs.length === 0 && !showDefaultDb && (
+                <div
+                  className="dim"
+                  style={{
+                    paddingLeft: `${(depth + 1) * 16 + 8}px`,
+                    fontSize: "var(--fs-xs)",
+                    paddingTop: "4px",
+                    paddingBottom: "4px",
+                  }}
+                >
+                  无匹配数据库
+                </div>
+              )}
             </div>
-            {(dbs[`conn:${node.conn.id}`] ?? []).map((db) => (
-              <div
-                key={db}
-                className={
-                  "tree-row db-pick-item" +
-                  (node.conn.id === activeConnId && activeDb === db ? " active" : "")
-                }
-                style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
-                onClick={() => onSelect(node.conn.id, db)}
-              >
-                <span className="tw leaf" />
-                <span className="badge">🗄</span>
-                <span className="tree-label">{db}</span>
-              </div>
-            ))}
-          </div>
-        )}
+          );
+        })()}
         {node.kind !== "conn" && isOpen &&
           kids
             .map((c) => renderNode(c, depth + 1))
