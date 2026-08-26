@@ -121,7 +121,7 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
   );
 }
 
-/** 解析消息中的 <think>...</think> 深度思考内容 */
+/** 解析消息中的 <think>...</think> 深度思考内容（支持多段 think 与流式未闭合） */
 interface ParsedMessage {
   thinking: string | null;
   isThinking: boolean;
@@ -131,29 +131,66 @@ interface ParsedMessage {
 function splitThinkContent(raw: string): ParsedMessage {
   if (!raw) return { thinking: null, isThinking: false, content: "" };
 
-  const startTag = "<think>";
-  const endTag = "</think>";
-  const lower = raw.toLowerCase();
-  const sIdx = lower.indexOf(startTag);
+  const startTagRegex = /<\s*think\s*>/gi;
+  const endTagRegex = /<\s*\/\s*think\s*>/gi;
 
-  if (sIdx !== -1) {
-    const eIdx = lower.indexOf(endTag, sIdx + startTag.length);
-    if (eIdx !== -1) {
-      // Completed <think>...</think>
-      const before = raw.slice(0, sIdx).trim();
-      const thinking = raw.slice(sIdx + startTag.length, eIdx).trim();
-      const after = raw.slice(eIdx + endTag.length).trim();
-      const content = before && after ? `${before}\n\n${after}` : before || after;
-      return { thinking, isThinking: false, content };
+  const thinkParts: string[] = [];
+  const contentParts: string[] = [];
+  let isThinking = false;
+
+  let pos = 0;
+  const len = raw.length;
+
+  while (pos < len) {
+    // 寻找下一个 <think>
+    startTagRegex.lastIndex = pos;
+    const startMatch = startTagRegex.exec(raw);
+
+    if (!startMatch) {
+      // 后面没有 <think> 了，全部归入正文
+      contentParts.push(raw.slice(pos));
+      break;
+    }
+
+    // <think> 之前的部分归入正文
+    if (startMatch.index > pos) {
+      contentParts.push(raw.slice(pos, startMatch.index));
+    }
+
+    const thoughtStart = startMatch.index + startMatch[0].length;
+
+    // 寻找配对的 </think>
+    endTagRegex.lastIndex = thoughtStart;
+    const endMatch = endTagRegex.exec(raw);
+
+    if (endMatch) {
+      // 已完整闭合的 <think>...</think>
+      const thought = raw.slice(thoughtStart, endMatch.index).trim();
+      if (thought) {
+        thinkParts.push(thought);
+      }
+      pos = endMatch.index + endMatch[0].length;
     } else {
-      // Unclosed <think>... (streaming in progress)
-      const before = raw.slice(0, sIdx).trim();
-      const thinking = raw.slice(sIdx + startTag.length).trim();
-      return { thinking, isThinking: true, content: before };
+      // 未闭合的 <think>（流式输出中）
+      const thought = raw.slice(thoughtStart).trim();
+      if (thought) {
+        thinkParts.push(thought);
+      }
+      isThinking = true;
+      pos = len;
+      break;
     }
   }
 
-  return { thinking: null, isThinking: false, content: raw };
+  const thinking = thinkParts.length > 0 ? thinkParts.join("\n\n---\n\n") : null;
+  const content = contentParts
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .replace(/<\s*\/?\s*think\s*>/gi, "")
+    .trim();
+
+  return { thinking, isThinking, content };
 }
 
 /** 思考过程可折叠组件 */
@@ -4127,7 +4164,9 @@ export function App() {
         scope: "message",
         message_id: m.id,
         title: c.title,
-        preview: (m.role === "user" ? "用户: " : "AI: ") + m.content.slice(0, 40),
+        preview:
+          (m.role === "user" ? "用户: " : "AI: ") +
+          (splitThinkContent(m.content || "").content || m.content || "").slice(0, 40),
       },
     ]);
   };
@@ -5639,7 +5678,9 @@ export function App() {
                   onClick={() => pickMsgRef(convMsgPick, m)}
                 >
                   <span className={"conv-msg-role " + m.role}>{m.role}</span>
-                  <span className="conv-msg-text">{m.content.slice(0, 80) || "…"}</span>
+                  <span className="conv-msg-text">
+                    {(splitThinkContent(m.content || "").content || m.content || "").slice(0, 80) || "…"}
+                  </span>
                 </div>
               ))}
               {convMsgList.length === 0 && (
