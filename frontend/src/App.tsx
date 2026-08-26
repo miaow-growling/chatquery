@@ -6721,7 +6721,7 @@ export function App() {
               </button>
             </div>
 
-            <div className="settings-content">
+            <div className={"settings-content" + (settingsTab === "kb" ? " kb-content-flush" : "")}>
               {/* --- 模块一：模型设置（LLM） --- */}
               {settingsTab === "model" && (
                 <div className="settings-page">
@@ -7392,30 +7392,50 @@ export function App() {
                     {/* 左：文档列表 */}
                     <div className="kb-list">
                       <div className="kb-list-header">
-                        <span>知识库文档</span>
-                        <button className="kb-new" onClick={startNewKb}>
+                        <div className="kb-header-title">
+                          <span>知识库文档</span>
+                          <span className="kb-count-pill">{kbDocs.length}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn-kb-new"
+                          title="新建知识库文档"
+                          onClick={startNewKb}
+                        >
                           ＋ 新建
                         </button>
                       </div>
                       <div className="kb-list-scroll">
                         {kbDocs.length === 0 && (
-                          <div className="kb-empty">暂无文档，点击上方新建</div>
-                        )}
-                        {kbDocs.map((d) => (
-                          <div
-                            key={d.id}
-                            className={
-                              "kb-list-item" +
-                              (kbEditing && kbEditing.id === d.id ? " active" : "")
-                            }
-                            onClick={() => editKb(d)}
-                          >
-                            <div className="kb-list-name">{d.name}</div>
-                            <div className="kb-list-meta">
-                              {d.bindings.length} 个绑定 · {d.content.length} 字
-                            </div>
+                          <div className="kb-empty-box">
+                            <span className="kb-empty-icon">📂</span>
+                            <span>暂无文档</span>
+                            <small>点击上方「＋ 新建」添加业务说明</small>
                           </div>
-                        ))}
+                        )}
+                        {kbDocs.map((d) => {
+                          const isCur = kbEditing?.id === d.id;
+                          return (
+                            <div
+                              key={d.id}
+                              className={"kb-list-item" + (isCur ? " active" : "")}
+                              onClick={() => editKb(d)}
+                            >
+                              <div className="kb-item-head">
+                                <span className="kb-item-icon">📄</span>
+                                <span className="kb-list-name" title={d.name}>
+                                  {d.name || "未命名文档"}
+                                </span>
+                              </div>
+                              <div className="kb-list-meta">
+                                <span className="kb-badge-bind">
+                                  {d.bindings.length > 0 ? `🔗 ${d.bindings.length} 处绑定` : "未绑定"}
+                                </span>
+                                <span className="kb-badge-chars">{d.content.length} 字</span>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -7423,135 +7443,196 @@ export function App() {
                     <div className="kb-editor">
                       {!kbIsNew && !kbEditing ? (
                         <div className="kb-empty-large">
-                          选择左侧文档编辑，或点击「新建」开始。
+                          <div className="kb-empty-hero">
+                            <div className="kb-empty-hero-icon">📚</div>
+                            <h4>知识库与上下文增强</h4>
+                            <p>
+                              在此维护数据库表结构说明、字段业务含义与口径规范。
+                              在已绑定的数据库提问时，AI 会智能检索相关文档作为上下文参考。
+                            </p>
+                            <button
+                              type="button"
+                              className="btn btn-primary kb-hero-btn"
+                              onClick={startNewKb}
+                            >
+                              ＋ 新建知识库文档
+                            </button>
+                          </div>
                         </div>
                       ) : (
-                        <div className="kb-editor-card">
-                          <label>
-                            名称
-                            <input
-                              value={kbName}
-                              placeholder="例如：订单库业务说明"
-                              onChange={(e) => setKbName(e.target.value)}
-                            />
-                          </label>
+                        <div className="kb-form-container">
+                          <div className="kb-form-header">
+                            <h4>{kbEditing ? "编辑知识库文档" : "新建知识库文档"}</h4>
+                            {kbEditing && (
+                              <span className="kb-id-tag">ID: {kbEditing.id}</span>
+                            )}
+                          </div>
 
-                          <label className="kb-content-label">
-                            内容（纯文本 / Markdown）
-                            <div className="kb-content-row">
+                          <div className="kb-form-body">
+                            {/* 文档名称 */}
+                            <div className="kb-field-group">
+                              <label className="kb-label">
+                                <span>文档名称 <span className="req">*</span></span>
+                                <input
+                                  className="kb-input"
+                                  value={kbName}
+                                  placeholder="例如：电商订单业务与核心表说明、会员状态口径"
+                                  onChange={(e) => setKbName(e.target.value)}
+                                />
+                              </label>
+                            </div>
+
+                            {/* 文档内容 */}
+                            <div className="kb-field-group">
+                              <div className="kb-content-head">
+                                <label className="kb-label-inline">
+                                  文档内容（Markdown / 纯文本） <span className="req">*</span>
+                                </label>
+                                <div className="kb-content-actions">
+                                  <span className="kb-char-count">{kbContent.length} 字</span>
+                                  <CertPickButton
+                                    accept=".txt,.md,.markdown,.text,text/plain,text/markdown"
+                                    title="从文件导入（.txt / .md）"
+                                    onPick={(t) => setKbContent(t)}
+                                  />
+                                </div>
+                              </div>
                               <textarea
                                 className="kb-textarea"
                                 value={kbContent}
-                                placeholder="粘贴或撰写知识内容，例如表含义、字段口径、统计口径、常见查询示例…"
+                                placeholder="编写表含义、核心字段业务口径、常用关联 SQL 等知识内容…&#10;&#10;示例：&#10;## 订单库 (order_db) 业务说明&#10;- orders: 订单主表，status: 1 待支付，2 已完成，3 已取消&#10;- order_items: 订单明细表，以 order_id 关联主表&#10;&#10;## 常用统计口径&#10;- GMV 计算：status IN (1, 2) 且 is_deleted = 0"
                                 onChange={(e) => setKbContent(e.target.value)}
                               />
-                              <CertPickButton
-                                accept=".txt,.md,.markdown,.text,text/plain,text/markdown"
-                                title="从文件导入（.txt / .md）"
-                                onPick={(t) => setKbContent(t)}
-                              />
+                              <div className="kb-field-hint">
+                                💡 提示：支持标准 Markdown。AI 会在提问时结合语义检索最相关的片段辅助 SQL 生成与分析。
+                              </div>
                             </div>
-                            <span className="kb-count">{kbContent.length} 字</span>
-                          </label>
 
-                          <div className="kb-bindings">
-                            <div className="kb-bindings-head">
-                              <span>绑定到连接 / 数据库</span>
-                              <span className="kb-bindings-sub">
-                                绑定后 AI 会在对应连接 / 库下引用本文档
-                              </span>
-                            </div>
-                            {kbBindings.length === 0 && (
-                              <div className="kb-empty">尚未绑定任何连接</div>
-                            )}
-                            {kbBindings.map((b, i) => {
-                              const c = allConns.find((x) => x.id === b.conn_id);
-                              return (
-                                <div className="kb-binding-row" key={i}>
-                                  <span className="kb-binding-conn">
-                                    {c ? c.name : b.conn_id}
-                                  </span>
-                                  <span className="kb-binding-db">
-                                    {b.database ?? "整条连接"}
-                                  </span>
-                                  <button
-                                    className="kb-binding-del"
-                                    title="移除该绑定"
-                                    onClick={() => removeKbBinding(i)}
-                                  >
-                                    ×
-                                  </button>
+                            {/* 绑定连接/库 */}
+                            <div className="kb-bindings-card">
+                              <div className="kb-bindings-head">
+                                <div>
+                                  <div className="kb-bindings-title">🔗 绑定到连接 / 数据库</div>
+                                  <div className="kb-bindings-sub">
+                                    绑定后，AI 仅在选中的连接或具体数据库中对话时才自动引用本文档
+                                  </div>
                                 </div>
-                              );
-                            })}
-                            <div className="kb-binding-add">
-                              <select
-                                value={kbNewConn}
-                                onChange={(e) => {
-                                  setKbNewConn(e.target.value);
-                                  setKbNewDb("");
-                                  if (e.target.value) void loadKbDbs(e.target.value);
-                                }}
-                              >
-                                <option value="">选择连接…</option>
-                                {allConns.map((c) => (
-                                  <option key={c.id} value={c.id}>
-                                    {c.name}
-                                  </option>
-                                ))}
-                              </select>
-                              <select
-                                value={kbNewDb}
-                                disabled={!kbNewConn}
-                                onChange={(e) => setKbNewDb(e.target.value)}
-                              >
-                                <option value="">整条连接</option>
-                                {(kbDbCache[kbNewConn] ?? []).map((db) => (
-                                  <option key={db} value={db}>
-                                    {db}
-                                  </option>
-                                ))}
-                                {kbLoadingDbs === kbNewConn && (
-                                  <option value="">加载中…</option>
+                              </div>
+
+                              <div className="kb-bindings-list">
+                                {kbBindings.length === 0 ? (
+                                  <div className="kb-bindings-empty">
+                                    ⚠️ 尚未绑定任何数据库连接（文档当前未生效，请在下方选择连接进行绑定）
+                                  </div>
+                                ) : (
+                                  kbBindings.map((b, i) => {
+                                    const c = allConns.find((x) => x.id === b.conn_id);
+                                    const isRedis = c?.db_type === "redis";
+                                    return (
+                                      <div className="kb-binding-chip" key={i}>
+                                        <span className="kb-binding-icon">
+                                          {isRedis ? "🔴" : "🐬"}
+                                        </span>
+                                        <span className="kb-binding-conn-name">
+                                          {c ? c.name : b.conn_id}
+                                        </span>
+                                        <span className="kb-binding-dot">/</span>
+                                        <span className="kb-binding-db-name">
+                                          {b.database ? `🗄 ${b.database}` : "整条连接（全部库）"}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          className="kb-binding-chip-del"
+                                          title="移除此绑定"
+                                          onClick={() => removeKbBinding(i)}
+                                        >
+                                          ×
+                                        </button>
+                                      </div>
+                                    );
+                                  })
                                 )}
-                              </select>
-                              <button
-                                className="primary"
-                                disabled={!kbNewConn}
-                                onClick={() => {
-                                  addKbBinding(
-                                    kbNewConn,
-                                    kbNewDb === "" ? null : kbNewDb
-                                  );
-                                  setKbNewDb("");
-                                }}
-                              >
-                                添加
-                              </button>
+                              </div>
+
+                              <div className="kb-binding-add-bar">
+                                <select
+                                  className="kb-select"
+                                  value={kbNewConn}
+                                  onChange={(e) => {
+                                    setKbNewConn(e.target.value);
+                                    setKbNewDb("");
+                                    if (e.target.value) void loadKbDbs(e.target.value);
+                                  }}
+                                >
+                                  <option value="">请选择连接…</option>
+                                  {allConns.map((c) => (
+                                    <option key={c.id} value={c.id}>
+                                      {c.db_type === "redis" ? "🔴 " : "🐬 "}
+                                      {c.name}
+                                    </option>
+                                  ))}
+                                </select>
+
+                                <select
+                                  className="kb-select"
+                                  value={kbNewDb}
+                                  disabled={!kbNewConn}
+                                  onChange={(e) => setKbNewDb(e.target.value)}
+                                >
+                                  <option value="">整条连接（默认库）</option>
+                                  {(kbDbCache[kbNewConn] ?? []).map((db) => (
+                                    <option key={db} value={db}>
+                                      🗄 {db}
+                                    </option>
+                                  ))}
+                                  {kbLoadingDbs === kbNewConn && (
+                                    <option value="" disabled>
+                                      加载库列表中…
+                                    </option>
+                                  )}
+                                </select>
+
+                                <button
+                                  type="button"
+                                  className="btn-kb-add-bind"
+                                  disabled={!kbNewConn}
+                                  onClick={() => {
+                                    addKbBinding(
+                                      kbNewConn,
+                                      kbNewDb === "" ? null : kbNewDb
+                                    );
+                                    setKbNewDb("");
+                                  }}
+                                >
+                                  ＋ 添加绑定
+                                </button>
+                              </div>
                             </div>
                           </div>
 
-                          <div className="modal-actions">
+                          <div className="kb-form-footer">
                             <button
-                              className="primary"
+                              type="button"
+                              className="btn btn-primary kb-btn-save"
                               onClick={() => void saveKbDoc()}
                             >
                               {kbEditing ? "保存文档" : "创建文档"}
                             </button>
                             {kbEditing && (
                               <button
-                                className="primary danger"
+                                type="button"
+                                className="btn btn-danger kb-btn-delete"
                                 onClick={() => void deleteKb(kbEditing)}
                               >
-                                删除
+                                删除文档
                               </button>
                             )}
+                            {kbMsg && (
+                              <div className={"cfg-msg " + (kbMsg.ok ? "ok" : "err")}>
+                                {kbMsg.text}
+                              </div>
+                            )}
                           </div>
-                          {kbMsg && (
-                            <div className={"cfg-msg " + (kbMsg.ok ? "ok" : "err")}>
-                              {kbMsg.text}
-                            </div>
-                          )}
                         </div>
                       )}
                     </div>
