@@ -41,20 +41,12 @@ pub struct VendorPreset {
 pub const VENDOR_PRESETS: &[VendorPreset] = &[
     // --- 1. Coding Plan 分组 (订阅制代码计划) ---
     VendorPreset {
-        id: "minimax-coding-intl",
-        label: "MiniMax (Coding Plan / 国际站)",
-        provider: LlmProvider::OpenAi,
-        base_url: "https://api.minimax.chat/v1",
-        category: "coding_plan",
-        note: "MiniMax 国际站 Coding 套餐 (api.minimax.chat)",
-    },
-    VendorPreset {
-        id: "minimax-coding-cn",
-        label: "MiniMax (国内开放平台)",
+        id: "minimax-coding",
+        label: "MiniMax (Coding Plan)",
         provider: LlmProvider::OpenAi,
         base_url: "https://api.minimaxi.chat/v1",
         category: "coding_plan",
-        note: "MiniMax 国内站 (api.minimaxi.chat)",
+        note: "MiniMax 国内站 Coding 订阅计划 (api.minimaxi.chat)",
     },
     VendorPreset {
         id: "zhipu-coding",
@@ -116,7 +108,7 @@ pub const VENDOR_PRESETS: &[VendorPreset] = &[
     // --- 2. 标准 API 模式 ---
     VendorPreset {
         id: "deepseek",
-        label: "DeepSeek (标准 API)",
+        label: "DeepSeek (官方 API)",
         provider: LlmProvider::OpenAi,
         base_url: "https://api.deepseek.com/v1",
         category: "api",
@@ -139,16 +131,8 @@ pub const VENDOR_PRESETS: &[VendorPreset] = &[
         note: "BigModel 开放平台接口",
     },
     VendorPreset {
-        id: "minimax-intl",
-        label: "MiniMax (国际站 API)",
-        provider: LlmProvider::OpenAi,
-        base_url: "https://api.minimax.chat/v1",
-        category: "api",
-        note: "MiniMax 国际站接口 (api.minimax.chat)",
-    },
-    VendorPreset {
         id: "minimax",
-        label: "MiniMax (国内站 API)",
+        label: "MiniMax (开放平台 API)",
         provider: LlmProvider::OpenAi,
         base_url: "https://api.minimaxi.chat/v1",
         category: "api",
@@ -169,30 +153,6 @@ pub const VENDOR_PRESETS: &[VendorPreset] = &[
         base_url: "https://tokenhub.tencentmaas.com/v1",
         category: "api",
         note: "TokenHub 统一网关",
-    },
-    VendorPreset {
-        id: "openai",
-        label: "OpenAI",
-        provider: LlmProvider::OpenAi,
-        base_url: "https://api.openai.com/v1",
-        category: "api",
-        note: "OpenAI 官方接口",
-    },
-    VendorPreset {
-        id: "anthropic",
-        label: "Anthropic Claude",
-        provider: LlmProvider::Anthropic,
-        base_url: "https://api.anthropic.com/v1",
-        category: "api",
-        note: "Claude 官方接口 (Anthropic 协议)",
-    },
-    VendorPreset {
-        id: "openrouter",
-        label: "OpenRouter",
-        provider: LlmProvider::OpenAi,
-        base_url: "https://openrouter.ai/api/v1",
-        category: "api",
-        note: "海外多模型聚合网关",
     },
     VendorPreset {
         id: "ollama",
