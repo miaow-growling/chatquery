@@ -121,24 +121,100 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
   );
 }
 
+/** 解析消息中的 <think>...</think> 深度思考内容 */
+interface ParsedMessage {
+  thinking: string | null;
+  isThinking: boolean;
+  content: string;
+}
+
+function splitThinkContent(raw: string): ParsedMessage {
+  if (!raw) return { thinking: null, isThinking: false, content: "" };
+
+  const startTag = "<think>";
+  const endTag = "</think>";
+  const lower = raw.toLowerCase();
+  const sIdx = lower.indexOf(startTag);
+
+  if (sIdx !== -1) {
+    const eIdx = lower.indexOf(endTag, sIdx + startTag.length);
+    if (eIdx !== -1) {
+      // Completed <think>...</think>
+      const before = raw.slice(0, sIdx).trim();
+      const thinking = raw.slice(sIdx + startTag.length, eIdx).trim();
+      const after = raw.slice(eIdx + endTag.length).trim();
+      const content = before && after ? `${before}\n\n${after}` : before || after;
+      return { thinking, isThinking: false, content };
+    } else {
+      // Unclosed <think>... (streaming in progress)
+      const before = raw.slice(0, sIdx).trim();
+      const thinking = raw.slice(sIdx + startTag.length).trim();
+      return { thinking, isThinking: true, content: before };
+    }
+  }
+
+  return { thinking: null, isThinking: false, content: raw };
+}
+
+/** 思考过程可折叠组件 */
+function ThinkingBlock({ text, isThinking }: { text: string; isThinking: boolean }) {
+  const [open, setOpen] = useState<boolean>(isThinking);
+
+  useEffect(() => {
+    if (isThinking) setOpen(true);
+  }, [isThinking]);
+
+  return (
+    <div className={`thinking-container ${isThinking ? "is-thinking" : ""}`}>
+      <details
+        className="thinking-details"
+        open={open}
+        onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      >
+        <summary className="thinking-summary">
+          <span className="thinking-icon">{isThinking ? "💭" : "💡"}</span>
+          <span className="thinking-title">
+            {isThinking ? "思考中…" : "思考过程"}
+          </span>
+          <span className="thinking-hint">{open ? "收起" : "展开"}</span>
+        </summary>
+        <div className="thinking-content">
+          <pre className="thinking-text">{text}</pre>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 /** 渲染 AI 消息内容为 Markdown：标题/加粗/列表/代码块/表格/链接等。
  *  用 react-markdown + remark-gfm，默认不 dangerouslySetInnerHTML，XSS 安全。 */
 function MarkdownMessage({ content }: { content: string }) {
+  const { thinking, isThinking, content: actualContent } = splitThinkContent(content);
+
   return (
     <div className="md">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          a: ({ href, children }) => (
-            <a href={href} target="_blank" rel="noreferrer">
-              {children}
-            </a>
-          ),
-          pre: CodeBlock,
-        }}
-      >
-        {content}
-      </ReactMarkdown>
+      {thinking && (
+        <ThinkingBlock text={thinking} isThinking={isThinking} />
+      )}
+      {actualContent ? (
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            a: ({ href, children }) => (
+              <a href={href} target="_blank" rel="noreferrer">
+                {children}
+              </a>
+            ),
+            pre: CodeBlock,
+          }}
+        >
+          {actualContent}
+        </ReactMarkdown>
+      ) : isThinking ? null : (
+        <span className="dim" style={{ fontSize: "var(--fs-xs)" }}>
+          （无正文回复）
+        </span>
+      )}
     </div>
   );
 }
@@ -5293,7 +5369,9 @@ export function App() {
                     className={"msg-copy" + (copiedIdx === i ? " copied" : "")}
                     title="复制消息"
                     onClick={async () => {
-                      const ok = await copyText(m.content || "");
+                      const parsed = splitThinkContent(m.content || "");
+                      const toCopy = parsed.content || m.content || "";
+                      const ok = await copyText(toCopy);
                       if (ok) {
                         setCopiedIdx(i);
                         setTimeout(() => setCopiedIdx((p) => (p === i ? null : p)), 1500);

@@ -2524,6 +2524,83 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   line-height: 1.65;
   word-break: break-word;
 }
+
+/* ---- Thinking / Reasoning block (<think>...</think>) ---- */
+.thinking-container {
+  margin: 2px 0 10px;
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+  transition: all var(--t-fast);
+}
+.thinking-container.is-thinking {
+  border-color: color-mix(in srgb, var(--brand) 30%, var(--border));
+  background: color-mix(in srgb, var(--brand) 4%, var(--bg-inset));
+}
+.thinking-details {
+  width: 100%;
+}
+.thinking-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--fw-medium);
+  list-style: none;
+  transition: color var(--t-fast), background var(--t-fast);
+}
+.thinking-summary::-webkit-details-marker {
+  display: none;
+}
+.thinking-summary:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+.thinking-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.thinking-title {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.is-thinking .thinking-title {
+  color: var(--brand);
+}
+.thinking-hint {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-elevated);
+}
+.thinking-content {
+  padding: 8px 12px 10px;
+  border-top: 1px dashed var(--border-soft);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  max-height: 300px;
+  overflow-y: auto;
+}
+.thinking-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+}
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 .md p { margin: 6px 0; }
