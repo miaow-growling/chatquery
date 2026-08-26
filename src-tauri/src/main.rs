@@ -60,6 +60,7 @@ fn main() {
             explain_query,
             log_query,
             list_queries,
+            prune_queries,
             save_query,
             delete_query,
             get_schema,

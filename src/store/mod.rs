@@ -275,13 +275,19 @@ impl Storage {
         Ok(())
     }
 
-    /// Return recent queries (most recent first), capped to the last 200.
+    /// Return recent queries (most recent first), capped to default 200.
     pub fn list_queries(&self) -> Result<Vec<QueryRow>> {
+        self.list_queries_with_limit(None)
+    }
+
+    /// Return recent queries (most recent first), capped to `limit` (default 200).
+    pub fn list_queries_with_limit(&self, limit: Option<usize>) -> Result<Vec<QueryRow>> {
+        let cap = limit.unwrap_or(200);
         let mut stmt = self.conn.prepare(
             "SELECT id, name, sql, conn_id, db, created FROM queries
-             ORDER BY created DESC LIMIT 200",
+             ORDER BY created DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map(params![cap as i64], |r| {
             Ok(QueryRow {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -296,6 +302,23 @@ impl Storage {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// Prune old un-named query execution history (keeping at most `max_history` items).
+    /// Named snippets (`name IS NOT NULL`) are user-saved and never pruned.
+    pub fn prune_queries_history(&self, max_history: usize) -> Result<usize> {
+        let deleted = self.conn.execute(
+            "DELETE FROM queries
+             WHERE name IS NULL
+               AND id NOT IN (
+                   SELECT id FROM queries
+                   WHERE name IS NULL
+                   ORDER BY created DESC
+                   LIMIT ?1
+               )",
+            params![max_history as i64],
+        )?;
+        Ok(deleted)
     }
 
     /// Upsert a named snippet. When `id` is None, a new named row is inserted;
@@ -987,6 +1010,33 @@ mod tests {
         let dbs: Vec<Option<String>> = rows.iter().map(|r| r.1.clone()).collect();
         assert!(dbs.contains(&None));
         assert!(dbs.contains(&Some("mydb".to_string())));
+    }
+
+    #[test]
+    fn query_history_limit_and_pruning() {
+        let s = mem_store();
+        for i in 1..=5 {
+            s.log_query(Some("c1"), Some("db1"), &format!("SELECT {i}")).unwrap();
+        }
+        // Save one snippet
+        s.save_query(None, "my_fav", "SELECT 999", Some("c1"), Some("db1")).unwrap();
+
+        // 5 history + 1 snippet = 6
+        let all = s.list_queries().unwrap();
+        assert_eq!(all.len(), 6);
+
+        // List with limit 2
+        let limited = s.list_queries_with_limit(Some(2)).unwrap();
+        assert_eq!(limited.len(), 2);
+
+        // Prune un-named history to 2 entries
+        let deleted = s.prune_queries_history(2).unwrap();
+        assert_eq!(deleted, 3);
+
+        // After pruning: 2 history + 1 snippet = 3
+        let remaining = s.list_queries().unwrap();
+        assert_eq!(remaining.len(), 3);
+        assert!(remaining.iter().any(|q| q.name.as_deref() == Some("my_fav")));
     }
 
     // --- Conversation persistence ----------------------------------------

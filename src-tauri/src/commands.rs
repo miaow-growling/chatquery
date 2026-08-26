@@ -422,22 +422,28 @@ pub fn log_query(
     conn_id: Option<String>,
     db: Option<String>,
     sql: String,
+    limit: Option<usize>,
 ) -> Result<(), String> {
-    state
-        .store
-        .lock()
-        .unwrap()
+    let store = state.store.lock().unwrap();
+    store
         .log_query(conn_id.as_deref(), db.as_deref(), &sql)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if let Some(lim) = limit {
+        let _ = store.prune_queries_history(lim);
+    }
+    Ok(())
 }
 
 #[tauri::command]
-pub fn list_queries(state: State<AppState>) -> Result<Vec<QueryItem>, String> {
+pub fn list_queries(
+    state: State<AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<QueryItem>, String> {
     state
         .store
         .lock()
         .unwrap()
-        .list_queries()
+        .list_queries_with_limit(limit)
         .map(|rows| {
             rows.into_iter()
                 .map(|r| QueryItem {
@@ -450,6 +456,19 @@ pub fn list_queries(state: State<AppState>) -> Result<Vec<QueryItem>, String> {
                 })
                 .collect()
         })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn prune_queries(
+    state: State<AppState>,
+    limit: usize,
+) -> Result<usize, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .prune_queries_history(limit)
         .map_err(|e| e.to_string())
 }
 

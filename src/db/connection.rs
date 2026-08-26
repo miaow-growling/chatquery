@@ -206,6 +206,14 @@ impl ConnectionStore {
         self.storage.list_queries()
     }
 
+    pub fn list_queries_with_limit(&self, limit: Option<usize>) -> Result<Vec<QueryRow>> {
+        self.storage.list_queries_with_limit(limit)
+    }
+
+    pub fn prune_queries_history(&self, max_history: usize) -> Result<usize> {
+        self.storage.prune_queries_history(max_history)
+    }
+
     pub fn save_query(
         &self,
         id: Option<&str>,

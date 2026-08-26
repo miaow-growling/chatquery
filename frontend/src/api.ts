@@ -56,6 +56,18 @@ export function getQueryTimeoutSecs(): number {
   return Math.min(Math.max(1, Math.floor(n)), QUERY_TIMEOUT_MAX);
 }
 
+/// SQL execution history retention limit. Stored in localStorage and applied
+/// both on listing queries and automatically pruning un-named history records.
+const QUERY_HISTORY_LIMIT_LS_KEY = "cq_query_history_limit";
+const QUERY_HISTORY_LIMIT_DEFAULT = 200;
+const QUERY_HISTORY_LIMIT_MAX = 5000;
+export function getQueryHistoryLimit(): number {
+  const raw = localStorage.getItem(QUERY_HISTORY_LIMIT_LS_KEY);
+  const n = raw == null ? NaN : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return QUERY_HISTORY_LIMIT_DEFAULT;
+  return Math.min(Math.max(10, Math.floor(n)), QUERY_HISTORY_LIMIT_MAX);
+}
+
 export const api = {
   /// Full tree model (environments → groups → connections), supersedes
   /// `list_connections`.
@@ -183,9 +195,21 @@ export const api = {
   explainQuery: (connId: string, query: string, db?: string | null) =>
     invoke<QueryOutput>("explain_query", { connId, query, db: db ?? "" }),
   // Query history / saved snippets.
-  logQuery: (connId: string | null, db: string | null, sql: string) =>
-    invoke("log_query", { connId, db, sql }),
-  listQueries: () => invoke<QueryItem[]>("list_queries"),
+  logQuery: (connId: string | null, db: string | null, sql: string, limit?: number) =>
+    invoke("log_query", {
+      connId,
+      db,
+      sql,
+      limit: limit ?? getQueryHistoryLimit(),
+    }),
+  listQueries: (limit?: number) =>
+    invoke<QueryItem[]>("list_queries", {
+      limit: limit ?? getQueryHistoryLimit(),
+    }),
+  pruneHistory: (limit?: number) =>
+    invoke<number>("prune_queries", {
+      limit: limit ?? getQueryHistoryLimit(),
+    }),
   saveQuery: (
     id: string | null,
     name: string,

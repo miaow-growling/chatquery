@@ -1436,6 +1436,12 @@ export function App() {
       return Math.min(1800, Math.max(1, Math.floor(n)));
     }
   );
+  const [queryHistoryLimit, setQueryHistoryLimit] = useState<number>(() => {
+    const raw = localStorage.getItem("cq_query_history_limit");
+    const n = raw == null ? NaN : Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return 200;
+    return Math.min(5000, Math.max(10, Math.floor(n)));
+  });
 
   // --- Resizable chat panel -----------------------------------------------
   const isResizingChat = useRef(false);
@@ -6559,7 +6565,21 @@ export function App() {
         return (
         <div className="modal-mask" onClick={() => setHistoryOpen(false)}>
           <div className="modal wide" onClick={(e) => e.stopPropagation()}>
-            <h3>查询历史 / 片段</h3>
+            <h3>
+              查询历史 / 片段
+              {historyTab === "history" && (
+                <span
+                  className="dim"
+                  style={{
+                    fontSize: "var(--fs-xs)",
+                    fontWeight: "normal",
+                    marginLeft: 8,
+                  }}
+                >
+                  （保留上限: {queryHistoryLimit} 条）
+                </span>
+              )}
+            </h3>
             <div className="seg">
               <button
                 className={historyTab === "history" ? "seg-on" : ""}
@@ -7321,28 +7341,50 @@ export function App() {
               {/* --- 模块三：通用偏好 --- */}
               {settingsTab === "general" && (
                 <div className="settings-page">
-                  <h3>通用</h3>
+                  <h3>通用设置</h3>
                   <div className="settings-group">
-                  <label className="cfg-input">
-                    <span>
-                      单条查询超时（秒）
-                      <small>
-                        执行 SQL/Redis 命令的服务端兜底时长，超时后会以错误返回。范围 1 ~ 1800，默认 300（5 分钟）。改完即生效，不需要重启。
-                      </small>
-                    </span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={1800}
-                      step={30}
-                      value={queryTimeoutSecs}
-                      onChange={(e) => {
-                        const v = Math.max(1, Math.min(1800, Math.floor(Number(e.target.value) || 1)));
-                        setQueryTimeoutSecs(v);
-                        localStorage.setItem("cq_query_timeout_secs", String(v));
-                      }}
-                    />
-                  </label>
+                    <label className="cfg-input">
+                      <span>
+                        单条查询超时（秒）
+                        <small>
+                          执行 SQL/Redis 命令的服务端兜底时长，超时后会以错误返回。范围 1 ~ 1800，默认 300（5 分钟）。改完即生效，不需要重启。
+                        </small>
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={1800}
+                        step={30}
+                        value={queryTimeoutSecs}
+                        onChange={(e) => {
+                          const v = Math.max(1, Math.min(1800, Math.floor(Number(e.target.value) || 1)));
+                          setQueryTimeoutSecs(v);
+                          localStorage.setItem("cq_query_timeout_secs", String(v));
+                        }}
+                      />
+                    </label>
+
+                    <label className="cfg-input">
+                      <span>
+                        SQL 执行历史保留条数
+                        <small>
+                          记录执行过的 SQL 历史条数上限，超过该数量的最早未收藏历史记录会自动清理。范围 10 ~ 5000，默认 200。改完即生效。
+                        </small>
+                      </span>
+                      <input
+                        type="number"
+                        min={10}
+                        max={5000}
+                        step={50}
+                        value={queryHistoryLimit}
+                        onChange={(e) => {
+                          const v = Math.max(10, Math.min(5000, Math.floor(Number(e.target.value) || 10)));
+                          setQueryHistoryLimit(v);
+                          localStorage.setItem("cq_query_history_limit", String(v));
+                          void api.pruneHistory(v);
+                        }}
+                      />
+                    </label>
                   </div>
                 </div>
               )}
