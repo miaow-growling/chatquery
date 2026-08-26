@@ -82,6 +82,28 @@ function CopyIcon() {
   );
 }
 
+/** 导入到编辑器图标（内联 SVG：进入文档/编辑器）。 */
+function ImportSqlIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="13"
+      height="13"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="8" y1="13" x2="16" y2="13" />
+      <polyline points="12 9 16 13 12 17" />
+    </svg>
+  );
+}
+
 /** 从 React 子树里抽纯文本，用来喂剪贴板（避开 react-markdown 传进来的
  *  <code> 元素层级）。递归处理字符串、数字、数组、React 元素。 */
 function nodeText(node: React.ReactNode): string {
@@ -94,28 +116,52 @@ function nodeText(node: React.ReactNode): string {
   return "";
 }
 
-/** AI 消息里的代码块：在右上角加一个独立复制按钮，只复制代码内容。
- *  用 useMemo 缓存一次就行，codeText 在 children 引用变化时才重算。 */
-function CodeBlock({ children }: { children?: React.ReactNode }) {
+/** AI 消息里的代码块：在右上角支持复制代码与一键导入到查询。
+ *  用 useMemo 缓存一次，codeText 在 children 引用变化时才重算。 */
+function CodeBlock({
+  children,
+  onImport,
+}: {
+  children?: React.ReactNode;
+  onImport?: (code: string) => void;
+}) {
   const [copied, setCopied] = useState(false);
+  const [imported, setImported] = useState(false);
   const codeText = useMemo(() => nodeText(children).replace(/\n$/, ""), [children]);
   return (
     <div className="md-code">
-      <button
-        type="button"
-        className={"md-code-copy" + (copied ? " copied" : "")}
-        title="复制代码"
-        aria-label="复制代码"
-        onClick={async () => {
-          const ok = await copyText(codeText);
-          if (ok) {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          }
-        }}
-      >
-        {copied ? "✓" : <CopyIcon />}
-      </button>
+      <div className="md-code-actions">
+        {onImport && (
+          <button
+            type="button"
+            className={"md-code-btn md-code-import" + (imported ? " imported" : "")}
+            title="导入到查询（相同数据库实例追加到末尾，否则新建查询）"
+            aria-label="导入到查询"
+            onClick={() => {
+              onImport(codeText);
+              setImported(true);
+              setTimeout(() => setImported(false), 1500);
+            }}
+          >
+            {imported ? "✓" : <ImportSqlIcon />}
+          </button>
+        )}
+        <button
+          type="button"
+          className={"md-code-btn md-code-copy" + (copied ? " copied" : "")}
+          title="复制代码"
+          aria-label="复制代码"
+          onClick={async () => {
+            const ok = await copyText(codeText);
+            if (ok) {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }
+          }}
+        >
+          {copied ? "✓" : <CopyIcon />}
+        </button>
+      </div>
       <pre>{children}</pre>
     </div>
   );
@@ -225,8 +271,28 @@ function ThinkingBlock({ text, isThinking }: { text: string; isThinking: boolean
 
 /** 渲染 AI 消息内容为 Markdown：标题/加粗/列表/代码块/表格/链接等。
  *  用 react-markdown + remark-gfm，默认不 dangerouslySetInnerHTML，XSS 安全。 */
-function MarkdownMessage({ content }: { content: string }) {
+function MarkdownMessage({
+  content,
+  onImportSql,
+}: {
+  content: string;
+  onImportSql?: (sql: string) => void;
+}) {
   const { thinking, isThinking, content: actualContent } = splitThinkContent(content);
+
+  const customComponents = useMemo(
+    () => ({
+      a: ({ href, children }: any) => (
+        <a href={href} target="_blank" rel="noreferrer">
+          {children}
+        </a>
+      ),
+      pre: ({ children }: any) => (
+        <CodeBlock onImport={onImportSql}>{children}</CodeBlock>
+      ),
+    }),
+    [onImportSql]
+  );
 
   return (
     <div className="md">
@@ -236,14 +302,7 @@ function MarkdownMessage({ content }: { content: string }) {
       {actualContent ? (
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
-          components={{
-            a: ({ href, children }) => (
-              <a href={href} target="_blank" rel="noreferrer">
-                {children}
-              </a>
-            ),
-            pre: CodeBlock,
-          }}
+          components={customComponents}
         >
           {actualContent}
         </ReactMarkdown>
@@ -3851,6 +3910,113 @@ export function App() {
     }
   };
 
+  /// 将代码块中的 SQL 一键导入到查询中（相同数据库实例追加在末尾，否则新建查询）
+  const handleImportToEditor = useCallback(
+    (sqlText: string) => {
+      if (!sqlText || !sqlText.trim()) {
+        showToast("代码块内容为空");
+        return;
+      }
+      const sql = sqlText.trim();
+      const targetConnId = chatConnId || active?.connId || selId || "";
+      const targetDb = chatDb !== undefined ? chatDb : (active?.db ?? selDb ?? null);
+
+      // 寻找相同数据库实例的已有查询标签页
+      // 优先级：
+      // 1. 当前 active 标签页连接与库均匹配
+      // 2. 其他标签页中连接与库完全匹配
+      // 3. 当前 active 标签页连接匹配
+      // 4. 其他标签页中相同连接匹配
+      let targetTab: QueryTab | null = null;
+      if (targetConnId) {
+        if (active && active.connId === targetConnId && (!targetDb || active.db === targetDb)) {
+          targetTab = active;
+        } else {
+          const exactMatch = tabs.find(
+            (t) => t.connId === targetConnId && (targetDb ? t.db === targetDb : true)
+          );
+          if (exactMatch) {
+            targetTab = exactMatch;
+          } else if (active && active.connId === targetConnId) {
+            targetTab = active;
+          } else {
+            targetTab = tabs.find((t) => t.connId === targetConnId) || null;
+          }
+        }
+      }
+
+      if (targetTab) {
+        // 存在相同数据库实例的查询：在最后追加
+        const currentSql =
+          targetTab.id === activeTabIdRef.current
+            ? (editorRef.current?.getDoc() ?? targetTab.sql)
+            : targetTab.sql;
+        const trimmed = currentSql.trim();
+        const newDoc = trimmed ? `${trimmed}\n\n${sql}\n` : `${sql}\n`;
+
+        setTabs((prev) =>
+          prev.map((t) =>
+            t.id === targetTab.id
+              ? { ...t, sql: newDoc, db: t.db || targetDb }
+              : t
+          )
+        );
+
+        if (targetTab.id !== activeTabIdRef.current) {
+          activeTabIdRef.current = targetTab.id;
+          setActiveTabId(targetTab.id);
+          clearEditState();
+        }
+
+        editorRef.current?.replaceValue(newDoc);
+        editorRef.current?.view.focus();
+
+        const ed = editorRef.current?.editor;
+        if (ed) {
+          const model = ed.getModel();
+          if (model) {
+            const lineCount = model.getLineCount();
+            ed.revealLine(lineCount);
+            ed.setPosition({
+              lineNumber: lineCount,
+              column: model.getLineMaxColumn(lineCount),
+            });
+          }
+        }
+
+        showToast(`已追加到「${targetTab.name}」末尾`);
+      } else {
+        // 不存在相同实例的查询：建一个新的，包含数据库连接和 SQL
+        const id = genTabId();
+        const n = tabs.length + 1;
+        const newDoc = `${sql}\n`;
+        const newTabObj: QueryTab = {
+          id,
+          name: "查询 " + n,
+          sql: newDoc,
+          result: null,
+          browseCtx: null,
+          connId: targetConnId,
+          db: targetDb,
+        };
+
+        setTabs((prev) => [...prev, newTabObj]);
+        activeTabIdRef.current = id;
+        setActiveTabId(id);
+        clearEditState();
+        editorRef.current?.replaceValue(newDoc);
+        editorRef.current?.view.focus();
+
+        showToast(
+          targetConnId
+            ? `已新建「${newTabObj.name}」并导入 SQL`
+            : `已新建「${newTabObj.name}」并导入 SQL（未指定连接）`
+        );
+      }
+    },
+    [chatConnId, chatDb, active, selId, selDb, tabs, showToast, clearEditState]
+  );
+
   // --- Query history / saved snippets --------------------------------------
   const openHistory = async () => {
     try {
@@ -5426,7 +5592,10 @@ export function App() {
                   <div className="msg-bubble">
                     <div className="msg-role">{roleLabel(m.role)}</div>
                     <div className="msg-body">
-                      <MarkdownMessage content={m.content || "…"} />
+                      <MarkdownMessage
+                        content={m.content || "…"}
+                        onImportSql={handleImportToEditor}
+                      />
                     </div>
                   </div>
                 )}
