@@ -3668,36 +3668,43 @@ select.field-input:disabled {
 }
 
 .vendor-models { margin-top: 8px; }
+.vendor-models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
 .vendor-models-title {
   font-size: var(--fs-2xs);
   font-weight: var(--fw-semibold);
   text-transform: uppercase;
   letter-spacing: var(--tracking-wide);
   color: var(--text-tertiary);
-  margin-bottom: 6px;
 }
-/* Remote-catalog combobox — dropdown anchored to the "添加 model" input. */
-.alias-add { position: relative; }
 .btn-fetch-models {
-  font-size: var(--fs-xs);
-  padding: 4px 10px;
+  font-size: var(--fs-2xs);
+  padding: 3px 8px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  color: var(--text-secondary);
+  border-radius: var(--r-sm);
+  color: var(--brand);
   cursor: pointer;
   white-space: nowrap;
+  font-weight: var(--fw-medium);
   transition: all var(--t-fast);
 }
 .btn-fetch-models:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--brand) 12%, var(--bg-hover));
+  border-color: var(--brand);
+  color: var(--brand-hover);
 }
 .btn-fetch-models:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
+  color: var(--text-tertiary);
 }
+/* Remote-catalog combobox — dropdown anchored to the "添加 model" input. */
+.alias-add { position: relative; }
 .remote-picker {
   position: absolute;
   left: 0;

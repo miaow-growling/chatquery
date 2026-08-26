@@ -6632,19 +6632,23 @@ export function App() {
                             </select>
                           </Field>
                         </div>
-                        {/* Model list — always visible. The list source is
-                         * `vendorDraft.models` in BOTH edit and create mode:
-                         *   • edit mode: synced from `vendorProfiles[i].models`
-                         *     on select; each add/delete also persists via
-                         *     `saveModelAlias` so the backend stays in sync.
-                         *   • create mode: starts as `[]`; each add/delete just
-                         *     mutates the draft. The list is included in the
-                         *     "添加供应商" save at the bottom. */}
+                        {/* Model list — always visible. */}
                         <div className="vendor-models">
-                          <div className="vendor-models-title">模型列表</div>
+                          <div className="vendor-models-head">
+                            <span className="vendor-models-title">模型列表</span>
+                            <button
+                              type="button"
+                              className="btn-fetch-models"
+                              title="通过 GET /models 接口拉取该服务商支持的最新完整模型目录"
+                              disabled={modelsFetching || !vendorDraft.base_url.trim()}
+                              onClick={() => void ensureCatalog(true)}
+                            >
+                              {modelsFetching ? "正在拉取…" : "🔄 从接口拉取模型"}
+                            </button>
+                          </div>
                           {vendorDraft.models.length === 0 && (
-                            <div className="dim" style={{ fontSize: "var(--fs-xs)" }}>
-                              还没有 model
+                            <div className="dim" style={{ fontSize: "var(--fs-xs)", marginBottom: 6 }}>
+                              还没有 model（填好密钥后点右上角「从接口拉取模型」或下方直接输入添加）
                             </div>
                           )}
                           {vendorDraft.models.map((m) => (
@@ -6684,14 +6688,14 @@ export function App() {
                               </button>
                             </div>
                           ))}
-                          <div className="alias-add" style={{ gridTemplateColumns: "1fr auto auto" }}>
+                          <div className="alias-add" style={{ gridTemplateColumns: "1fr auto" }}>
                             <input
                               placeholder={
                                 modelsFetching
                                   ? "正在从远程接口拉取最新模型目录…"
                                   : remoteCatalog && remoteCatalog.length > 0
-                                  ? `在 ${remoteCatalog.length} 个远程模型中搜索 / 输入…`
-                                  : "输入 model 名称，或填好密钥后点击「拉取模型」"
+                                  ? `在拉取的 ${remoteCatalog.length} 个模型中搜索 / 输入…`
+                                  : "输入 model 名称（按 Enter 或点右侧「+ 添加」）"
                               }
                               value={vendorDraft.newModel}
                               autoComplete="off"
@@ -6730,15 +6734,6 @@ export function App() {
                                 addModel(newName);
                               }}
                             />
-                            <button
-                              type="button"
-                              className="btn-fetch-models"
-                              title="通过 GET /models 接口拉取该服务商支持的最新完整模型目录"
-                              disabled={modelsFetching || !vendorDraft.base_url.trim()}
-                              onClick={() => void ensureCatalog(true)}
-                            >
-                              {modelsFetching ? "拉取中…" : "🔄 拉取模型"}
-                            </button>
                             <button
                               className="primary"
                               disabled={
