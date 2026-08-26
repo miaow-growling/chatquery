@@ -2701,38 +2701,6 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   color: var(--success-500);
   border-color: var(--success-500);
 }
-.md-code-copy {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-elevated, var(--bg-subtle));
-  color: var(--text-secondary);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.14);
-}
-.md-code:hover .md-code-copy,
-.md-code-copy:focus-visible {
-  opacity: 1;
-}
-.md-code-copy:hover {
-  color: var(--brand);
-  border-color: var(--brand-border);
-}
-.md-code-copy.copied {
-  opacity: 1;
-  color: var(--success-500);
-  border-color: var(--success-500);
-}
 /* Tables (GFM) */
 .md table {
   border-collapse: collapse;
