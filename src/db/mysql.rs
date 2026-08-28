@@ -70,34 +70,68 @@ pub fn is_stale_connection_err(e: &sqlx::Error) -> bool {
     }
 }
 
-/// Wrap an async DB op with one-shot retry on stale-connection errors.
+/// Wrap an async DB op with stale-connection retry (up to 3 attempts).
+/// Between attempts the connection's cached pool is invalidated, so each
+/// retry builds a brand-new connection instead of drawing another possibly
+/// dead one from the same pool.
 ///
 /// sqlx 的 `test_before_acquire` ping 本应把死连接挡在 `acquire` 阶段，
 /// 但它跟 server 端的 `wait_timeout` 关闭存在时序 race，ping 刚刚成功
 /// 紧接着 server 就把 socket 关了——`fetch` / `execute` 就在管道里
-/// 撞到 `got 0 bytes at EOF`。再 `acquire` 一次会拿到新连接（或被
-/// sqlx 自动重连），这一次就能跑通。两次重试之上就不再叠——继续 retry
-/// 只会掩盖真正的网络/权限问题。
+/// 撞到 `got 0 bytes at EOF`。走 rdsproxy 这类代理时更糟：代理会按自己的
+/// 空闲超时**整池**杀连接，单纯重试（从同一个池 acquire）大概率再撞一次。
+/// 所以重试前先作废缓存池，让下一次尝试走全新建连；3 次之上不再叠——
+/// 继续 retry 只会掩盖真正的网络/权限问题。
 ///
-/// 用法：把所有公共 DB 入口的 body 包进闭包，复用 `is_stale_connection_err`：
+/// `database` 是闭包里连接池使用的库名（决定缓存池 key），与
+/// `connect_pool` / `connect_pool_db` 的取库逻辑保持一致。
+///
 /// ```ignore
-/// with_stale_retry("mysql.browse", || async {
-///     let pool = connect_pool_db(cfg, db).await?;
+/// with_stale_retry("mysql.browse", cfg, database, || async {
+///     let pool = connect_pool_db(cfg, database).await?;
 ///     sqlx::query(...).fetch_all(&pool).await.map_err(AppError::Sqlx)
 /// }).await
 /// ```
-async fn with_stale_retry<F, Fut, T>(label: &str, mut op: F) -> Result<T>
+async fn with_stale_retry<F, Fut, T>(
+    label: &str,
+    cfg: &ConnectionConfig,
+    database: &str,
+    mut op: F,
+) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
-    match op().await {
-        Ok(v) => Ok(v),
-        Err(AppError::Sqlx(e)) if is_stale_connection_err(&e) => {
-            eprintln!("{label}: stale connection ({}); retrying once", e);
-            op().await
+    const MAX_ATTEMPTS: usize = 3;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match op().await {
+            Ok(v) => return Ok(v),
+            Err(AppError::Sqlx(e)) if is_stale_connection_err(&e) && attempt < MAX_ATTEMPTS => {
+                eprintln!(
+                    "{label}: stale connection ({}); dropping cached pool and retrying ({}/{})",
+                    e,
+                    attempt + 1,
+                    MAX_ATTEMPTS
+                );
+                invalidate_pool_cache(cfg, database);
+            }
+            Err(other) => return Err(other),
         }
-        Err(other) => Err(other),
+    }
+    unreachable!("every loop branch returns")
+}
+
+/// Drop a connection's cached pool from the LRU table so the next
+/// `get_pool` builds a fresh one. Deliberately does NOT `close()`: pools
+/// still holding in-flight connections from concurrent tasks stay alive
+/// until those finish; idle connections die with the final Arc drop.
+fn invalidate_pool_cache(cfg: &ConnectionConfig, database: &str) {
+    let key = pool_key(cfg, database);
+    let mut g = pool_cache().lock().unwrap();
+    if g.pools.remove(&key).is_some() {
+        if let Some(pos) = g.order.iter().position(|k| k == &key) {
+            g.order.remove(pos);
+        }
     }
 }
 
@@ -123,7 +157,11 @@ pub async fn query(
     // occasionally hand back a connection the server has already closed;
     // sqlx's `test_before_acquire` ping sometimes races the close and
     // EOF leaks through. One retry on a fresh pool entry is enough.
-    with_stale_retry("mysql.query", || {
+    let key_db = match database {
+        Some(d) if !d.is_empty() => d,
+        _ => cfg.database.as_str(),
+    };
+    with_stale_retry("mysql.query", cfg, key_db, || {
         query_once(cfg, sql, database, allow_risky)
     })
     .await
@@ -240,10 +278,13 @@ pub async fn query_paged(
     // Stale-connection retry (2026-08-17): same race-the-ping issue as
     // `query` — the COUNT(*) probe or the page fetch can hit EOF when
     // sqlx's test_before_acquire ping raced the server-side close. Wrap
-    // the whole post-routing body (pool acquire + COUNT + page stream)
-    // so a single retry re-acquires from the cached pool with a fresh
-    // connection.
-    with_stale_retry("mysql.query_paged", || async {
+    // the whole post-routing body (pool acquire + COUNT + page stream);
+    // each retry invalidates the cached pool so it re-connects fresh.
+    let key_db = match database {
+        Some(d) if !d.is_empty() => d,
+        _ => cfg.database.as_str(),
+    };
+    with_stale_retry("mysql.query_paged", cfg, key_db, || async {
         let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
         let offset = page.saturating_mul(page_size);
         let pool = match database {
@@ -852,7 +893,7 @@ pub async fn schema(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Sc
             cfg.database.clone()
         }
     };
-    with_stale_retry("mysql.schema", || async {
+    with_stale_retry("mysql.schema", cfg, &db, || async {
         let pool = connect_pool_db(cfg, &db).await?;
         // CAST every INFORMATION_SCHEMA text column to CHAR so sqlx decodes them as
         // VARCHAR instead of BINARY (binary charset would break String mapping).
@@ -907,7 +948,7 @@ pub async fn schema(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Sc
 
 /// Lightweight connectivity check used by the connection form.
 pub async fn test(cfg: &ConnectionConfig) -> Result<()> {
-    with_stale_retry("mysql.test", || async {
+    with_stale_retry("mysql.test", cfg, &cfg.database, || async {
         let pool = connect_pool(cfg).await?;
         sqlx::query("SELECT 1")
             .execute(&pool)
@@ -955,7 +996,7 @@ pub struct TableMeta {
 
 /// List non-system databases on the server (Navicat's "database" level).
 pub async fn list_databases(cfg: &ConnectionConfig) -> Result<Vec<String>> {
-    with_stale_retry("mysql.list_databases", || async {
+    with_stale_retry("mysql.list_databases", cfg, &cfg.database, || async {
         // 只查 INFORMATION_SCHEMA，无需（也不应）连接 mysql 系统库——托管账号往往
         // 对 mysql 库无权限。走默认连接（空库或无库连接均可）。
         let pool = connect_pool(cfg).await?;
@@ -980,7 +1021,7 @@ pub async fn list_databases(cfg: &ConnectionConfig) -> Result<Vec<String>> {
 
 /// List tables and views within a single database, ordered by name.
 pub async fn list_tables(cfg: &ConnectionConfig, database: &str) -> Result<Vec<TableMeta>> {
-    with_stale_retry("mysql.list_tables", || async {
+    with_stale_retry("mysql.list_tables", cfg, database, || async {
         let pool = connect_pool_db(cfg, database).await?;
         // INFORMATION_SCHEMA text columns are defined with a binary charset in MySQL,
         // so sqlx reports them as SQL type BINARY and refuses to map them to String.
@@ -1045,7 +1086,7 @@ pub async fn search_tables(
     like: Option<&str>,
     limit: usize,
 ) -> Result<Vec<TableMeta>> {
-    with_stale_retry("mysql.search_tables", || async {
+    with_stale_retry("mysql.search_tables", cfg, database, || async {
         let pool = connect_pool_db(cfg, database).await?;
 
         // FUZZY mode: `~k_tsk~` — edit-distance (≤2) match against every
@@ -1141,7 +1182,7 @@ pub async fn list_columns(
     database: &str,
     table: &str,
 ) -> Result<Vec<ColumnInfo>> {
-    with_stale_retry("mysql.list_columns", || async {
+    with_stale_retry("mysql.list_columns", cfg, database, || async {
         let pool = connect_pool_db(cfg, database).await?;
         // CAST every INFORMATION_SCHEMA text column to CHAR: on some servers
         // (e.g. older MySQL behind rdsproxy) they are declared with a binary
@@ -1201,7 +1242,7 @@ pub async fn browse(
     page: usize,
     page_size: usize,
 ) -> Result<QueryResult> {
-    with_stale_retry("mysql.browse", || async {
+    with_stale_retry("mysql.browse", cfg, database, || async {
         let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
         let offset = page.saturating_mul(page_size);
         let pool = connect_pool_db(cfg, database).await?;
@@ -1287,7 +1328,7 @@ pub async fn apply_edit(
     // Wrap the whole body (tx + execute + commit) in stale-retry. If begin()
     // or execute() hits EOF, sqlx auto-rolls back the half-started tx on
     // drop and the retry re-runs against a freshly-acquired connection.
-    with_stale_retry("mysql.apply_edit", || async {
+    with_stale_retry("mysql.apply_edit", cfg, database, || async {
         let pool = connect_pool_db(cfg, database).await?;
         let table_ref = qualified_table(database, table);
 
@@ -1335,7 +1376,7 @@ pub async fn insert_row(
     if values.is_empty() {
         return Ok(());
     }
-    with_stale_retry("mysql.insert_row", || async {
+    with_stale_retry("mysql.insert_row", cfg, database, || async {
         let pool = connect_pool_db(cfg, database).await?;
         let table_ref = qualified_table(database, table);
 
@@ -1375,7 +1416,7 @@ pub async fn delete_row(
             "无法删除：该表没有主键，无法安全定位行".into(),
         ));
     }
-    with_stale_retry("mysql.delete_row", || async {
+    with_stale_retry("mysql.delete_row", cfg, database, || async {
         let pool = connect_pool_db(cfg, database).await?;
         let table_ref = qualified_table(database, table);
 
@@ -1447,7 +1488,7 @@ pub async fn describe_table(
     database: &str,
     table: &str,
 ) -> Result<TableStructure> {
-    with_stale_retry("mysql.describe_table", || async {
+    with_stale_retry("mysql.describe_table", cfg, database, || async {
         let pool = connect_pool_db(cfg, database).await?;
 
         // 1. Column details — use COLUMN_TYPE (full) and EXTRA which list_columns
@@ -1549,7 +1590,7 @@ pub async fn list_relationships(
     cfg: &ConnectionConfig,
     database: &str,
 ) -> Result<Vec<ForeignKeyInfo>> {
-    with_stale_retry("mysql.list_relationships", || async {
+    with_stale_retry("mysql.list_relationships", cfg, database, || async {
         let pool = connect_pool_db(cfg, database).await?;
         // CAST every INFORMATION_SCHEMA text column to CHAR: they use a binary
         // charset and would decode as SQL type BINARY, incompatible with Rust String.
@@ -1651,7 +1692,11 @@ pub async fn explain_visual(
     query: &str,
     database: Option<&str>,
 ) -> Result<ExplainVisual> {
-    with_stale_retry("mysql.explain_visual", || async {
+    let key_db = match database {
+        Some(d) if !d.is_empty() => d,
+        _ => cfg.database.as_str(),
+    };
+    with_stale_retry("mysql.explain_visual", cfg, key_db, || async {
         let pool = match database {
             Some(db) if !db.is_empty() => connect_pool_db(cfg, db).await?,
             _ => connect_pool(cfg).await?,
@@ -1864,6 +1909,55 @@ fn parse_table(t: &serde_json::Value) -> ExplainNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 作废缓存池：remove 后 LRU 表里不再有该 key，下一次 get_pool 会全新建连。
+    fn fake_cfg() -> ConnectionConfig {
+        ConnectionConfig {
+            id: "t1".into(),
+            name: "test".into(),
+            db_type: crate::db::connection::DbType::Mysql,
+            host: "127.0.0.1".into(),
+            port: 3306,
+            user: "u".into(),
+            password: "p".into(),
+            database: "db1".into(),
+            ssl_mode: String::new(),
+            ssl_ca: String::new(),
+            client_cert: String::new(),
+            client_key: String::new(),
+            ssh_host: String::new(),
+            ssh_port: 0,
+            ssh_user: String::new(),
+            ssh_auth_kind: String::new(),
+            ssh_password: String::new(),
+            ssh_private_key: String::new(),
+            group_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn invalidate_pool_cache_drops_key() {
+        let cfg = fake_cfg();
+        let key = pool_key(&cfg, &cfg.database);
+        // connect_lazy_with 不发起真实连接，只构造一个可入缓存的池对象。
+        let opts = MySqlConnectOptions::new()
+            .host("127.0.0.1")
+            .port(1)
+            .username("u")
+            .password("p");
+        let lazy = MySqlPoolOptions::new().connect_lazy_with(opts);
+        {
+            let mut g = pool_cache().lock().unwrap();
+            g.pools.insert(key.clone(), lazy);
+            g.order.push_back(key.clone());
+        }
+        invalidate_pool_cache(&cfg, &cfg.database);
+        let g = pool_cache().lock().unwrap();
+        assert!(!g.pools.contains_key(&key));
+        assert!(!g.order.contains(&key));
+        // 不存在的 key 重复作废是安全 no-op。
+        invalidate_pool_cache(&cfg, &cfg.database);
+    }
 
     /// utf8mb4_bin 的 VARCHAR 在协议里带 BINARY 标志，sqlx 按 Vec<u8> 解码，
     /// 但载荷是明文 —— 必须显示原文而不是 0x hex（回归：model_name 列）。
