@@ -966,6 +966,13 @@ async fn build_system_prompt(
     kb: &KbLoader,
 ) -> String {
     let mut p = context_block(conns, memory, kb).await;
+    // 宪法紧贴上下文之后：模型刚看到表清单/知识库，正是「先取证再写 SQL」
+    // 这类硬约束最容易被内化的位置。普通规则段继续保留各自的弱化表述。
+    let constitution = crate::llm::constitution::render();
+    if !constitution.is_empty() {
+        p.push('\n');
+        p.push_str(&constitution);
+    }
     p.push_str(
         "\n规则：\n\
          - 按需调用工具（严禁非必要执行）：用户提问如果是「解释 SQL」、「分析 SQL 含义/结构」、「优化建议」、「语法检查」或一般性咨询，请直接基于 SQL 文本及上下文作答，严禁私自调用 execute_query 去运行 SQL 或查询数据；只有当用户明确要求「执行/运行」、「查询具体数据/统计」时才调用 execute_query。\n\
@@ -1001,6 +1008,14 @@ async fn build_worker_system(
     let mut p = String::new();
     p.push_str(role.system_prefix());
     p.push_str(&context_block(conns, memory, kb).await);
+    // Worker 是复杂任务里真正动手写 SQL 的角色，宪法（如「先拿真实表结构
+    // 再写 SQL」）对它们比对 Orchestrator 更关键，注入位置与主提示词保持
+    // 一致：紧贴上下文之后。
+    let constitution = crate::llm::constitution::render();
+    if !constitution.is_empty() {
+        p.push('\n');
+        p.push_str(&constitution);
+    }
     p.push_str("\n## 本次任务计划（全局目标）：\n");
     for (i, s) in plan.iter().enumerate() {
         let mark = if i + 1 == step_idx { " ← 你负责这一步" } else { "" };
@@ -1122,6 +1137,45 @@ async fn exec_with_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KbLoader stub: no knowledge base, no DB fetches — prompt builders must
+    /// render fine (and still carry the constitution) on a bare environment.
+    fn no_kb() -> KbLoader {
+        std::sync::Arc::new(|_conn: &str, _db: Option<&str>| vec![])
+    }
+
+    /// The constitution must land in the main (single-agent / Orchestrator)
+    /// prompt with its header intact, so the SQL-schema rule is visible to
+    /// every simple-turn ReAct loop.
+    #[tokio::test]
+    async fn system_prompt_carries_constitution() {
+        let memory = SessionMemory::new(None, None);
+        let prompt = build_system_prompt(&[], &memory, None, &no_kb()).await;
+        assert!(prompt.contains("宪法"));
+        assert!(prompt.contains("[C1]"));
+    }
+
+    /// Workers write the SQL in complex turns — the constitution must reach
+    /// their role-scoped prompts too, regardless of role.
+    #[tokio::test]
+    async fn worker_prompt_carries_constitution() {
+        for role in [WorkerKind::Explorer, WorkerKind::Executor] {
+            let memory = SessionMemory::new(None, None);
+            let prompt = build_worker_system(
+                role,
+                &[],
+                &memory,
+                &["查 user 表结构".to_string()],
+                1,
+                "查 user 表结构",
+                "",
+                &no_kb(),
+            )
+            .await;
+            assert!(prompt.contains("宪法"), "{:?} missing constitution", role);
+            assert!(prompt.contains("[C1]"), "{:?} missing C1", role);
+        }
+    }
 
     fn r(scope: &str, sql: &str) -> SqlReference {
         SqlReference {

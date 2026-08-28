@@ -1,4 +1,5 @@
 pub mod client;
+pub mod constitution;
 pub mod control;
 pub mod memory;
 pub mod planner;
