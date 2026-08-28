@@ -34,6 +34,8 @@ pub struct TokenUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    #[serde(default)]
+    pub cached_tokens: u32,
 }
 
 /// Messages sent from the async backend to the TUI event loop.

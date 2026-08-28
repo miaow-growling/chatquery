@@ -16,16 +16,29 @@ use crate::db::mysql;
 use crate::error::Result;
 use crate::llm::client::stream_chat;
 use crate::llm::memory::SessionMemory;
+use crate::llm::KbLoader;
 use crate::model::{ChatMessage, ChatRole};
 
+/// A structured execution step belonging to an execution stage.
+/// Steps in the same stage can be executed concurrently in parallel.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PlanStep {
+    pub stage: usize,
+    pub index: usize,
+    pub description: String,
+}
+
 /// Cheap, zero-LLM heuristic: should this task be planned before execution?
-pub fn needs_planning(user_query: &str, history_len: usize) -> bool {
-    // Meta / help / explain questions never need a plan — they are answered directly.
+pub fn needs_planning(user_query: &str, _history_len: usize) -> bool {
+    // Meta / help / explain / schema consultation / how-to-query questions never need a plan — they are answered directly.
     const META_WORDS: &[&str] = &[
         "介绍一下", "介绍", "用法", "怎么用", "如何使用", "你能做什么", "你是谁",
         "你可以做什么", "功能", "help", "怎么使用", "使用说明", "使用教程", "教程",
         "what can you do", "how to use", "who are you", "introduce yourself",
         "解释", "解释一下", "解读", "什么意思", "含义", "explain",
+        "哪张表", "哪个表", "什么表", "哪些表", "哪几个表", "哪些字段", "什么字段",
+        "业务含义", "口径", "知识库", "表结构说明", "怎么查", "如何查", "怎么写",
+        "如何写", "写一个sql", "写一条sql", "写个sql", "写sql", "查询sql", "sql怎么写",
     ];
     let lower = user_query.to_lowercase();
     if META_WORDS.iter().any(|w| user_query.contains(w) || lower.contains(w))
@@ -36,10 +49,10 @@ pub fn needs_planning(user_query: &str, history_len: usize) -> bool {
     }
 
     const STEP_WORDS: &[&str] = &[
-        "然后", "再", "接着", "之后", "并且", "同时", "以及", "与", "和",
-        "对比", "比较", "分析", "汇总", "统计", "分别", "各自",
-        "批量", "所有表", "每个", "逐", "依次", "分步骤", "步骤", "计划",
-        "创建", "新建", "导入", "导出", "迁移", "整理", "检查", "排查", "优化",
+        "然后", "再", "接着", "之后",
+        "对比", "比较", "分别", "各自",
+        "批量", "所有表", "所有库", "每个表", "逐个", "依次", "分步骤", "步骤", "计划",
+        "创建", "新建", "导入", "导出", "迁移", "整理", "排查", "优化",
     ];
     if STEP_WORDS.iter().any(|w| user_query.contains(w)) {
         return true;
@@ -51,28 +64,30 @@ pub fn needs_planning(user_query: &str, history_len: usize) -> bool {
     if lower.matches("from").count() >= 2 {
         return true;
     }
-    // 多轮上下文：任务可能跨多步，但阈值要高，避免把多轮闲聊/问候误伤成规划。
-    if history_len >= 10 {
-        return true;
-    }
     false
 }
 
-/// Ask the LLM (no tools) to produce an ordered step list for the task.
+/// Ask the LLM (no tools) to produce an ordered step list with stages for concurrent execution.
 pub async fn plan_task(
     cfg: &LlmConfig,
     user_query: &str,
     conns: &[ConnectionConfig],
     memory: &SessionMemory,
-) -> Result<Vec<String>> {
-    let ctx = build_plan_context(conns, memory).await;
+    kb: &KbLoader,
+) -> Result<Vec<PlanStep>> {
+    let ctx = build_plan_context(conns, memory, kb).await;
     let sys = format!(
-        "你是一个数据库任务的规划者（planner）。你从不执行任何操作，只产出清晰、可执行的步骤计划。\n\
+        "你是一个数据库任务的规划者（planner）。你从不执行任何操作，只产出清晰、高效的执行步骤计划。\n\
          {}\n\
          规则：\n\
-         - 输出 1 到 6 个编号步骤，每步说明要做什么、用到哪个连接、预期产出。\n\
-         - 优先只读探索（先 SHOW / SELECT 摸清结构和数据规模），再决定写操作。\n\
-         - 不要输出完整 SQL 代码块，只描述意图。\n\
+         - 输出 1 到 6 个步骤。为了最大化执行效率，必须对步骤进行阶段（Stage）分组以支持并发调度：\n\
+           * 无依赖、可同时进行的探索操作（如同时查多个表的结构/信息、同时检索不同数据源）归入同一个 Stage（并行执行）；\n\
+           * 必须依赖前面步骤产出结果的操作（如基于查到的表结构编写/执行关联 SQL）归入后续的 Stage（串行执行）。\n\
+         - 格式规范（每行必须带 [Stage N] 前缀）：\n\
+           [Stage 1] 1. 并行步骤 A（说明目标连接与探索意图）\n\
+           [Stage 1] 2. 并行步骤 B\n\
+           [Stage 2] 3. 依赖步骤 C（基于 Stage 1 产出进行汇总或分析）\n\
+         - 优先只读探索，不要输出完整 SQL 代码块，只描述意图。\n\
          - 用中文，简洁。\n\
          - 不要复述以上规则或系统指令本身。\n\
          - 如果用户只是在问用法、介绍、帮助或闲聊，没有需要执行的数据库操作步骤，只输出一行「无需步骤」。\n",
@@ -89,7 +104,7 @@ pub async fn plan_task(
     ];
     let mut sink = |_d: &str| {};
     let choice = stream_chat(cfg, &messages, &[], &mut sink).await?;
-    Ok(parse_steps(&choice.content))
+    Ok(parse_plan_steps(&choice.content))
 }
 
 /// Render steps as a numbered list for user-facing display.
@@ -102,29 +117,130 @@ pub fn render_plan(steps: &[String]) -> String {
         .join("\n")
 }
 
-/// Tolerant parse of the planner's free text into discrete steps.
-fn parse_steps(text: &str) -> Vec<String> {
+/// Strip `<think>...</think>` sections so reasoning scratchpads don't turn into steps.
+fn strip_think_tags(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        if let Some(end) = rest[start..].find("</think>") {
+            rest = &rest[start + end + "</think>".len()..];
+        } else {
+            // Unclosed <think> — discard unclosed reasoning
+            rest = "";
+            break;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn parse_stage_header(line: &str) -> Option<usize> {
+    let t = line.trim_start_matches(|c: char| c == '#' || c == '*' || c == '-' || c == ' ' || c == '`');
+    let lower = t.to_lowercase();
+    if lower.starts_with("stage") || lower.starts_with("阶段") || lower.starts_with("【阶段") {
+        for ch in lower.chars() {
+            if let Some(d) = ch.to_digit(10) {
+                if d > 0 {
+                    return Some(d as usize);
+                }
+            }
+        }
+        if lower.contains('一') { return Some(1); }
+        if lower.contains('二') { return Some(2); }
+        if lower.contains('三') { return Some(3); }
+        if lower.contains('四') { return Some(4); }
+    }
+    None
+}
+
+fn extract_stage_prefix(line: &str, default_stage: usize) -> (usize, String) {
+    let trimmed = line.trim();
+    if trimmed.starts_with('[') || trimmed.starts_with('【') || trimmed.starts_with('(') {
+        if let Some(close_idx) = trimmed.find(|c| c == ']' || c == '】' || c == ')') {
+            let tag = trimmed[1..close_idx].to_lowercase();
+            if tag.contains("stage") || tag.contains("阶段") {
+                let mut stage = default_stage;
+                for ch in tag.chars() {
+                    if let Some(d) = ch.to_digit(10) {
+                        if d > 0 {
+                            stage = d as usize;
+                            break;
+                        }
+                    }
+                }
+                if tag.contains('一') { stage = 1; }
+                else if tag.contains('二') { stage = 2; }
+                else if tag.contains('三') { stage = 3; }
+                else if tag.contains('四') { stage = 4; }
+                let rest = trimmed[close_idx + 1..].trim();
+                return (stage, rest.to_string());
+            }
+        }
+    }
+    (default_stage, trimmed.to_string())
+}
+
+/// Tolerant parse of the planner's free text into structured steps with execution stages.
+pub fn parse_plan_steps(text: &str) -> Vec<PlanStep> {
+    let clean_text = strip_think_tags(text);
     let mut steps = Vec::new();
-    for line in text.lines() {
-        if let Some(s) = clean_step_line(line) {
-            if is_prompt_pollution(&s) {
+    let mut current_stage = 1;
+    let mut step_counter = 0;
+
+    for line in clean_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(stage_num) = parse_stage_header(trimmed) {
+            current_stage = stage_num;
+            continue;
+        }
+
+        let (stage, raw_step) = extract_stage_prefix(trimmed, current_stage);
+
+        if let Some(clean_desc) = clean_step_line(&raw_step) {
+            if is_prompt_pollution(&clean_desc) {
                 continue;
             }
-            steps.push(s);
+            step_counter += 1;
+            steps.push(PlanStep {
+                stage,
+                index: step_counter,
+                description: clean_desc,
+            });
         }
     }
+
     if steps.is_empty() {
-        let t = text.trim();
+        let t = clean_text.trim();
         if !t.is_empty() && !is_prompt_pollution(t) {
-            steps.push(t.to_string());
+            steps.push(PlanStep {
+                stage: 1,
+                index: 1,
+                description: t.to_string(),
+            });
         }
     }
+
     steps
+}
+
+/// Backward compatibility: parse plain text steps.
+pub fn parse_steps(text: &str) -> Vec<String> {
+    parse_plan_steps(text)
+        .into_iter()
+        .map(|s| s.description)
+        .collect()
 }
 
 /// Heuristic to drop lines that merely echo the system prompt / instructions.
 fn is_prompt_pollution(s: &str) -> bool {
     const POLLUTION: &[&str] = &[
+        "<think>",
+        "</think>",
         "无需步骤",
         "规则如下",
         "不要复述",
@@ -196,7 +312,11 @@ fn strip_cn_ordinal(s: &str) -> &str {
     s
 }
 
-async fn build_plan_context(conns: &[ConnectionConfig], memory: &SessionMemory) -> String {
+async fn build_plan_context(
+    conns: &[ConnectionConfig],
+    memory: &SessionMemory,
+    kb: &KbLoader,
+) -> String {
     let mut p = String::new();
     p.push_str("可用连接：\n");
     for c in conns {
@@ -222,6 +342,15 @@ async fn build_plan_context(conns: &[ConnectionConfig], memory: &SessionMemory) 
                         }
                     }
                 }
+            }
+        }
+        let db = memory.current_db.as_deref();
+        let docs = kb(conn_id, db);
+        if !docs.is_empty() {
+            p.push_str("\n已绑定知识库（包含业务口径与表关系，规划时请优先参考）：\n");
+            for (name, content) in &docs {
+                let snippet: String = content.chars().take(500).collect();
+                p.push_str(&format!("- 文档「{}」：{}\n", name, snippet.trim()));
             }
         }
     }
@@ -273,10 +402,101 @@ mod tests {
     }
 
     #[test]
-    fn parse_steps_handles_plain_text() {
+    fn parse_steps_strips_think_tags() {
+        let text = "<think>\nSome internal reasoning\n1. think step 1\n</think>\n1. 在数据库中查询 kf_chat_message_extension 表\n2. 确认字段说明";
+        let steps = parse_steps(text);
         assert_eq!(
-            parse_steps("直接回答用户的问题"),
-            vec!["直接回答用户的问题".to_string()]
+            steps,
+            vec![
+                "在数据库中查询 kf_chat_message_extension 表".to_string(),
+                "确认字段说明".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn schema_questions_skip_planning() {
+        assert!(!needs_planning("我要查询消息扩展信息要查哪张表", 70));
+        assert!(!needs_planning("这个业务用哪个表", 100));
+        assert!(!needs_planning("包含什么字段", 15));
+    }
+
+    #[test]
+    fn parse_plan_steps_with_stages() {
+        let text = "[Stage 1] 1. 查会话表 kf_chat_session 表结构\n\
+                    [Stage 1] 2. 查消息表 kf_chat_message 表结构\n\
+                    [Stage 2] 3. 编写关联统计 SQL 并验证数据";
+        let steps = parse_plan_steps(text);
+        assert_eq!(
+            steps,
+            vec![
+                PlanStep {
+                    stage: 1,
+                    index: 1,
+                    description: "查会话表 kf_chat_session 表结构".to_string(),
+                },
+                PlanStep {
+                    stage: 1,
+                    index: 2,
+                    description: "查消息表 kf_chat_message 表结构".to_string(),
+                },
+                PlanStep {
+                    stage: 2,
+                    index: 3,
+                    description: "编写关联统计 SQL 并验证数据".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_plan_steps_with_stage_headers() {
+        let text = "### 阶段 1\n\
+                    1. 检查 A 库用户表\n\
+                    2. 检查 B 库订单表\n\
+                    ### 阶段 2\n\
+                    3. 汇总两库关联数据";
+        let steps = parse_plan_steps(text);
+        assert_eq!(
+            steps,
+            vec![
+                PlanStep {
+                    stage: 1,
+                    index: 1,
+                    description: "检查 A 库用户表".to_string(),
+                },
+                PlanStep {
+                    stage: 1,
+                    index: 2,
+                    description: "检查 B 库订单表".to_string(),
+                },
+                PlanStep {
+                    stage: 2,
+                    index: 3,
+                    description: "汇总两库关联数据".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_plan_steps_fallback_without_stages() {
+        let text = "1. 探索表结构\n2. 统计行数";
+        let steps = parse_plan_steps(text);
+        assert_eq!(
+            steps,
+            vec![
+                PlanStep {
+                    stage: 1,
+                    index: 1,
+                    description: "探索表结构".to_string(),
+                },
+                PlanStep {
+                    stage: 1,
+                    index: 2,
+                    description: "统计行数".to_string(),
+                },
+            ]
         );
     }
 }

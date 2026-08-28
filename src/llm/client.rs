@@ -128,20 +128,28 @@ fn extract_openai_usage(v: &Value) -> Option<TokenUsage> {
     let p = u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
     let c = u.get("completion_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
     let t = u.get("total_tokens").and_then(|x| x.as_u64()).unwrap_or((p + c) as u64) as u32;
+    let cached = u
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|x| x.as_u64())
+        .or_else(|| u.get("prompt_cache_hit_tokens").and_then(|x| x.as_u64()))
+        .unwrap_or(0) as u32;
     Some(TokenUsage {
         prompt_tokens: p,
         completion_tokens: c,
         total_tokens: t,
+        cached_tokens: cached,
     })
 }
 
 /// Fold Anthropic token usage from a single SSE event into the running totals.
 /// `input_tokens` lives in `message_start`; `output_tokens` in `message_delta`.
-fn extract_anthropic_usage(v: &Value, input: &mut u32, output: &mut u32) {
+fn extract_anthropic_usage(v: &Value, input: &mut u32, output: &mut u32, cached: &mut u32) {
     match v.get("type").and_then(|t| t.as_str()) {
         Some("message_start") => {
             if let Some(u) = v.get("message").and_then(|m| m.get("usage")) {
                 *input = u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+                *cached = u.get("cache_read_input_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
             }
         }
         Some("message_delta") => {
@@ -233,6 +241,7 @@ async fn stream_chat_openai(
     let mut sse_buf = String::new();
     let mut data_lines: Vec<String> = Vec::new();
     let mut content = String::new();
+    let mut is_reasoning = false;
     let mut usage: Option<TokenUsage> = None;
     let mut tool_acc: HashMap<usize, (String, String, String)> = HashMap::new();
 
@@ -252,13 +261,40 @@ async fn stream_chat_openai(
                     .and_then(|c| c.first())
                 {
                     if let Some(delta) = ch.get("delta") {
+                        // Reasoning/thinking tokens from models like DeepSeek-R1, MiniMax, Qwen
+                        let reasoning = delta
+                            .get("reasoning_content")
+                            .or_else(|| delta.get("reasoning"))
+                            .and_then(|x| x.as_str());
+                        if let Some(r) = reasoning {
+                            if !r.is_empty() {
+                                if !is_reasoning {
+                                    is_reasoning = true;
+                                    content.push_str("<think>\n");
+                                    on_delta("<think>\n");
+                                }
+                                content.push_str(r);
+                                on_delta(r);
+                            }
+                        }
+
                         if let Some(c) = delta.get("content").and_then(|x| x.as_str()) {
                             if !c.is_empty() {
+                                if is_reasoning {
+                                    is_reasoning = false;
+                                    content.push_str("\n</think>\n\n");
+                                    on_delta("\n</think>\n\n");
+                                }
                                 content.push_str(c);
                                 on_delta(c);
                             }
                         }
                         if let Some(tcs) = delta.get("tool_calls").and_then(|x| x.as_array()) {
+                            if is_reasoning {
+                                is_reasoning = false;
+                                content.push_str("\n</think>\n\n");
+                                on_delta("\n</think>\n\n");
+                            }
                             for tc in tcs {
                                 let idx = tc
                                     .get("index")
@@ -297,6 +333,11 @@ async fn stream_chat_openai(
                 }
             }
         }
+    }
+
+    if is_reasoning {
+        content.push_str("\n</think>\n\n");
+        on_delta("\n</think>\n\n");
     }
 
     let tool_calls = tool_acc
@@ -430,12 +471,14 @@ async fn stream_chat_anthropic(
     let mut sse_buf = String::new();
     let mut data_lines: Vec<String> = Vec::new();
     let mut content = String::new();
+    let mut is_reasoning = false;
     // index → (id, name, accumulated partial_json) for in-progress tool blocks.
     let mut tool_blocks: HashMap<usize, (String, String, String)> = HashMap::new();
     // Token usage split across events: input_tokens in `message_start`,
     // output_tokens in `message_delta`.
     let mut input_tokens: u32 = 0;
     let mut output_tokens: u32 = 0;
+    let mut cached_tokens: u32 = 0;
     // Finalized tool calls, moved here on `content_block_stop`.
     let mut tool_calls: Vec<ToolCall> = Vec::new();
 
@@ -447,7 +490,7 @@ async fn stream_chat_anthropic(
         for data in data_lines.drain(..) {
             if let Ok(v) = serde_json::from_str::<Value>(&data) {
                 let etype = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-                extract_anthropic_usage(&v, &mut input_tokens, &mut output_tokens);
+                extract_anthropic_usage(&v, &mut input_tokens, &mut output_tokens, &mut cached_tokens);
                 match etype {
                     "content_block_start" => {
                         if v.get("content_block")
@@ -455,6 +498,11 @@ async fn stream_chat_anthropic(
                             .and_then(|x| x.as_str())
                             == Some("tool_use")
                         {
+                            if is_reasoning {
+                                is_reasoning = false;
+                                content.push_str("\n</think>\n\n");
+                                on_delta("\n</think>\n\n");
+                            }
                             let idx = v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
                             let id = v
                                 .get("content_block")
@@ -475,7 +523,27 @@ async fn stream_chat_anthropic(
                         let idx = v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
                         if let Some(delta) = v.get("delta") {
                             match delta.get("type").and_then(|x| x.as_str()) {
+                                Some("thinking_delta") => {
+                                    if let Some(t) =
+                                        delta.get("thinking").and_then(|x| x.as_str())
+                                    {
+                                        if !t.is_empty() {
+                                            if !is_reasoning {
+                                                is_reasoning = true;
+                                                content.push_str("<think>\n");
+                                                on_delta("<think>\n");
+                                            }
+                                            content.push_str(t);
+                                            on_delta(t);
+                                        }
+                                    }
+                                }
                                 Some("text_delta") => {
+                                    if is_reasoning {
+                                        is_reasoning = false;
+                                        content.push_str("\n</think>\n\n");
+                                        on_delta("\n</think>\n\n");
+                                    }
                                     if let Some(t) =
                                         delta.get("text").and_then(|x| x.as_str())
                                     {
@@ -486,6 +554,11 @@ async fn stream_chat_anthropic(
                                     }
                                 }
                                 Some("input_json_delta") => {
+                                    if is_reasoning {
+                                        is_reasoning = false;
+                                        content.push_str("\n</think>\n\n");
+                                        on_delta("\n</think>\n\n");
+                                    }
                                     if let Some(p) = delta
                                         .get("partial_json")
                                         .and_then(|x| x.as_str())
@@ -518,6 +591,11 @@ async fn stream_chat_anthropic(
         }
     }
 
+    if is_reasoning {
+        content.push_str("\n</think>\n\n");
+        on_delta("\n</think>\n\n");
+    }
+
     // Any block still in-flight at stream end (shouldn't happen, but be safe).
     for (_, (id, name, arguments)) in tool_blocks {
         if !id.is_empty() {
@@ -530,6 +608,7 @@ async fn stream_chat_anthropic(
             prompt_tokens: input_tokens,
             completion_tokens: output_tokens,
             total_tokens: input_tokens + output_tokens,
+            cached_tokens,
         })
     } else {
         None
@@ -580,16 +659,18 @@ mod tests {
     #[test]
     fn extracts_anthropic_usage() {
         let start: Value =
-            serde_json::from_str(r#"{"type":"message_start","message":{"usage":{"input_tokens":7}}}"#)
+            serde_json::from_str(r#"{"type":"message_start","message":{"usage":{"input_tokens":7,"cache_read_input_tokens":4}}}"#)
                 .unwrap();
         let delta: Value =
             serde_json::from_str(r#"{"type":"message_delta","delta":{"usage":{"output_tokens":3}}}"#)
                 .unwrap();
         let mut i = 0u32;
         let mut o = 0u32;
-        extract_anthropic_usage(&start, &mut i, &mut o);
+        let mut c = 0u32;
+        extract_anthropic_usage(&start, &mut i, &mut o, &mut c);
         assert_eq!(i, 7);
-        extract_anthropic_usage(&delta, &mut i, &mut o);
+        assert_eq!(c, 4);
+        extract_anthropic_usage(&delta, &mut i, &mut o, &mut c);
         assert_eq!(o, 3);
     }
 

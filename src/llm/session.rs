@@ -7,7 +7,7 @@ use crate::llm::control::TurnControl;
 use crate::llm::KbLoader;
 use crate::llm::{AuditEvent, AuditSink};
 use crate::llm::memory::SessionMemory;
-use crate::llm::planner::{needs_planning, plan_task};
+use crate::llm::planner::{needs_planning, plan_task, PlanStep};
 use crate::llm::policy::{check_statement, PolicyDecision};
 use crate::llm::tools::{build_registry, ToolContext, ToolRegistry};
 use crate::llm::worker::{classify_step, WorkerKind};
@@ -45,6 +45,7 @@ fn add_usage(a: TokenUsage, b: Option<TokenUsage>) -> TokenUsage {
             prompt_tokens: a.prompt_tokens + b.prompt_tokens,
             completion_tokens: a.completion_tokens + b.completion_tokens,
             total_tokens: a.total_tokens + b.total_tokens,
+            cached_tokens: a.cached_tokens + b.cached_tokens,
         },
         None => a,
     }
@@ -182,7 +183,7 @@ impl Agent {
 
         // 复杂任务：先规划（失败则安全降级为直接 ReAct）。规划输入带上引用的
         // SQL——否则「优化这段 SQL」只能规划出空泛步骤。
-        let plan: Vec<String> = match plan_task(&self.cfg, &last_user, &self.conns, &self.memory).await {
+        let plan: Vec<PlanStep> = match plan_task(&self.cfg, &last_user, &self.conns, &self.memory, &self.kb).await {
             Ok(steps) if !steps.is_empty() => steps,
             _ => {
                 let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb).await;
@@ -197,55 +198,166 @@ impl Agent {
             }
         };
 
+        // Format plan descriptions with stage labels if there are multiple stages
+        let has_multiple_stages = plan.iter().any(|s| s.stage > 1);
+        let plan_desc: Vec<String> = plan
+            .iter()
+            .map(|s| {
+                if has_multiple_stages {
+                    format!("[阶段 {}] {}", s.stage, s.description)
+                } else {
+                    s.description.clone()
+                }
+            })
+            .collect();
+
         // The plan travels as its own structured event, not as prose in the
         // token stream — the UI renders it as a distinct card so it reads as
         // "what I'm about to do", not as part of the answer.
-        let _ = tx.send(BackendMsg::ChatPlan(plan.clone()));
+        let _ = tx.send(BackendMsg::ChatPlan(plan_desc.clone()));
 
-        // 逐步委派给对应角色的 Worker。串行执行：计划步骤之间通常存在依赖，
-        // 且串行能稳定控制延迟与成本（后续可升级为可并行步骤的并发调度）。
+        // Group steps by stage for stage-based concurrent execution
+        let mut stages: std::collections::BTreeMap<usize, Vec<PlanStep>> = std::collections::BTreeMap::new();
+        for step in plan {
+            stages.entry(step.stage).or_default().push(step);
+        }
+
         let conn_id = self.memory.current_conn.clone().unwrap_or_default();
         let mut shared_context = String::new();
-        for (idx, step) in plan.iter().enumerate() {
+
+        for (_stage_num, steps) in stages {
             if self.ctl.is_cancelled() {
                 return Ok(());
             }
-            let role = classify_step(step);
-            // 降噪（2026-08-17）：之前这里 emit 的"步骤 N 标题 / ✅ / ❌"
-            // 进度标记，user 反馈读起来像噪音——AI 在做什么自己看计划就
-            // 知道，不需要在 chat log 里再刷一遍。worker 内部的 ChatToken
-            // 早被 react() 过滤（role != Orchestrator），synthesize 又改
-            // 成了非流式，所以这三处 emit 是中间态仅剩的可见部分。整段
-            // 删掉，user 看到的只有 plan role（前端已隐藏）+ 工具调用
-            // （前端已隐藏）+ synthesize 的最终结论。
-            let mut worker = Agent::build_worker(
-                role,
-                self.cfg.clone(),
-                self.conns.clone(),
-                self.mcp.clone(),
-                &conn_id,
-                self.memory.current_db.as_deref(),
-                self.ctl.clone(),
-                self.kb.clone(),
-                self.audit.clone(),
-            )
-            .await;
-            let wsys = build_worker_system(role, &self.conns, &self.memory, &plan, idx + 1, step, &shared_context, &self.kb).await;
-            let mut wmsg = Vec::new();
-            if !wsys.is_empty() {
-                wmsg.push(ChatMessage::system(wsys));
-            }
-            wmsg.push(ChatMessage::user(&last_user));
-            let wres = worker.react(wmsg, tx).await;
-            if let Some(result) = wres? {
-                shared_context.push_str(&format!(
-                    "步骤 {}（{}）：{}\n\n",
-                    idx + 1,
-                    role.label(),
-                    result
-                ));
-                let note: String = result.chars().take(80).collect();
-                self.memory.note_result(&format!("{}: {}", role.label(), note));
+
+            if steps.len() == 1 {
+                let step = &steps[0];
+                let role = classify_step(&step.description);
+                let mut worker = Agent::build_worker(
+                    role,
+                    self.cfg.clone(),
+                    self.conns.clone(),
+                    self.mcp.clone(),
+                    &conn_id,
+                    self.memory.current_db.as_deref(),
+                    self.ctl.clone(),
+                    self.kb.clone(),
+                    self.audit.clone(),
+                ).await;
+                let wsys = build_worker_system(
+                    role,
+                    &self.conns,
+                    &self.memory,
+                    &plan_desc,
+                    step.index,
+                    &step.description,
+                    &shared_context,
+                    &self.kb,
+                ).await;
+                let mut wmsg = Vec::new();
+                if !wsys.is_empty() {
+                    wmsg.push(ChatMessage::system(wsys));
+                }
+                wmsg.push(ChatMessage::user(&last_user));
+                let wres = worker.react(wmsg, tx).await;
+                if worker.usage.total_tokens > 0 {
+                    self.usage = add_usage(self.usage, Some(worker.usage));
+                }
+                if let Some(result) = wres? {
+                    shared_context.push_str(&format!(
+                        "步骤 {}（{}）：{}\n\n",
+                        step.index,
+                        role.label(),
+                        result
+                    ));
+                    let note: String = result.chars().take(80).collect();
+                    self.memory.note_result(&format!("{}: {}", role.label(), note));
+                }
+            } else {
+                // 并发执行同阶段无依赖任务（受 Semaphore(3) 限流保护，兼顾并发与 API 限速）
+                let sem = Arc::new(tokio::sync::Semaphore::new(3));
+                let mut join_set = tokio::task::JoinSet::new();
+
+                for step in steps {
+                    let sem = Arc::clone(&sem);
+                    let cfg = self.cfg.clone();
+                    let conns = self.conns.clone();
+                    let mcp = self.mcp.clone();
+                    let conn_id = conn_id.clone();
+                    let current_db = self.memory.current_db.clone();
+                    let ctl = self.ctl.clone();
+                    let kb = self.kb.clone();
+                    let audit = self.audit.clone();
+                    let plan_desc = plan_desc.clone();
+                    let shared_ctx = shared_context.clone();
+                    let last_user_clone = last_user.clone();
+                    let memory_clone = self.memory.clone();
+                    let tx_clone = tx.clone();
+
+                    join_set.spawn(async move {
+                        let _permit = sem.acquire().await.ok();
+                        if ctl.is_cancelled() {
+                            return (step, None, TokenUsage::default());
+                        }
+                        let role = classify_step(&step.description);
+                        let mut worker = Agent::build_worker(
+                            role,
+                            cfg,
+                            conns.clone(),
+                            mcp,
+                            &conn_id,
+                            current_db.as_deref(),
+                            ctl.clone(),
+                            kb.clone(),
+                            audit,
+                        ).await;
+                        let wsys = build_worker_system(
+                            role,
+                            &conns,
+                            &memory_clone,
+                            &plan_desc,
+                            step.index,
+                            &step.description,
+                            &shared_ctx,
+                            &kb,
+                        ).await;
+                        let mut wmsg = Vec::new();
+                        if !wsys.is_empty() {
+                            wmsg.push(ChatMessage::system(wsys));
+                        }
+                        wmsg.push(ChatMessage::user(&last_user_clone));
+                        let wres = worker.react(wmsg, &tx_clone).await;
+                        let usage = worker.usage;
+                        let res_text = wres.ok().flatten();
+                        (step, res_text, usage)
+                    });
+                }
+
+                let mut stage_results = Vec::new();
+                while let Some(res) = join_set.join_next().await {
+                    if let Ok((step, res_text, usage)) = res {
+                        if usage.total_tokens > 0 {
+                            self.usage = add_usage(self.usage, Some(usage));
+                        }
+                        if let Some(r) = res_text {
+                            stage_results.push((step, r));
+                        }
+                    }
+                }
+
+                // 排序保证各步骤结果按 index 升序确定性汇入上下文
+                stage_results.sort_by_key(|(s, _)| s.index);
+                for (step, result) in stage_results {
+                    let role = classify_step(&step.description);
+                    shared_context.push_str(&format!(
+                        "步骤 {}（{}）：{}\n\n",
+                        step.index,
+                        role.label(),
+                        result
+                    ));
+                    let note: String = result.chars().take(80).collect();
+                    self.memory.note_result(&format!("{}: {}", role.label(), note));
+                }
             }
         }
 
@@ -253,7 +365,7 @@ impl Agent {
             return Ok(());
         }
         // Orchestrator 综合所有 Worker 的结果，给用户一个面向结论的回答。
-        if let Some(u) = self.synthesize(&last_user, &plan, &shared_context, tx).await? {
+        if let Some(u) = self.synthesize(&last_user, &plan_desc, &shared_context, tx).await? {
             self.usage = add_usage(self.usage, Some(u));
         }
         Ok(())
@@ -417,21 +529,14 @@ impl Agent {
         //    答案里的冗余内容
         let raw = choice.content.trim();
         let no_steps = strip_step_prose(raw);
-        let no_blocks = strip_sql_blocks(&no_steps);
-        let filtered = strip_inline_sql(&no_blocks);
-        // Sometimes the entire synthesize output is just a SQL line
-        // (the model writes the query instead of describing the result).
-        // Stripping it leaves an empty assistant bubble which the user
-        // reads as "AI replied with nothing". Fall back to a short
-        // acknowledgment so the transcript never goes silent.
-        let final_text = if filtered.trim().is_empty() {
+        let final_text = if no_steps.trim().is_empty() {
             if raw.is_empty() {
                 String::new()
             } else {
-                "查询已执行，详见上方工具结果。".to_string()
+                raw.to_string()
             }
         } else {
-            filtered
+            no_steps
         };
         if !final_text.is_empty() {
             let _ = tx.send(BackendMsg::ChatToken(final_text));
@@ -439,72 +544,6 @@ impl Agent {
         }
         Ok(choice.usage)
     }
-}
-
-/// Strip fenced code blocks from synthesize output. Matches ```` ``` ````
-/// (with optional language tag, e.g. `sql` / `SQL`) and removes the entire
-/// block including the fence lines. Unfenced (plain) SQL embedded in prose
-/// lines is left alone — that case is rare and not visually disruptive.
-fn strip_sql_blocks(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut in_block = false;
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") {
-            // Toggle: opening fence enters the block, closing fence exits.
-            in_block = !in_block;
-            continue;
-        }
-        if !in_block {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(line);
-        }
-    }
-    out
-}
-
-/// Drop standalone inline SQL lines that the model writes into the final
-/// answer (e.g. `SELECT * FROM t WHERE code = 'x';`). The model already ran
-/// the SQL via execute_query and got a result; restating it in the reply
-/// just looks like a tool breadcrumb. Matches lines whose trimmed form
-/// starts with a DML/DDL keyword *and* ends with `;` — that combination is
-/// rare in Chinese prose but universal in SQL.
-fn strip_inline_sql(text: &str) -> String {
-    let mut out = String::new();
-    for line in text.lines() {
-        if is_inline_sql_line(line.trim()) {
-            continue;
-        }
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(line);
-    }
-    out
-}
-
-fn is_inline_sql_line(t: &str) -> bool {
-    if !t.ends_with(';') || t.len() < 8 {
-        return false;
-    }
-    // SQL keywords must appear at the very start (after optional leading
-    // punctuation / whitespace, which the caller already stripped). The
-    // `;` requirement above avoids false positives on prose that *ends*
-    // with a semicolon (e.g. "可以这样写;") — actual SQL almost always
-    // terminates statements with `;` so the combo is reliable.
-    let upper = t.to_ascii_uppercase();
-    upper.starts_with("SELECT ")
-        || upper.starts_with("UPDATE ")
-        || upper.starts_with("DELETE ")
-        || upper.starts_with("INSERT ")
-        || upper.starts_with("REPLACE ")
-        || upper.starts_with("TRUNCATE ")
-        || upper.starts_with("WITH ")
-        || upper.starts_with("SHOW ")
-        || upper.starts_with("DESCRIBE ")
-        || upper.starts_with("EXPLAIN ")
 }
 
 /// Drop lines that look like the model reciting an execution plan in
