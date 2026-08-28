@@ -256,9 +256,30 @@ export interface SqlReference {
 /// model received, so an answer can never be attributed to SQL the user
 /// didn't knowingly attach.
 export type ChatItem =
-  | ChatMessage
-  | { role: "plan"; content: string; steps: string[] }
-  | { role: "ref"; content: string; refs: SqlReference[] };
+  | (ChatMessage & { usage?: TokenUsage; dbBinding?: ChatDbBinding })
+  | {
+      role: "plan";
+      content: string;
+      steps: string[];
+      usage?: TokenUsage;
+      dbBinding?: ChatDbBinding;
+    }
+  | {
+      role: "ref";
+      content: string;
+      refs: SqlReference[];
+      usage?: TokenUsage;
+      dbBinding?: ChatDbBinding;
+    };
+
+/// The connection / database context a chat turn ran against. Captured on
+/// every assistant reply so the message remembers which DB its SQL targets —
+/// importing SQL from that message jumps straight to that connection/db,
+/// even across app restarts (persisted in the message's `meta`).
+export interface ChatDbBinding {
+  conn_id: string;
+  db: string | null;
+}
 
 /// Token accounting for one finished turn (ADR-AI-4 决策3). Arrives on the
 /// `chat-usage` event just before `chat-done`. Providers that don't report
@@ -267,6 +288,7 @@ export interface TokenUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  cached_tokens?: number;
 }
 
 /// One row of the write-guardrail audit trail (ADR-AI-1 决策3), newest first:

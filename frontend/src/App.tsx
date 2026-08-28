@@ -8,7 +8,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import React from "react";
+import React, { lazy, Suspense } from "react";
 import { ErrorBoundary } from "./ErrorBoundary";
 import {
   api,
@@ -41,6 +41,7 @@ import type {
   LlmConfigDto,
   VendorProfileDto,
   NewChatMessage,
+  ChatDbBinding,
   QueryItem,
   QueryOutput,
   RedisValueView,
@@ -53,7 +54,10 @@ import type {
   VendorPreset,
 } from "./types";
 import { createEditor, splitStatements, type EditorHandle } from "./editor";
-import { RedisBrowser } from "./RedisBrowser";
+// Redis 面板只在连接 Redis 实例时才需要，懒加载避免 MySQL 用户为它付出解析/内存成本。
+const RedisBrowser = lazy(() =>
+  import("./RedisBrowser").then((m) => ({ default: m.RedisBrowser }))
+);
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Tree } from "./Tree";
 import { Icon } from "./components/ui";
@@ -269,6 +273,51 @@ function ThinkingBlock({ text, isThinking }: { text: string; isThinking: boolean
   );
 }
 
+/** 修复模型输出里"粘行"的代码围栏。CommonMark 要求闭合围栏独占一行；部分模型
+ *  会把结尾 ``` 直接接在最后一行内容后面（如 `WHERE x = 'y'```，中间无换行），
+ *  导致围栏永远不闭合，后续的 `---`、说明文字全部被吞进同一个代码块。
+ *  处理：内容行尾出现 3+ 个反引号时拆成独立闭合行；流结束时围栏未闭合则补上。
+ *  只影响渲染，不改原始消息内容。SQL 里合法的反引号标识符（1~2 个）不会误伤。 */
+function repairCodeFences(src: string): string {
+  if (!src.includes("`")) return src;
+  const lines = src.split("\n");
+  const out: string[] = [];
+  let inFence = false;
+  let fenceLen = 3;
+  let fenceChar = "`";
+  for (const line of lines) {
+    if (!inFence) {
+      const open = line.match(/^\s*(`{3,}|~{3,})/);
+      if (open) {
+        inFence = true;
+        fenceChar = open[1][0];
+        fenceLen = open[1].length;
+      }
+      out.push(line);
+      continue;
+    }
+    // 围栏内：独占一行的闭合围栏
+    if (/^\s*(`{3,}|~{3,})\s*$/.test(line)) {
+      inFence = false;
+      out.push(line);
+      continue;
+    }
+    // 粘在内容行尾的闭合围栏（仅反引号围栏；运行长度 ≥ 开头围栏才拆分）
+    if (fenceChar === "`") {
+      const glued = line.match(/^(.+[^\s`])\s*(`{3,})\s*$/);
+      if (glued && glued[2].length >= fenceLen) {
+        out.push(glued[1]);
+        out.push(glued[2]);
+        inFence = false;
+        continue;
+      }
+    }
+    out.push(line);
+  }
+  if (inFence) out.push(fenceChar.repeat(fenceLen));
+  return out.join("\n");
+}
+
 /** 渲染 AI 消息内容为 Markdown：标题/加粗/列表/代码块/表格/链接等。
  *  用 react-markdown + remark-gfm，默认不 dangerouslySetInnerHTML，XSS 安全。 */
 function MarkdownMessage({
@@ -278,7 +327,8 @@ function MarkdownMessage({
   content: string;
   onImportSql?: (sql: string) => void;
 }) {
-  const { thinking, isThinking, content: actualContent } = splitThinkContent(content);
+  const { thinking, isThinking, content: rawContent } = splitThinkContent(content);
+  const actualContent = useMemo(() => repairCodeFences(rawContent), [rawContent]);
 
   const customComponents = useMemo(
     () => ({
@@ -1140,18 +1190,14 @@ export function App() {
   /// (not state) because the event listeners are registered once on mount and
   /// would otherwise close over a stale value.
   const turnIdRef = useRef<string | null>(null);
+  /// The conn/db context this turn runs against, captured at send time and
+  /// stamped onto the final assistant message so the reply remembers which DB
+  /// its SQL targets (persisted in the message meta, survives restarts).
+  const turnBindingRef = useRef<ChatDbBinding | null>(null);
   /// Pending write confirmations. A single ReAct round can emit several tool
   /// calls in parallel, so this is a queue: we show the head and answer them
   /// one at a time rather than stacking modals.
   const [confirmQueue, setConfirmQueue] = useState<ConfirmRequest[]>([]);
-  /// Token cost (ADR-AI-4 决策3): last turn's usage plus a running session
-  /// total. `null` means the provider never reported usage for this turn —
-  /// deliberately distinct from a reported zero.
-  const [lastUsage, setLastUsage] = useState<TokenUsage | null>(null);
-  const [sessionTokens, setSessionTokens] = useState(0);
-  /// True when `lastUsage` is a char-based estimate because the provider never
-  /// reported real usage — the footer then shows "约 N tokens".
-  const [usageEstimated, setUsageEstimated] = useState(false);
   /// Write-guardrail audit trail (ADR-AI-1 决策3), loaded on demand.
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
@@ -2233,6 +2279,34 @@ export function App() {
     setCtxMenu({ x, y, rows: eff });
   };
 
+  // Click top-left corner (#) to toggle select all / deselect all.
+  const onSelectAllClick = (viewRowsList: { origRi: number }[]) => {
+    setSelCols(new Set());
+    setSelCell(null);
+    if (viewRowsList.length === 0) return;
+    const allVis = viewRowsList.map((r) => r.origRi);
+    const isAllSelected = allVis.every((ri) => selRows.has(ri));
+    if (isAllSelected) {
+      setSelRows(new Set());
+    } else {
+      setSelRows(new Set(allVis));
+    }
+  };
+
+  // Right-click top-left corner (#) to select all and open row copy context menu.
+  const onSelectAllCtx = (viewRowsList: { origRi: number }[], e: ReactMouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (viewRowsList.length === 0) return;
+    const allVis = viewRowsList.map((r) => r.origRi);
+    setSelRows(new Set(allVis));
+    setSelCols(new Set());
+    setSelCell(null);
+    const x = Math.min(e.clientX, window.innerWidth - 220);
+    const y = Math.min(e.clientY, window.innerHeight - 130);
+    setCtxMenu({ x, y, rows: allVis });
+  };
+
   const copyRowsAs = async (kind: "json" | "insert" | "update" | "wherein" | "csv") => {
     if (!result || result.kind !== "table") return;
     const eff = ctxMenu?.rows ?? Array.from(selRows);
@@ -2248,6 +2322,14 @@ export function App() {
       extractTableFromSql(active?.sql ?? "") ??
       "<table>";
     let pks = result.primaryKeys ?? [];
+    if (pks.length === 0) {
+      const idCol = result.columns.find((c) => {
+        const low = c.toLowerCase();
+        return low === "id" || low.endsWith("_id");
+      });
+      if (idCol) pks = [idCol];
+    }
+
     let text = "";
     if (kind === "json") text = rowsToJson(result.columns, rows);
     else if (kind === "insert")
@@ -2260,57 +2342,18 @@ export function App() {
       const colName = result.columns[ci] ?? `col${ci + 1}`;
       text = rowsToWhereIn(colName, ci, rows);
     } else if (kind === "update") {
-      // Ad-hoc queries don't carry result.primaryKeys (the server only
-      // fills them on the browse path). Resolve a real PK from the DB so
-      // an `id`-bearing row produces a proper `WHERE id=...` instead of a
-      // noisy all-column template. Order of fallbacks:
-      //   1. fetch real PKs via describeTable (most accurate)
-      //   2. an `id`-like column present in the result (common convention)
-      //   3. all columns (rowsToUpdate puts every column in SET + WHERE)
-      if (
-        pks.length === 0 &&
-        table !== "<table>" &&
-        active?.connId &&
-        active.db
-      ) {
-        try {
-          const struct = await api.describeTable(
-            active.connId,
-            active.db,
-            table
-          );
-          const realPks = struct.indexes
-            .filter((ix) => ix.name.toUpperCase() === "PRIMARY")
-            .map((ix) => ix.column)
-            .filter((c) => result.columns.includes(c));
-          if (realPks.length > 0) pks = realPks;
-          else {
-            const idCol = result.columns.find(
-              (c) => c.toLowerCase() === "id"
-            );
-            if (idCol) pks = [idCol];
-          }
-        } catch {
-          // describeTable failed (table in another db, no perms, etc.) —
-          // fall back to the id heuristic, then to all columns.
-          const idCol = result.columns.find(
-            (c) => c.toLowerCase() === "id"
-          );
-          if (idCol) pks = [idCol];
-        }
-      } else if (pks.length === 0) {
-        // No table context at all: try the id heuristic before all-column.
-        const idCol = result.columns.find((c) => c.toLowerCase() === "id");
-        if (idCol) pks = [idCol];
-      }
       text = rowsToUpdate(table, result.columns, pks, rows);
     }
-    await copyText(text);
-    showToast(
-      `已复制 ${rows.length} 行 · ${
-        kind === "json" ? "JSON" : kind === "insert" ? "INSERT" : kind === "update" ? "UPDATE" : kind === "csv" ? "CSV" : "WHERE IN"
-      }`
-    );
+    const copied = await copyText(text);
+    if (copied) {
+      showToast(
+        `已复制 ${rows.length} 行 · ${
+          kind === "json" ? "JSON" : kind === "insert" ? "INSERT" : kind === "update" ? "UPDATE" : kind === "csv" ? "CSV" : "WHERE IN"
+        }`
+      );
+    } else {
+      showToast("复制失败，请检查剪贴板权限");
+    }
     setCtxMenu(null);
   };
 
@@ -2384,10 +2427,10 @@ export function App() {
     setCtxMenu({ x, y, rows, col: ci });
   };
 
-  // Left-click a column header. Plain click keeps the old behaviour (select
-  // this one column + cycle sort). Ctrl/Cmd+click toggles the column in the
-  // multi-select set WITHOUT touching sort — toggling must never reorder.
-  // Shift+click selects the anchor..clicked range, mirroring row selection.
+  // Left-click a column header. Plain click selects this one column.
+  // Ctrl/Cmd+click toggles the column in the multi-select set.
+  // Shift+click selects the anchor..clicked range.
+  // Sorting is decoupled into the dedicated sort button to prevent accidental misclicks.
   const onColClick = (ci: number, e: ReactMouseEvent) => {
     if (e.metaKey || e.ctrlKey) {
       setSelRows(new Set());
@@ -2414,14 +2457,28 @@ export function App() {
     setSelRows(new Set());
     setSelCell(null);
     lastColAnchorRef.current = ci;
-    // Cycle: none → asc → desc → none (#3 sort).
-    setGridSort((s) =>
-      s?.col === ci
-        ? s.dir === "asc"
-          ? { col: ci, dir: "desc" }
-          : null
-        : { col: ci, dir: "asc" }
-    );
+  };
+
+  // Toggle sort on column `ci`: none → asc → desc → none (cancel sort).
+  const toggleColSort = (ci: number, e: ReactMouseEvent) => {
+    e.stopPropagation();
+    setGridSort((s) => {
+      if (s?.col === ci) {
+        if (s.dir === "asc") {
+          return { col: ci, dir: "desc" };
+        } else {
+          return null;
+        }
+      }
+      return { col: ci, dir: "asc" };
+    });
+  };
+
+  // Right-click on active sort button immediately cancels sorting.
+  const cancelColSort = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setGridSort(null);
   };
 
   // --- Column filter actions (#3) -----------------------------------------
@@ -2767,6 +2824,9 @@ export function App() {
           }
           void api.logQuery(t.connId, t.db, stmt);
         }
+        // 除逐条记录外，把整个查询脚本也作为一条历史存档——载入时能
+        // 一键还原完整的多语句批次，而不用从历史里逐条拼回。
+        void api.logQuery(t.connId, t.db, q);
         const ms = Math.round(performance.now() - t0);
         const first = results[0];
         setActiveTab((tab) => ({ ...tab, sql: q, result: first, browseCtx: null }));
@@ -2975,23 +3035,14 @@ export function App() {
   const buildEditorMenu = (hasSel: boolean): MenuItem[] => {
     const ed = editorRef.current;
     return [
-      { type: "item", label: "撤销", onClick: () => ed?.undo() },
-      { type: "item", label: "重做", onClick: () => ed?.redo() },
-      { type: "sep" },
-      { type: "item", label: "剪切", disabled: !hasSel, onClick: () => ed?.cut() },
-      { type: "item", label: "复制", disabled: !hasSel, onClick: () => ed?.copy() },
-      { type: "item", label: "粘贴", onClick: () => void ed?.paste() },
-      { type: "item", label: "删除", disabled: !hasSel, onClick: () => ed?.deleteSelection() },
-      { type: "sep" },
-      { type: "item", label: "全选", onClick: () => ed?.selectAll() },
+      // 运行类操作放最前：右键菜单的最高频动作。
+      { type: "item", label: "运行已选择", disabled: !hasSel, onClick: () => runQueryRef.current() },
+      { type: "item", label: "运行全部", onClick: () => runQueryRef.current(true) },
       { type: "sep" },
       { type: "item", label: "格式化 SQL", onClick: () => ed?.formatSql() },
       { type: "item", label: "注释 / 取消注释", onClick: () => ed?.toggleComment() },
       { type: "item", label: "转换为大写", disabled: !hasSel, onClick: () => ed?.changeCase(true) },
       { type: "item", label: "转换为小写", disabled: !hasSel, onClick: () => ed?.changeCase(false) },
-      { type: "sep" },
-      { type: "item", label: "运行已选择", disabled: !hasSel, onClick: () => runQueryRef.current() },
-      { type: "item", label: "运行全部", onClick: () => runQueryRef.current(true) },
       { type: "sep" },
       // "引用" only stages the SQL; the three verbs additionally pre-fill a
       // question. Both paths go through the same reference, so the chat log
@@ -3040,6 +3091,17 @@ export function App() {
           );
         },
       },
+      { type: "sep" },
+      // 剪贴板 / 编辑类低频操作归入末尾分组。
+      { type: "item", label: "撤销", onClick: () => ed?.undo() },
+      { type: "item", label: "重做", onClick: () => ed?.redo() },
+      { type: "sep" },
+      { type: "item", label: "剪切", disabled: !hasSel, onClick: () => ed?.cut() },
+      { type: "item", label: "复制", disabled: !hasSel, onClick: () => ed?.copy() },
+      { type: "item", label: "粘贴", onClick: () => void ed?.paste() },
+      { type: "item", label: "删除", disabled: !hasSel, onClick: () => ed?.deleteSelection() },
+      { type: "sep" },
+      { type: "item", label: "全选", onClick: () => ed?.selectAll() },
     ];
   };
 
@@ -3518,27 +3580,79 @@ export function App() {
       <table className={"result-table" + (dragging ? " selecting" : "")}>
         <thead>
           <tr>
-            <th className="row-num" title="行号 · 点击行号选中整行">#</th>
+            {(() => {
+              const allVis = viewRows.map((r) => r.origRi);
+              const isAllSelected = allVis.length > 0 && allVis.every((ri) => selRows.has(ri));
+              return (
+                <th
+                  className={"row-num row-num-header" + (isAllSelected ? " all-selected" : "")}
+                  onClick={() => onSelectAllClick(viewRows)}
+                  onContextMenu={(e) => onSelectAllCtx(viewRows, e)}
+                  title={
+                    isAllSelected
+                      ? "已全选表格 · 点击取消全选 · 右键复制所有行"
+                      : "点击全选整个表格 · 右键复制所有行"
+                  }
+                >
+                  {isAllSelected ? "✓" : "#"}
+                </th>
+              );
+            })()}
             {editable && <th className="row-action-col" />}
-            {cols.map((c, i) => (
-              <th
-                key={i}
-                className={
-                  (pkSet.has(c) ? "pk " : "") +
-                  (selCols.has(i) ? "col-selected " : "") +
-                  (gridSort?.col === i ? "col-sorted " : "") +
-                  (colFilters[i] ? "col-filtered " : "")
-                }
-                onClick={(e) => onColClick(i, e)}
-                onContextMenu={(e) => onColCtx(i, e)}
-                title="左键点击排序(升/降/取消) · Ctrl+点击多选列 · Shift+点击范围选列 · 右键列筛选/复制"
-              >
-                {c}
-                {pkSet.has(c) ? " 🔑" : ""}
-                {gridSort?.col === i ? (gridSort.dir === "asc" ? " ▲" : " ▼") : ""}
-                {colFilters[i] ? <span className="filter-dot" title="已筛选">⚲</span> : ""}
-              </th>
-            ))}
+            {cols.map((c, i) => {
+              const isSorted = gridSort?.col === i;
+              const sortDir = isSorted ? gridSort.dir : null;
+              const sortTitle = !isSorted
+                ? "点击按此列升序排序"
+                : sortDir === "asc"
+                ? "当前升序 · 点击切换为降序 (右键直接取消)"
+                : "当前降序 · 点击取消排序";
+
+              return (
+                <th
+                  key={i}
+                  className={
+                    (pkSet.has(c) ? "pk " : "") +
+                    (selCols.has(i) ? "col-selected " : "") +
+                    (isSorted ? "col-sorted " : "") +
+                    (colFilters[i] ? "col-filtered " : "")
+                  }
+                  onClick={(e) => onColClick(i, e)}
+                  onContextMenu={(e) => onColCtx(i, e)}
+                  title="点击选中列 · Ctrl+点击多选 · Shift+点击范围选 · 右键列操作"
+                >
+                  <div className="th-cell">
+                    <span className="th-text" title={c}>{c}</span>
+                    {pkSet.has(c) ? <span className="th-pk-badge" title="主键">🔑</span> : null}
+                    <button
+                      type="button"
+                      className={`th-sort-btn ${isSorted ? "active " + sortDir : ""}`}
+                      onClick={(e) => toggleColSort(i, e)}
+                      onContextMenu={(e) => {
+                        if (isSorted) cancelColSort(e);
+                      }}
+                      title={sortTitle}
+                      aria-label={sortTitle}
+                    >
+                      {sortDir === "asc" ? (
+                        <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
+                          <path d="M4 10.5L8 5.5l4 5H4z" />
+                        </svg>
+                      ) : sortDir === "desc" ? (
+                        <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
+                          <path d="M4 5.5L8 10.5l4-5H4z" />
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
+                          <path d="M4.5 6.5L8 3l3.5 3.5h-7zM11.5 9.5L8 13l-3.5-3.5h7z" />
+                        </svg>
+                      )}
+                    </button>
+                    {colFilters[i] ? <span className="filter-dot" title="已筛选">⚲</span> : null}
+                  </div>
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
@@ -3682,7 +3796,19 @@ export function App() {
       <div className="grid-status">
         显示 {viewRows.length} / 共 {rows.length} 行
         {Object.keys(colFilters).length > 0 && " · 已按列筛选"}
-        {gridSort && " · 已排序"}
+        {gridSort && (
+          <span className="grid-status-sort">
+            {" "}· 已按「{cols[gridSort.col]}」{gridSort.dir === "asc" ? "升序" : "降序"}
+            <button
+              type="button"
+              className="clear-sort-btn"
+              onClick={() => setGridSort(null)}
+              title="取消排序并恢复原顺序"
+            >
+              取消排序
+            </button>
+          </span>
+        )}
       </div>
       </>
     );
@@ -3972,9 +4098,6 @@ export function App() {
   const [chatAttachments, setChatAttachments] = useState<
     { id: string; name: string; content: string; size: number }[]
   >([]);
-  useEffect(() => {
-    if (chatConnId === null && selId) setChatConnId(selId);
-  }, [selId, chatConnId]);
   const onChatConnChange = (connId: string, db: string | null) => {
     setChatConnId(connId);
     setChatDb(db);
@@ -3994,16 +4117,22 @@ export function App() {
     }
   };
 
-  /// 将代码块中的 SQL 一键导入到查询中（相同数据库实例追加在末尾，否则新建查询）
+  /// 将代码块中的 SQL 一键导入到查询中（相同数据库实例追加在末尾，否则新建查询）。
+  /// `binding` 是消息上记录的库上下文（AI 回复时用的连接/库）——优先于当前
+  /// Chat 绑定，这样重开应用后从历史消息导入 SQL 仍能直接定位到当初的库。
   const handleImportToEditor = useCallback(
-    (sqlText: string) => {
+    (sqlText: string, binding?: ChatDbBinding) => {
       if (!sqlText || !sqlText.trim()) {
         showToast("代码块内容为空");
         return;
       }
       const sql = sqlText.trim();
-      const targetConnId = chatConnId || active?.connId || selId || "";
-      const targetDb = chatDb !== undefined ? chatDb : (active?.db ?? selDb ?? null);
+      const targetConnId = binding?.conn_id || chatConnId || active?.connId || selId || "";
+      const targetDb = binding
+        ? binding.db
+        : chatDb !== undefined
+        ? chatDb
+        : (active?.db ?? selDb ?? null);
 
       // 寻找相同数据库实例的已有查询标签页
       // 优先级：
@@ -4190,6 +4319,18 @@ export function App() {
         const meta = m.meta as { refs?: SqlReference[] } | null;
         return { role: "ref", content: m.content, refs: meta?.refs ?? [] };
       }
+      if (m.role === "assistant") {
+        const meta = m.meta as {
+          usage?: TokenUsage;
+          db_binding?: ChatDbBinding;
+        } | null;
+        return {
+          role: "assistant",
+          content: m.content,
+          usage: meta?.usage,
+          dbBinding: meta?.db_binding,
+        };
+      }
       return { role: m.role as ChatMessage["role"], content: m.content };
     });
 
@@ -4258,8 +4399,6 @@ export function App() {
       turnItemsRef.current = { convId: null, items: [] };
       setChat([]);
       setPendingConvRefs([]);
-      setLastUsage(null);
-      setSessionTokens(0);
       await loadConvs();
     } catch (e) {
       showToast("新建会话失败: " + String(e));
@@ -4382,6 +4521,13 @@ export function App() {
   const pickConvRef = (c: ConversationSummary, whole: boolean) => {
     setAtOpen(false);
     setConvMsgPick(null);
+    const ta = document.getElementById("chat-input") as HTMLTextAreaElement | null;
+    if (ta) {
+      const m = /@([^\s@]*)$/.exec(ta.value);
+      if (m) {
+        ta.value = ta.value.slice(0, m.index);
+      }
+    }
     if (whole) {
       setPendingConvRefs((prev) => [
         ...prev,
@@ -4448,11 +4594,10 @@ export function App() {
     [convs, atFilter],
   );
 
-  /// Composer typing: open the @-picker when a word starts with "@" (the last
-  /// word on the line), close it otherwise.
+  /// Composer typing: open the @-picker when "@" is typed at the end.
   const onChatInput = (e: ChangeEvent<HTMLTextAreaElement>) => {
     const v = e.target.value;
-    const m = /(?:^|\s)@([^\s@]*)$/.exec(v);
+    const m = /@([^\s@]*)$/.exec(v);
     if (m) {
       setAtFilter(m[1].toLowerCase());
       setAtOpen(true);
@@ -4477,30 +4622,39 @@ export function App() {
     ta.focus();
   };
 
-  /// Composer keys while the @-picker is open: arrows move, Enter picks the
-  /// highlighted conversation as a whole-session reference (stripping the "@…"
-  /// text), Escape closes.
+  /// Composer keys:
+  /// - While @-picker is open: arrows move, Enter picks, Escape closes.
+  /// - Normal typing: Enter sends message directly, Shift+Enter inserts newline.
+  ///   (IME composition events are ignored to prevent accidental sends during Chinese pinyin input).
   const onChatKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    if (!atOpen) return;
-    if (e.key === "ArrowDown") {
+    if (atOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setAtIdx((i) => Math.min(i + 1, Math.max(atList.length - 1, 0)));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setAtIdx((i) => Math.max(i - 1, 0));
+      } else if (e.key === "Enter") {
+        const c = atList[atIdx];
+        if (!c) return;
+        e.preventDefault();
+        pickConvRef(c, true);
+        const ta = e.currentTarget;
+        const m = /(?:^|\s)@[^\s@]*$/.exec(ta.value);
+        if (m) ta.value = ta.value.slice(0, m.index);
+        setAtOpen(false);
+        setAtFilter("");
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setAtOpen(false);
+      }
+      return;
+    }
+
+    if (e.key === "Enter" && !e.shiftKey) {
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
       e.preventDefault();
-      setAtIdx((i) => Math.min(i + 1, Math.max(atList.length - 1, 0)));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setAtIdx((i) => Math.max(i - 1, 0));
-    } else if (e.key === "Enter") {
-      const c = atList[atIdx];
-      if (!c) return;
-      e.preventDefault();
-      pickConvRef(c, true);
-      const ta = e.currentTarget;
-      const m = /(?:^|\s)@[^\s@]*$/.exec(ta.value);
-      if (m) ta.value = ta.value.slice(0, m.index);
-      setAtOpen(false);
-      setAtFilter("");
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      setAtOpen(false);
+      void sendChat();
     }
   };
 
@@ -4545,8 +4699,10 @@ export function App() {
     setChat(next);
     input.value = "";
     setStreaming(true);
-    setLastUsage(null);
     setChat((prev) => [...prev, { role: "assistant", content: "" }]);
+    // Stamp the conn/db this turn runs against — chat-done attaches it to the
+    // final assistant message so the reply remembers its database context.
+    turnBindingRef.current = { conn_id: chatConnId ?? selId, db: chatDb };
     // §5.2 snapshot: everything this turn will append to the store. Plan cards
     // and token-streamed assistant text extend it via the event listeners.
     turnItemsRef.current = { convId, items: [...next, { role: "assistant", content: "" }] };
@@ -4852,16 +5008,30 @@ export function App() {
     // The plan arrives as its own card, then a fresh assistant bubble takes
     // over so the worker output doesn't get appended onto the plan.
     onChatPlan((steps) => {
-      setChat((prev) => [
-        ...prev,
-        { role: "plan", content: "", steps },
-        { role: "assistant", content: "" },
-      ]);
+      setChat((prev) => {
+        const base =
+          prev.length > 0 &&
+          prev[prev.length - 1].role === "assistant" &&
+          prev[prev.length - 1].content === ""
+            ? prev.slice(0, -1)
+            : prev;
+        return [
+          ...base,
+          { role: "plan", content: "", steps },
+          { role: "assistant", content: "" },
+        ];
+      });
       const snap = turnItemsRef.current;
+      const baseItems =
+        snap.items.length > 0 &&
+        snap.items[snap.items.length - 1].role === "assistant" &&
+        snap.items[snap.items.length - 1].content === ""
+          ? snap.items.slice(0, -1)
+          : snap.items;
       turnItemsRef.current = {
         convId: snap.convId,
         items: [
-          ...snap.items,
+          ...baseItems,
           { role: "plan", content: "", steps },
           { role: "assistant", content: "" },
         ],
@@ -4870,66 +5040,128 @@ export function App() {
     onChatConfirm((req) => {
       setConfirmQueue((prev) => [...prev, req]);
     }).then(safe);
-    // Cost lands just before `chat-done`. Providers that stay silent leave
-    // `lastUsage` at null, so the footer shows nothing rather than a fake 0.
+    let latestUsage: TokenUsage | null = null;
     onChatUsage((u) => {
-      // Zero total = the provider never emitted a `usage` chunk for this
-      // stream; showing "0 tokens" is misleading, so ignore it and let
-      // chat-done fall back to a char-based estimate instead (2026-08-12).
       if (!u.total_tokens) return;
-      setUsageEstimated(false);
-      setLastUsage(u);
-      setSessionTokens((prev) => prev + u.total_tokens);
+      latestUsage = u;
+      setChat((prev) => {
+        const next = [...prev];
+        for (let i = next.length - 1; i >= 0; i--) {
+          if (next[i].role === "assistant") {
+            next[i] = { ...next[i], usage: u };
+            break;
+          }
+        }
+        return next;
+      });
+      const snap = turnItemsRef.current;
+      const items = snap.items.map((m, i, arr) => {
+        if (i === arr.length - 1 && m.role === "assistant") {
+          return { ...m, usage: u };
+        }
+        return m;
+      });
+      turnItemsRef.current = { convId: snap.convId, items };
     }).then(safe);
     onChatDone(() => {
       setStreaming(false);
       sendingRef.current = false;
       turnIdRef.current = null;
       setConfirmQueue([]);
-      // Front-end fallback (2026-08-17): when the backend's synthesize
-      // emits nothing (model returned empty, or a filter stripped
-      // everything), the assistant bubble would render as the literal
-      // "…" placeholder. Patch the last assistant message with a short
-      // acknowledgment so the user always sees a visible reply.
-      // Mirrors the backend's `查询已执行，详见上方工具结果。` fallback
-      // so the two layers agree on the message text.
+
+      // If provider never reported usage, estimate from text
+      let finalUsage = latestUsage;
+      const snap = turnItemsRef.current;
+      if (!finalUsage) {
+        const inText = snap.items
+          .filter(
+            (m) => m.role === "user" || m.role === "plan" || m.role === "ref",
+          )
+          .map((m) => {
+            if (m.role === "plan") return ((m as any).steps || []).join("\n");
+            if (m.role === "ref") return ((m as any).refs || []).map((r: any) => r.sql).join("\n");
+            return m.content;
+          })
+          .join("\n");
+        const outText = snap.items
+          .filter((m) => m.role === "assistant")
+          .map((m) => m.content)
+          .join("\n");
+        if (inText.trim() || outText.trim()) {
+          const p = estimateTokens(inText);
+          const c = estimateTokens(outText);
+          finalUsage = {
+            prompt_tokens: p,
+            completion_tokens: c,
+            total_tokens: p + c,
+            cached_tokens: 0,
+          };
+        }
+      }
+      latestUsage = null;
+
+      // Stamp this turn's conn/db context onto the final assistant reply, so
+      // the message remembers which database its SQL targets (shown as a chip
+      // under the message and used by SQL import to locate the connection).
+      const turnBinding = turnBindingRef.current;
+      turnBindingRef.current = null;
+
+      // Front-end fallback: ensure assistant message has content and usage attached
       setChat((prev) => {
         if (prev.length === 0) return prev;
-        const last = prev[prev.length - 1];
-        if (last.role === "assistant" && last.content.trim() === "") {
-          const filled = prev.slice();
-          filled[filled.length - 1] = {
-            ...last,
-            content: "查询已执行，详见上方工具结果。",
-          };
-          return filled;
+        const next = prev.slice();
+        for (let i = next.length - 1; i >= 0; i--) {
+          if (next[i].role === "assistant") {
+            const item = next[i];
+            const content = item.content.trim() === "" ? "查询已执行，详见上方工具结果。" : item.content;
+            const usage = ("usage" in item && item.usage) || finalUsage || undefined;
+            const dbBinding = ("dbBinding" in item && item.dbBinding) || turnBinding || undefined;
+            next[i] = { ...item, content, usage, dbBinding };
+            break;
+          }
         }
-        return prev;
+        return next;
       });
-      // §5.2: persist this turn's snapshot (ref/plan cards + user + assistant)
-      // into the conversation it was sent from, then refresh the selector.
-      const snap = turnItemsRef.current;
+
       const convId_ = snap.convId;
       turnItemsRef.current = { convId: null, items: [] };
-      // Patch the snapshot too — the empty-assistant filter below would
-      // drop the empty bubble and leave the turn un-persisted.
       const patchedSnap = {
         convId: snap.convId,
-        items: snap.items.map((m) =>
-          m.role === "assistant" && m.content.trim() === ""
-            ? { ...m, content: "查询已执行，详见上方工具结果。" }
-            : m,
-        ),
+        items: snap.items.map((m, i, arr) => {
+          if (m.role === "assistant") {
+            const content = m.content.trim() === "" ? "查询已执行，详见上方工具结果。" : m.content;
+            const usage = (m as any).usage || finalUsage || undefined;
+            // Only the LAST assistant bubble of the turn carries the binding —
+            // it's the reply the user reads; intermediate bubbles (pre-plan
+            // placeholders) stay unbound.
+            const dbBinding =
+              (i === arr.length - 1 && (m as any).dbBinding) || (i === arr.length - 1 ? turnBinding : undefined) || undefined;
+            return { ...m, content, usage, dbBinding };
+          }
+          return m;
+        }),
       };
+
       if (convId_) {
         const msgs: NewChatMessage[] = patchedSnap.items
           .filter((m) => !(m.role === "assistant" && m.content.trim() === ""))
           .map((m) => {
             if (m.role === "plan") {
-              return { role: "plan", content: m.content, meta: { steps: m.steps } };
+              return { role: "plan", content: m.content, meta: { steps: (m as any).steps } };
             }
             if (m.role === "ref") {
-              return { role: "ref", content: m.content, meta: { refs: m.refs } };
+              return { role: "ref", content: m.content, meta: { refs: (m as any).refs } };
+            }
+            if (m.role === "assistant") {
+              const u = (m as any).usage;
+              const b = (m as any).dbBinding;
+              const meta =
+                u || b ? { ...(u ? { usage: u } : {}), ...(b ? { db_binding: b } : {}) } : undefined;
+              return {
+                role: "assistant",
+                content: m.content,
+                meta,
+              };
             }
             return { role: m.role, content: m.content };
           });
@@ -4940,37 +5172,12 @@ export function App() {
             .catch((e) => showToast("消息保存失败: " + String(e)));
         }
       }
-      // Provider never reported usage (lastUsage stayed null): estimate from
-      // this turn's actual text — user/ref/plan feed the prompt, assistant is
-      // the output — and mark it as an estimate ("约") in the footer.
-      setLastUsage((cur) => {
-        if (cur) return cur;
-        const inText = snap.items
-          .filter(
-            (m) => m.role === "user" || m.role === "plan" || m.role === "ref",
-          )
-          .map((m) => {
-            if (m.role === "plan") return (m.steps || []).join("\n");
-            if (m.role === "ref") return (m.refs || []).map((r) => r.sql).join("\n");
-            return m.content;
-          })
-          .join("\n");
-        const outText = snap.items
-          .filter((m) => m.role === "assistant")
-          .map((m) => m.content)
-          .join("\n");
-        if (!inText.trim() && !outText.trim()) return cur;
-        const p = estimateTokens(inText);
-        const c = estimateTokens(outText);
-        setUsageEstimated(true);
-        setSessionTokens((prev) => prev + p + c);
-        return { prompt_tokens: p, completion_tokens: c, total_tokens: p + c };
-      });
     }).then(safe);
     onChatError((t) => {
       setStreaming(false);
       sendingRef.current = false;
       turnIdRef.current = null;
+      turnBindingRef.current = null;
       setChat((prev) => [...prev, { role: "tool", content: "错误: " + t }]);
     }).then(safe);
     return () => {
@@ -5102,7 +5309,9 @@ export function App() {
             </button>
           </div>
           {isRedisConn ? (
-            <RedisBrowser connId={active!.connId} db={parseInt(active!.db || "0", 10)} showToast={showToast} />
+            <Suspense fallback={<div className="pane-head">加载 Redis 面板…</div>}>
+              <RedisBrowser connId={active!.connId} db={parseInt(active!.db || "0", 10)} showToast={showToast} />
+            </Suspense>
           ) : (
           <>
           <div className="editor-pane">
@@ -5173,6 +5382,32 @@ export function App() {
                 </button>
                 {refMenuOpen && (
                   <ul className="menu-pop" role="menu">
+                    <li
+                      role="menuitem"
+                      className={
+                        "menu-item" +
+                        (active?.connId ? "" : " disabled")
+                      }
+                      aria-disabled={!active?.connId}
+                      title={
+                        active?.connId
+                          ? "将当前查询的连接 / 数据库绑定为 Chat 的默认上下文"
+                          : "请先为当前查询选择连接 / 数据库"
+                      }
+                      onClick={() => {
+                        if (!active?.connId) return;
+                        setRefMenuOpen(false);
+                        setChatConnId(active.connId);
+                        setChatDb(active.db ?? null);
+                        const connName = findConn(active.connId)?.name ?? "未知连接";
+                        showToast(
+                          `已将【${connName} · ${active.db || "默认库"}】引入到 Chat`,
+                        );
+                      }}
+                    >
+                      🗄 引入数据库到 Chat
+                    </li>
+                    <li className="ai-menu-sep" />
                     <li
                       role="menuitem"
                       className="menu-item"
@@ -5372,7 +5607,7 @@ export function App() {
                       />
                       Aa
                     </label>
-                    {(Object.keys(colFilters).length > 0 || gridSearch.trim()) && (
+                    {(Object.keys(colFilters).length > 0 || gridSearch.trim() || gridSort !== null) && (
                       <button
                         className="clear-filter"
                         onClick={() => {
@@ -5678,9 +5913,54 @@ export function App() {
                     <div className="msg-body">
                       <MarkdownMessage
                         content={m.content || "…"}
-                        onImportSql={handleImportToEditor}
+                        onImportSql={(sql) =>
+                          handleImportToEditor(sql, "dbBinding" in m ? m.dbBinding : undefined)
+                        }
                       />
                     </div>
+                    {m.role === "assistant" && "dbBinding" in m && m.dbBinding && (
+                      <button
+                        type="button"
+                        className="msg-db-chip"
+                        title={
+                          "本条回复使用的数据库上下文 · 点击将 Chat 切换到该库 · 从本条消息导入 SQL 会直接定位到此库"
+                        }
+                        onClick={() => {
+                          setChatConnId(m.dbBinding!.conn_id);
+                          setChatDb(m.dbBinding!.db);
+                          showToast(
+                            `已切换到【${findConn(m.dbBinding!.conn_id)?.name ?? "未知连接"} · ${m.dbBinding!.db || "默认库"}】`,
+                          );
+                        }}
+                      >
+                        <span className="ref-chip-kind db">DB</span>
+                        <span className="msg-db-conn">
+                          {findConn(m.dbBinding.conn_id)?.name ?? "未知连接"}
+                        </span>
+                        <span className="msg-db-dot">·</span>
+                        <span className="msg-db-name">{m.dbBinding.db || "默认库"}</span>
+                      </button>
+                    )}
+                    {m.role === "assistant" && "usage" in m && m.usage && m.usage.total_tokens > 0 && (
+                      <div className="msg-usage-strip" title="Token 消耗明细">
+                        <span className="msg-usage-icon">⚡</span>
+                        <span className="msg-usage-item">
+                          输入 <span className="msg-usage-val">{fmtNum(m.usage.prompt_tokens)}</span>
+                        </span>
+                        <span className="msg-usage-dot">·</span>
+                        <span className="msg-usage-item">
+                          输出 <span className="msg-usage-val">{fmtNum(m.usage.completion_tokens)}</span>
+                        </span>
+                        <span className="msg-usage-dot">·</span>
+                        <span className="msg-usage-item">
+                          缓存 <span className="msg-usage-val">{fmtNum(m.usage.cached_tokens ?? 0)}</span>
+                        </span>
+                        <span className="msg-usage-dot">·</span>
+                        <span className="msg-usage-total">
+                          总计 <span className="msg-usage-val">{fmtNum(m.usage.total_tokens)}</span>
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -5688,32 +5968,6 @@ export function App() {
           )}
           <div ref={chatEndRef} />
         </div>
-        {(lastUsage || sessionTokens > 0) && (
-          <div
-            className="chat-usage"
-            title={
-              usageEstimated
-                ? "provider 未上报用量，按字符估算（约）"
-                : "LLM token 用量（ADR-AI-4）"
-            }
-          >
-            {lastUsage ? (
-              <>
-                <span>
-                  ⚡ 本轮{usageEstimated ? " 约" : ""}{" "}
-                  {fmtNum(lastUsage.total_tokens)} tokens
-                </span>
-                <span className="dim">
-                  （入 {fmtNum(lastUsage.prompt_tokens)} / 出{" "}
-                  {fmtNum(lastUsage.completion_tokens)}）
-                </span>
-              </>
-            ) : (
-              <span className="dim">⚡ 本轮用量未上报</span>
-            )}
-            <span className="dim">· 会话累计 {fmtNum(sessionTokens)}</span>
-          </div>
-        )}
         {/* Unified "本轮引用" tray — renders a single rounded container
          * only when at least one of the four reference types is present.
          * The 4 categories (database / file attachment / SQL statement /
@@ -5721,8 +5975,8 @@ export function App() {
          * user sees them as one "what I'm sending" group, not four
          * independent blocks. Type colour cue lives in a small left-edge
          * tag so each chip is still scannable. */}
-        {(chatDb ||
-          (chatConnId && chatConnId !== selId) ||
+        {(chatConnId ||
+          chatDb ||
           chatAttachments.length > 0 ||
           pendingRefs.length > 0 ||
           pendingConvRefs.length > 0) && (
@@ -5733,7 +5987,7 @@ export function App() {
               title="清空所有引用"
               aria-label="清空所有引用"
               onClick={() => {
-                setChatConnId(selId);
+                setChatConnId(null);
                 setChatDb(null);
                 setChatAttachments([]);
                 setPendingRefs([]);
@@ -5742,12 +5996,11 @@ export function App() {
             >
               <Icon name="trash" size={11} />
             </button>
-            {/* Database chip — the chat's *active* conn/db, routed via
-             * the + menu's "选择数据库" → `chatConnId` / `chatDb` (NOT
-             * the SQL tab's `selId` / `active.db`). Skip when the chat
-             * context matches the tree to avoid duplicating info. */}
-            {(chatConnId || chatDb) && (chatDb || chatConnId !== selId) && (
-              <span className="ref-chip" title="还原为当前选中的连接 / 库">
+            {/* Database chip — the chat's *active* conn/db.
+             * Stays pinned across conversation turns so the user doesn't
+             * have to re-select the database for every single question. */}
+            {(chatConnId || chatDb) && (
+              <span className="ref-chip" title="当前 Chat 会话绑定的连接 / 库（持续生效）">
                 <span className="ref-chip-kind db">DB</span>
                 <Icon name="cylinder" size={11} />
                 <span className="ref-conn">
@@ -5758,9 +6011,9 @@ export function App() {
                 <button
                   type="button"
                   className="ref-chip-x"
-                  title="还原为当前选中的连接 / 库"
+                  title="解绑此数据库连接"
                   onClick={() => {
-                    setChatConnId(selId);
+                    setChatConnId(null);
                     setChatDb(null);
                   }}
                 >
@@ -5881,68 +6134,72 @@ export function App() {
             ))}
           </div>
         )}
-        {/* @-mention picker: floats above the composer, filtered by what was
-            typed after "@". Enter picks the highlighted conversation (whole
-            tail); clicking an item opens the message drill-down instead. */}
-        {atOpen && atList.length > 0 && (
-          <div className="at-pop">
-            {atList.map((c, i) => (
-              <div
-                key={c.id}
-                className={"at-item" + (i === atIdx ? " active" : "")}
-                onMouseEnter={() => setAtIdx(i)}
-                onClick={() => pickConvRef(c, true)}
-              >
-                <span className="at-title">{c.title}</span>
-                <span className="at-sub">
-                  {c.conn_name ?? "全部"} · {relTime(c.updated)}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-        {convMsgPick && (
-          <div className="conv-msg-pop">
-            <div className="conv-msg-head">
-              <span className="conv-msg-name">{convMsgPick.title}</span>
-              <span className="conv-msg-hint">选择引用哪条消息</span>
-              <button
-                type="button"
-                className="conv-msg-whole"
-                title="引用整段对话（最近 8 条）"
-                onClick={() => pickConvRef(convMsgPick, true)}
-              >
-                整段对话
-              </button>
-              <button
-                type="button"
-                className="ref-chip-x"
-                title="取消"
-                onClick={() => setConvMsgPick(null)}
-              >
-                ×
-              </button>
-            </div>
-            <div className="conv-msg-list">
-              {convMsgList.map((m, i) => (
-                <div
-                  key={m.id ?? i}
-                  className="conv-msg-item"
-                  onClick={() => pickMsgRef(convMsgPick, m)}
-                >
-                  <span className={"conv-msg-role " + m.role}>{m.role}</span>
-                  <span className="conv-msg-text">
-                    {(splitThinkContent(m.content || "").content || m.content || "").slice(0, 80) || "…"}
-                  </span>
-                </div>
-              ))}
-              {convMsgList.length === 0 && (
-                <div className="dim conv-msg-empty">加载中…</div>
+        <div className="chat-composer">
+          {/* @-mention picker: floats above the composer, filtered by what was
+              typed after "@". Enter picks the highlighted conversation (whole
+              tail); clicking an item opens the message drill-down instead. */}
+          {atOpen && (
+            <div className="at-pop">
+              {atList.length > 0 ? (
+                atList.map((c, i) => (
+                  <div
+                    key={c.id}
+                    className={"at-item" + (i === atIdx ? " active" : "")}
+                    onMouseEnter={() => setAtIdx(i)}
+                    onClick={() => pickConvRef(c, true)}
+                  >
+                    <span className="at-title">{c.title}</span>
+                    <span className="at-sub">
+                      {c.conn_name ?? "全部"} · {relTime(c.updated)}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="at-empty">暂无匹配的历史会话</div>
               )}
             </div>
-          </div>
-        )}
-        <div className="chat-composer">
+          )}
+          {convMsgPick && (
+            <div className="conv-msg-pop">
+              <div className="conv-msg-head">
+                <span className="conv-msg-name">{convMsgPick.title}</span>
+                <span className="conv-msg-hint">选择引用哪条消息</span>
+                <button
+                  type="button"
+                  className="conv-msg-whole"
+                  title="引用整段对话（最近 8 条）"
+                  onClick={() => pickConvRef(convMsgPick, true)}
+                >
+                  整段对话
+                </button>
+                <button
+                  type="button"
+                  className="ref-chip-x"
+                  title="取消"
+                  onClick={() => setConvMsgPick(null)}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="conv-msg-list">
+                {convMsgList.map((m, i) => (
+                  <div
+                    key={m.id ?? i}
+                    className="conv-msg-item"
+                    onClick={() => pickMsgRef(convMsgPick, m)}
+                  >
+                    <span className={"conv-msg-role " + m.role}>{m.role}</span>
+                    <span className="conv-msg-text">
+                      {(splitThinkContent(m.content || "").content || m.content || "").slice(0, 80) || "…"}
+                    </span>
+                  </div>
+                ))}
+                {convMsgList.length === 0 && (
+                  <div className="dim conv-msg-empty">加载中…</div>
+                )}
+              </div>
+            </div>
+          )}
           <div className="chat-composer-input">
             <textarea
               id="chat-input"
@@ -5953,6 +6210,7 @@ export function App() {
               }
               disabled={streaming}
               onInput={onChatInput}
+              onChange={onChatInput}
               onKeyDown={onChatKeyDown}
             />
           </div>
@@ -6614,11 +6872,21 @@ export function App() {
             </div>
             <div className="history-list">
               {visible.length === 0 && <div className="empty">暂无记录</div>}
-              {visible.map((h) => (
+              {visible.map((h) => {
+                const multi = !h.name && splitStatements(h.sql).length > 1;
+                return (
                 <div key={h.id} className="history-item">
                   {h.name && <div className="history-title">{h.name}</div>}
                   <div className="history-meta">
                     {h.name ? <span className="snippet-badge">片段</span> : null}
+                    {multi && (
+                      <span
+                        className="snippet-badge multi"
+                        title="本次执行的完整多语句脚本存档"
+                      >
+                        多语句
+                      </span>
+                    )}
                     <span>{findConn(h.conn_id ?? "")?.name ?? "—"}</span>
                     {h.db ? <span className="history-db">▦ {h.db}</span> : null}
                     <span className="history-time">{fmtTime(h.created)}</span>
@@ -6632,7 +6900,8 @@ export function App() {
                     <button onClick={() => void deleteQueryItem(h)}>删除</button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
             <div className="modal-actions">
               <span className="spacer" />
@@ -7723,6 +7992,37 @@ export function App() {
             {ctxMenu.col != null && (
               <>
                 <div className="ctx-title">
+                  排序：
+                  {result?.kind === "table" ? result.columns[ctxMenu.col] : ""}
+                </div>
+                <button
+                  onClick={() => {
+                    setGridSort({ col: ctxMenu.col!, dir: "asc" });
+                    setCtxMenu(null);
+                  }}
+                >
+                  按此列升序 ▲
+                </button>
+                <button
+                  onClick={() => {
+                    setGridSort({ col: ctxMenu.col!, dir: "desc" });
+                    setCtxMenu(null);
+                  }}
+                >
+                  按此列降序 ▼
+                </button>
+                {gridSort?.col === ctxMenu.col && (
+                  <button
+                    onClick={() => {
+                      setGridSort(null);
+                      setCtxMenu(null);
+                    }}
+                  >
+                    取消排序
+                  </button>
+                )}
+                <div className="ctx-sep" />
+                <div className="ctx-title">
                   列筛选：
                   {result?.kind === "table" ? result.columns[ctxMenu.col] : ""}
                 </div>
@@ -8106,21 +8406,25 @@ function rowsToJson(columns: string[], rows: string[][]): string {
 }
 
 /// Best-effort extraction of a single table name from a SQL statement's
-/// FROM clause. Handles `FROM \`table\``, `FROM table`, and
-/// `FROM db.table`. Returns null for JOINs, subqueries, and UNIONs (more
-/// than one table in the FROM), so the caller can fall back to a placeholder.
+/// FROM clause. Handles `FROM `table``, `FROM table`, `FROM db.table`, aliases, etc.
 function extractTableFromSql(sql: string): string | null {
-  // Remove newlines for easier matching, keep original for fallback.
-  const flat = sql.replace(/\n/g, " ");
-  // Match FROM clause: capture the table identifier. Stop at the first
-  // JOIN/ON/WHERE/GROUP/ORDER/LIMIT/HAVING/semicolon to avoid grabbing
-  // multiple tables.
-  const m = flat.match(
-    /\bFROM\s+`?(\w+)`?(?:\s*`?\s*\.?\s*`?(\w+)`?)?\s*(?:\s+(?:JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|WHERE|GROUP|ORDER|LIMIT|HAVING|UNION|;|$))/i
+  if (!sql) return null;
+  const clean = sql
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--.*$/gm, " ")
+    .replace(/#.*$/gm, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const m = clean.match(
+    /\bFROM\s+(?:`([^`]+)`|([a-zA-Z0-9_$]+))(?:\s*\.\s*(?:`([^`]+)`|([a-zA-Z0-9_$]+)))?/i
   );
   if (!m) return null;
-  // db.table form — take just the table part (last capture group).
-  return m[2] || m[1];
+
+  const secondPart = m[3] || m[4];
+  const firstPart = m[1] || m[2];
+  const table = secondPart || firstPart;
+  return table || null;
 }
 
 function rowsToInsert(table: string, columns: string[], rows: string[][]): string {
@@ -8140,35 +8444,57 @@ function rowsToUpdate(
 ): string {
   const escId = (c: string) => "`" + c.replace(/`/g, "``") + "`";
   const tname = table.replace(/`/g, "``");
-  // No primary keys: fall back to using every column in both SET and WHERE.
-  // This produces a template the user edits — change SET values to the new
-  // data, WHERE stays as-is to locate the row. It's verbose but correct.
-  if (pks.length === 0) {
-    const stmts = rows.map((r) => {
-      const set = columns
-        .map((c, i) => `${escId(c)}=${sqlLit(r[i] ?? "")}`)
-        .join(", ");
-      const where = columns
-        .map((c, i) => `${escId(c)}=${sqlLit(r[i] ?? "")}`)
-        .join(" AND ");
-      return `UPDATE \`${tname}\` SET ${set} WHERE ${where};`;
-    });
-    return stmts.join("\n");
-  }
-  const pkIdx = pks.map((p) => columns.indexOf(p)).filter((i) => i >= 0);
-  const stmts = rows.map((r) => {
-    const set = columns
-      .map((c, i) =>
-        pkIdx.includes(i) ? null : `${escId(c)}=${sqlLit(r[i] ?? "")}`
-      )
-      .filter(Boolean)
-      .join(", ");
-    const where = pkIdx
-      .map((i) => `${escId(columns[i])}=${sqlLit(r[i] ?? "")}`)
-      .join(" AND ");
-    return `UPDATE \`${tname}\` SET ${set} WHERE ${where};`;
+
+  // Find column indices of primary keys (case-insensitive)
+  const pkSet = new Set((pks || []).map((p) => p.toLowerCase()));
+  const pkIdx: number[] = [];
+  columns.forEach((c, i) => {
+    if (pkSet.has(c.toLowerCase())) {
+      pkIdx.push(i);
+    }
   });
-  return stmts.join("\n");
+
+  // If no primary key was specified or found, check if there is an id column
+  if (pkIdx.length === 0) {
+    const idIndex = columns.findIndex((c) => {
+      const low = c.toLowerCase();
+      return low === "id" || low.endsWith("_id");
+    });
+    if (idIndex >= 0) {
+      pkIdx.push(idIndex);
+    }
+  }
+
+  return rows
+    .map((r) => {
+      let setCols: number[];
+      let whereCols: number[];
+
+      if (pkIdx.length > 0) {
+        whereCols = pkIdx;
+        setCols = columns
+          .map((_, i) => i)
+          .filter((i) => !pkIdx.includes(i));
+        // Edge case: all columns in result are PKs (e.g. SELECT id FROM t)
+        if (setCols.length === 0) {
+          setCols = pkIdx;
+        }
+      } else {
+        // Fallback when no PK at all: SET all columns, WHERE all columns
+        setCols = columns.map((_, i) => i);
+        whereCols = columns.map((_, i) => i);
+      }
+
+      const setClause = setCols
+        .map((i) => `${escId(columns[i])} = ${sqlLit(r[i] ?? "")}`)
+        .join(", ");
+      const whereClause = whereCols
+        .map((i) => `${escId(columns[i])} = ${sqlLit(r[i] ?? "")}`)
+        .join(" AND ");
+
+      return `UPDATE \`${tname}\` SET ${setClause} WHERE ${whereClause};`;
+    })
+    .join("\n");
 }
 
 async function copyText(text: string): Promise<boolean> {

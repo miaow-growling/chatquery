@@ -1,11 +1,24 @@
 import { loader } from "@monaco-editor/react";
-import * as monaco from "monaco-editor";
+// Monaco via the SQL-only assembly (see monaco-sql.ts): the editor is 100%
+// Monaco — this only skips the ~80 unused language packs and the TS/HTML/CSS/
+// JSON language services, which also avoids emitting a 7MB ts.worker chunk.
+import { monaco } from "./monaco-sql";
+import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 import { format as formatSqlText, type SqlLanguage } from "sql-formatter";
 import type { ColumnInfo, TableMeta } from "./types";
 import { api } from "./api";
 
-// Configure @monaco-editor/react to use the local bundled monaco instance
-loader.config({ monaco });
+// Base editor worker (word-based suggestions, link detection). SQL tokenization
+// is Monarch-based and runs on the main thread, so no per-language worker needed.
+self.MonacoEnvironment = {
+  getWorker: () => new EditorWorker(),
+};
+
+// Configure @monaco-editor/react to use the local bundled monaco instance.
+// The SQL-only assembly lacks editor.main's language-service exports
+// (lsp/css/html/json/typescript), which is exactly the point — cast to keep
+// the loader's structural type happy.
+loader.config({ monaco: monaco as unknown as Parameters<typeof loader.config>[0]["monaco"] });
 
 export interface EditorHandle {
   view: { destroy: () => void; focus: () => void };

@@ -1197,6 +1197,21 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--bg-subtle);
   font-weight: var(--fw-semibold);
   color: var(--text-secondary);
+  text-align: center;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.result-table thead th.row-num:hover {
+  background: var(--bg-hover);
+  color: var(--brand);
+}
+.result-table thead th.row-num.all-selected {
+  background: var(--brand) !important;
+  color: #fff !important;
+  font-weight: var(--fw-bold, 700);
+}
+.result-table thead th.row-num.all-selected:hover {
+  background: var(--brand-hover) !important;
+  color: #fff !important;
 }
 .result-table tbody tr:nth-child(even) td.row-num { background: var(--bg-inset); }
 .result-table tbody tr:hover td.row-num { background: var(--bg-hover); }
@@ -3032,18 +3047,79 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 }
 .ref-jump:hover { color: var(--brand); background: var(--bg-subtle); }
 
-/* ---- Token cost strip (ADR-AI-4 决策3) ---- */
-.chat-usage {
-  display: flex;
+/* ---- Token cost strip (under assistant message) ---- */
+.msg-usage-strip {
+  display: inline-flex;
+  align-items: center;
   flex-wrap: wrap;
-  align-items: baseline;
   gap: 6px;
-  padding: 6px 14px 0;
-  font-size: var(--fs-2xs);
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-soft, rgba(0, 0, 0, 0.08));
+  font-size: var(--fs-2xs, 11px);
+  color: var(--text-tertiary);
+  user-select: none;
+  font-family: var(--font-mono, monospace);
+  line-height: 1.4;
 }
-.chat-usage .dim { color: var(--text-tertiary); }
+.msg-usage-icon {
+  font-size: 11px;
+  color: var(--warning-500, #eab308);
+  opacity: 0.9;
+}
+.msg-usage-item,
+.msg-usage-total {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.msg-usage-val {
+  color: var(--text-secondary);
+  font-weight: var(--fw-medium, 500);
+}
+.msg-usage-dot {
+  color: var(--text-tertiary);
+  opacity: 0.4;
+}
+.msg-usage-total .msg-usage-val {
+  color: var(--brand);
+}
+/* 消息上记录的数据库上下文标签：本条 AI 回复使用的 连接·库，可点击切换 */
+.msg-db-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full, 999px);
+  background: var(--bg-subtle);
+  font-size: var(--fs-2xs, 11px);
+  color: var(--text-secondary);
+  cursor: pointer;
+  max-width: 100%;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+.msg-db-chip:hover {
+  border-color: var(--brand-border);
+  background: var(--brand-soft);
+}
+.msg-db-conn {
+  font-weight: var(--fw-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-db-dot {
+  color: var(--text-tertiary);
+}
+.msg-db-name {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ---- @-mention tray + picker (docs/chat-conversation-design.md §6.1) ---- */
 /* .convref-tray / .convref-chip used to be a separate tray above the
@@ -3103,6 +3179,12 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   white-space: nowrap;
 }
 .at-sub { font-size: 11px; color: var(--text-tertiary); flex-shrink: 0; }
+.at-empty {
+  padding: 12px 14px;
+  font-size: var(--fs-xs, 12px);
+  color: var(--text-tertiary);
+  text-align: center;
+}
 
 /* Message drill-down: pick a single message to reference */
 .conv-msg-pop {
@@ -3883,6 +3965,7 @@ select.field-input:disabled {
  * line up visually. */
 
 .chat-composer {
+  position: relative;
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--border);
@@ -4573,6 +4656,11 @@ select.field-input:disabled {
   font-size: 10px;
   font-weight: var(--fw-semibold);
 }
+/* 多语句批次历史条目的角标（整段脚本存档） */
+.snippet-badge.multi {
+  background: var(--success-soft, rgba(34, 197, 94, 0.15));
+  color: var(--success-500, #16a34a);
+}
 .history-sql {
   margin: 0 0 8px;
   white-space: pre-wrap;
@@ -5008,10 +5096,83 @@ select.field-input:disabled {
 .grid-search input { width: 140px; padding: 3px 6px; font-size: var(--fs-xs); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-bg); color: var(--text-primary); }
 .case-toggle { display: inline-flex; align-items: center; gap: 2px; font-size: var(--fs-xs); color: var(--text-secondary); cursor: pointer; }
 .clear-filter { padding: 2px 6px; font-size: var(--fs-xs); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-bg); color: var(--text-primary); cursor: pointer; }
-.grid-status { font-size: var(--fs-xs); color: var(--text-secondary); padding: var(--sp-1) var(--sp-2); border-top: 1px solid var(--border); }
+.clear-filter:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.grid-status { font-size: var(--fs-xs); color: var(--text-secondary); padding: var(--sp-1) var(--sp-2); border-top: 1px solid var(--border); display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
+.grid-status-sort { display: inline-flex; align-items: center; gap: 4px; }
+.clear-sort-btn {
+  margin-left: 4px;
+  padding: 1px 6px;
+  font-size: var(--fs-xs);
+  color: var(--brand);
+  background: var(--brand-soft);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--r-xs);
+  cursor: pointer;
+  line-height: 1.3;
+  transition: all var(--t-fast);
+}
+.clear-sort-btn:hover {
+  background: var(--brand);
+  color: #fff;
+}
 .filter-dot { margin-left: 3px; color: var(--accent, #3b82f6); font-size: var(--fs-xs); }
-.col-sorted { background: rgba(59,130,246,.10); }
+.col-sorted { background: var(--brand-soft) !important; }
 .col-filtered { box-shadow: inset 0 -2px 0 var(--accent, #3b82f6); }
+
+/* 表头列单元格布局与独立排序按钮 */
+.th-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  vertical-align: middle;
+}
+.th-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.th-pk-badge {
+  font-size: 11px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.th-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-xs, 3px);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0.4;
+  transition: opacity var(--t-fast), background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.result-table th:hover .th-sort-btn {
+  opacity: 0.8;
+}
+.th-sort-btn:hover {
+  opacity: 1 !important;
+  color: var(--brand);
+  background: var(--brand-soft);
+  border-color: var(--brand-border);
+}
+.th-sort-btn.active {
+  opacity: 1;
+  color: #fff;
+  background: var(--brand);
+  border-color: var(--brand);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+.th-sort-btn.active:hover {
+  background: var(--brand-hover);
+  border-color: var(--brand-hover);
+}
 
 /* =====================  #6 EXPLAIN 执行计划  ===================== */
 .explain-view { padding: var(--sp-3); font-size: var(--fs-sm); }
@@ -5351,7 +5512,7 @@ select.field-input:disabled {
 
 /* Left sidebar - Document List */
 .kb-list {
-  flex: 0 0 250px;
+  flex: 0 0 230px;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
@@ -5698,11 +5859,25 @@ select.field-input:disabled {
   font-size: var(--fs-xs);
   color: var(--text-primary);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+  max-width: 100%;
 }
-.kb-binding-icon { font-size: 12px; }
-.kb-binding-conn-name { font-weight: var(--fw-semibold); }
-.kb-binding-dot { color: var(--text-tertiary); }
-.kb-binding-db-name { color: var(--text-secondary); font-family: var(--font-mono); }
+.kb-binding-icon { font-size: 12px; flex-shrink: 0; }
+.kb-binding-conn-name {
+  font-weight: var(--fw-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+.kb-binding-dot { color: var(--text-tertiary); flex-shrink: 0; }
+.kb-binding-db-name {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
 .kb-binding-chip-del {
   border: none;
   background: transparent;
@@ -5714,6 +5889,7 @@ select.field-input:disabled {
   margin-left: 2px;
   border-radius: 2px;
   transition: all var(--t-fast);
+  flex-shrink: 0;
 }
 .kb-binding-chip-del:hover {
   color: var(--danger-500);
@@ -5721,15 +5897,17 @@ select.field-input:disabled {
 }
 .kb-binding-add-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding-top: 6px;
+  padding-top: 8px;
   border-top: 1px dashed var(--border-soft);
 }
 .kb-select {
-  flex: 1 1 160px;
+  flex: 1 1 120px;
+  min-width: 0;
   height: 32px;
-  padding: 0 10px;
+  padding: 0 8px;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
@@ -5737,13 +5915,16 @@ select.field-input:disabled {
   font-size: var(--fs-xs);
   outline: none;
   cursor: pointer;
+  box-sizing: border-box;
+  text-overflow: ellipsis;
 }
 .kb-select:focus {
   border-color: var(--brand);
 }
 .btn-kb-add-bind {
+  flex-shrink: 0;
   height: 32px;
-  padding: 0 14px;
+  padding: 0 12px;
   border-radius: var(--r-md);
   border: 1px solid var(--brand);
   background: var(--brand-soft);
@@ -5753,6 +5934,7 @@ select.field-input:disabled {
   cursor: pointer;
   white-space: nowrap;
   transition: all var(--t-fast);
+  box-sizing: border-box;
 }
 .btn-kb-add-bind:hover:not(:disabled) {
   background: var(--brand);
