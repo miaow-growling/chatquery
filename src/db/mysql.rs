@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlSslMode};
 use sqlx::types::chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use regex::Regex;
-use sqlx::{Column, Row, ValueRef};
+use sqlx::{Column, Row, TypeInfo, ValueRef};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -422,6 +422,17 @@ async fn decode_row(row: &sqlx::mysql::MySqlRow) -> Vec<String> {
             // 接（YEAR / BIT 也带 UNSIGNED 标志，一并在此处理）。必须排在
             // bool 之前——bool 的兼容判定接受所有整数列，会把 200 解成 true。
             n.to_string()
+        } else if let Some(f) = row
+            .try_get::<Option<f32>, _>(ord)
+            .ok()
+            .flatten()
+            .filter(|_| c.type_info().name() == "FLOAT")
+        {
+            // FLOAT 列按 f32 显示（Rust Display 输出最短往返表示，0.1 就是
+            // "0.1"），否则 f64 分支会把 4 字节载荷展宽成 0.10000000149011612。
+            // sqlx 的 f32 对 DOUBLE 列会截断到单精度，所以必须用列类型拦住，
+            // DOUBLE 仍走下方 f64 分支保全程精度。
+            f.to_string()
         } else if let Ok(Some(f)) = row.try_get::<Option<f64>, _>(ord) {
             f.to_string()
         } else if let Ok(Some(b)) = row.try_get::<Option<bool>, _>(ord) {
