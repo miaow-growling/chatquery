@@ -434,7 +434,7 @@ async fn decode_row(row: &sqlx::mysql::MySqlRow) -> Vec<String> {
         } else if let Ok(Some(j)) = row.try_get::<Option<serde_json::Value>, _>(ord) {
             j.to_string()
         } else if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(ord) {
-            format!("0x{}", to_hex(&bytes))
+            bytes_to_display(&bytes)
         } else {
             "?".to_string()
         };
@@ -449,6 +449,20 @@ fn to_hex(bytes: &[u8]) -> String {
         s.push_str(&format!("{:02x}", b));
     }
     s
+}
+
+/// Render a binary-typed value for display: if the bytes are valid UTF-8
+/// without control characters, show the text itself; otherwise fall back to
+/// `0x`-hex. MySQL sets the protocol BINARY flag on `_bin`-collation VARCHARs
+/// (utf8mb4_bin 等), which makes sqlx refuse String decoding even though the
+/// payload is plain text — those columns land in the Vec<u8> branch too.
+fn bytes_to_display(bytes: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        if s.chars().all(|c| !c.is_control() || c == '\t' || c == '\n' || c == '\r') {
+            return s.to_string();
+        }
+    }
+    format!("0x{}", to_hex(bytes))
 }
 
 /// Render a query result as CSV (UTF-8). Fields containing comma, quote, or
@@ -1834,6 +1848,26 @@ fn parse_table(t: &serde_json::Value) -> ExplainNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// utf8mb4_bin 的 VARCHAR 在协议里带 BINARY 标志，sqlx 按 Vec<u8> 解码，
+    /// 但载荷是明文 —— 必须显示原文而不是 0x hex（回归：model_name 列）。
+    #[test]
+    fn binary_column_with_plain_text_shows_text() {
+        assert_eq!(bytes_to_display(b"aliyun:glm-5.1"), "aliyun:glm-5.1");
+        // 中文、含制表换行的文本同样直出
+        assert_eq!(bytes_to_display("模型名\n\taliyun:glm-5.1".as_bytes()), "模型名\n\taliyun:glm-5.1");
+        // 空值显示为空单元格，而不是 "0x"
+        assert_eq!(bytes_to_display(b""), "");
+    }
+
+    /// 真二进制（非 UTF-8、控制字符）保持 0x hex 兜底。
+    #[test]
+    fn binary_column_with_real_bytes_stays_hex() {
+        assert_eq!(bytes_to_display(&[0x61, 0x6c, 0x00, 0x69]), "0x616c0069");
+        assert!(bytes_to_display(&[0xff, 0xfe, 0xfd]).starts_with("0x"));
+        // NUL 夹在明文中间也算二进制，避免把损坏数据当好数据展示
+        assert_eq!(bytes_to_display(b"ab\x00cd"), "0x6162006364");
+    }
 
     #[test]
     fn to_csv_quotes_special_fields() {
