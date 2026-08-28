@@ -417,6 +417,11 @@ async fn decode_row(row: &sqlx::mysql::MySqlRow) -> Vec<String> {
             s
         } else if let Ok(Some(n)) = row.try_get::<Option<i64>, _>(ord) {
             n.to_string()
+        } else if let Ok(Some(n)) = row.try_get::<Option<u64>, _>(ord) {
+            // 无符号整数列：sqlx 对带 UNSIGNED 标志的列拒绝 i64，必须用 u64
+            // 接（YEAR / BIT 也带 UNSIGNED 标志，一并在此处理）。必须排在
+            // bool 之前——bool 的兼容判定接受所有整数列，会把 200 解成 true。
+            n.to_string()
         } else if let Ok(Some(f)) = row.try_get::<Option<f64>, _>(ord) {
             f.to_string()
         } else if let Ok(Some(b)) = row.try_get::<Option<bool>, _>(ord) {
