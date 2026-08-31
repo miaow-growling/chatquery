@@ -1083,9 +1083,13 @@ interface QueryTab {
   // and database so switching tabs never clobbers another query's context.
   connId: string;
   db: string | null;
+  // 查询的虚拟 ID：作为历史版本组的分组键。同一 tab 里迭代执行的每次
+  // 运行都归到同一组，历史面板按组展示（最新一条 + 可展开的历史版本）。
+  qid: string;
 }
 
 const genTabId = () => "t" + Math.random().toString(36).slice(2, 9);
+const genQid = () => "g" + Math.random().toString(36).slice(2, 10);
 const INITIAL_TAB = "t1";
 
 const emptyForm = (): ConnInput => ({
@@ -1221,6 +1225,7 @@ export function App() {
       browseCtx: null,
       connId: "",
       db: null,
+      qid: genQid(),
     },
   ]);
   const [activeTabId, setActiveTabId] = useState<string>(INITIAL_TAB);
@@ -1284,6 +1289,15 @@ export function App() {
   const [historyTab, setHistoryTab] = useState<"history" | "snippet">("history");
   const [historySearch, setHistorySearch] = useState("");
   const [historyConn, setHistoryConn] = useState<string>("");
+  // 展开的版本组（组头 id → 显示其历史版本列表）
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = (key: string) =>
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   const editorRef = useRef<EditorHandle | null>(null);
   // Editor right-click menu (Navicat-style): where to show it + whether text
@@ -2822,11 +2836,11 @@ export function App() {
             // the whole batch. The user sees which statement failed in its
             // sub-tab.
           }
-          void api.logQuery(t.connId, t.db, stmt);
+          void api.logQuery(t.connId, t.db, stmt, t.qid);
         }
         // 除逐条记录外，把整个查询脚本也作为一条历史存档——载入时能
         // 一键还原完整的多语句批次，而不用从历史里逐条拼回。
-        void api.logQuery(t.connId, t.db, q);
+        void api.logQuery(t.connId, t.db, q, t.qid);
         const ms = Math.round(performance.now() - t0);
         const first = results[0];
         setActiveTab((tab) => ({ ...tab, sql: q, result: first, browseCtx: null }));
@@ -2846,7 +2860,7 @@ export function App() {
         const r = await api.executeQuery(t.connId, q, t.db, 0, pageSize, g.allowRisky);
         const ms = Math.round(performance.now() - t0);
         setActiveTab((tab) => ({ ...tab, sql: q, result: r, browseCtx: null }));
-        void api.logQuery(t.connId, t.db, q);
+        void api.logQuery(t.connId, t.db, q, t.qid);
         setRunInfo(runStatFor(r, ms));
       }
     } catch (e) {
@@ -2918,7 +2932,7 @@ export function App() {
         const r = await api.executeQuery(connId, sql, db, 0, pageSize, g.allowRisky);
         const ms = Math.round(performance.now() - t0);
         setActiveTab((tab) => ({ ...tab, sql, result: r, browseCtx: null }));
-        void api.logQuery(connId, db, sql);
+        void api.logQuery(connId, db, sql, active?.qid ?? null);
         setRunInfo(runStatFor(r, ms));
       } catch (e) {
         const ms = Math.round(performance.now() - t0);
@@ -2928,7 +2942,7 @@ export function App() {
         setRunning(false);
       }
     },
-    [pageSize],
+    [pageSize, active?.qid],
   );
 
   // Keep a live ref so the editor's run-key (registered once) always calls the
@@ -4054,6 +4068,7 @@ export function App() {
         browseCtx: null,
         connId: cid,
         db: cdb,
+        qid: genQid(),
       },
     ]);
     activeTabIdRef.current = id;
@@ -4211,6 +4226,7 @@ export function App() {
           browseCtx: null,
           connId: targetConnId,
           db: targetDb,
+          qid: genQid(),
         };
 
         setTabs((prev) => [...prev, newTabObj]);
@@ -4284,9 +4300,17 @@ export function App() {
   };
 
   const deleteQueryItem = async (item: QueryItem) => {
-    if (!await confirmAsync("删除该记录？")) return;
+    const hasVersions = (item.versions?.length ?? 0) > 0;
+    if (
+      !(await confirmAsync(
+        hasVersions
+          ? `删除该记录及其全部 ${item.versions!.length} 个历史版本？`
+          : "删除该记录？"
+      ))
+    )
+      return;
     try {
-      await api.deleteQuery(item.id);
+      await api.deleteQuery(item.id, item.group_id ?? null);
       setHistory(await api.listQueries());
     } catch (e) {
       showToast("删除失败: " + String(e));
@@ -6874,6 +6898,8 @@ export function App() {
               {visible.length === 0 && <div className="empty">暂无记录</div>}
               {visible.map((h) => {
                 const multi = !h.name && splitStatements(h.sql).length > 1;
+                const versions = h.versions ?? [];
+                const expanded = expandedGroups.has(h.id);
                 return (
                 <div key={h.id} className="history-item">
                   {h.name && <div className="history-title">{h.name}</div>}
@@ -6887,6 +6913,16 @@ export function App() {
                         多语句
                       </span>
                     )}
+                    {versions.length > 0 && (
+                      <button
+                        className="snippet-badge multi"
+                        style={{ cursor: "pointer" }}
+                        onClick={() => toggleGroup(h.id)}
+                        title="展开 / 收起该查询的历史版本"
+                      >
+                        {expanded ? "▾" : "▸"} {versions.length} 个版本
+                      </button>
+                    )}
                     <span>{findConn(h.conn_id ?? "")?.name ?? "—"}</span>
                     {h.db ? <span className="history-db">▦ {h.db}</span> : null}
                     <span className="history-time">{fmtTime(h.created)}</span>
@@ -6899,6 +6935,29 @@ export function App() {
                     </button>
                     <button onClick={() => void deleteQueryItem(h)}>删除</button>
                   </div>
+                  {expanded &&
+                    versions.map((v) => (
+                      <div
+                        key={v.id}
+                        className="history-item"
+                        style={{ marginTop: 6, opacity: 0.75 }}
+                      >
+                        <div className="history-meta">
+                          <span className="snippet-badge">版本</span>
+                          <span>{findConn(v.conn_id ?? "")?.name ?? "—"}</span>
+                          {v.db ? <span className="history-db">▦ {v.db}</span> : null}
+                          <span className="history-time">{fmtTime(v.created)}</span>
+                        </div>
+                        <pre
+                          className="history-sql"
+                          style={{ cursor: "pointer" }}
+                          title="点击载入此版本到编辑器"
+                          onClick={() => loadQuery(v)}
+                        >
+                          {v.sql}
+                        </pre>
+                      </div>
+                    ))}
                 </div>
                 );
               })}

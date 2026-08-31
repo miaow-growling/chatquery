@@ -91,6 +91,9 @@ pub struct ConnInput {
 
 /// A logged or saved query returned to the UI. `name` is None for auto-logged
 /// history entries and Some for user-named snippets.
+///
+/// 历史按版本组返回：`versions` 是同一查询 tab 更早的迭代版本（时间倒序，
+/// 组头本身不含在内），命名片段 / 无组旧数据为空。
 #[derive(Serialize)]
 pub struct QueryItem {
     pub id: String,
@@ -99,6 +102,8 @@ pub struct QueryItem {
     pub conn_id: Option<String>,
     pub db: Option<String>,
     pub created: i64,
+    pub group_id: Option<String>,
+    pub versions: Vec<QueryItem>,
 }
 
 fn to_cfg(i: ConnInput) -> ConnectionConfig {
@@ -422,16 +427,35 @@ pub fn log_query(
     conn_id: Option<String>,
     db: Option<String>,
     sql: String,
+    group_id: Option<String>,
     limit: Option<usize>,
 ) -> Result<(), String> {
     let store = state.store.lock().unwrap();
     store
-        .log_query(conn_id.as_deref(), db.as_deref(), &sql)
+        .log_query(
+            conn_id.as_deref(),
+            db.as_deref(),
+            &sql,
+            group_id.as_deref(),
+        )
         .map_err(|e| e.to_string())?;
     if let Some(lim) = limit {
         let _ = store.prune_queries_history(lim);
     }
     Ok(())
+}
+
+fn item_from_row(r: chatquery::store::QueryRow, group_id: Option<String>) -> QueryItem {
+    QueryItem {
+        id: r.id,
+        name: r.name,
+        sql: r.sql,
+        conn_id: r.conn_id,
+        db: r.db,
+        created: r.created,
+        group_id,
+        versions: Vec::new(),
+    }
 }
 
 #[tauri::command]
@@ -443,16 +467,19 @@ pub fn list_queries(
         .store
         .lock()
         .unwrap()
-        .list_queries_with_limit(limit)
-        .map(|rows| {
-            rows.into_iter()
-                .map(|r| QueryItem {
-                    id: r.id,
-                    name: r.name,
-                    sql: r.sql,
-                    conn_id: r.conn_id,
-                    db: r.db,
-                    created: r.created,
+        .list_query_groups(limit.unwrap_or(200))
+        .map(|groups| {
+            groups
+                .into_iter()
+                .map(|g| {
+                    let group_id = g.group_id;
+                    let mut item = item_from_row(g.head, group_id.clone());
+                    item.versions = g
+                        .versions
+                        .into_iter()
+                        .map(|v| item_from_row(v, group_id.clone()))
+                        .collect();
+                    item
                 })
                 .collect()
         })
@@ -490,12 +517,16 @@ pub fn save_query(
 }
 
 #[tauri::command]
-pub fn delete_query(state: State<AppState>, id: String) -> Result<(), String> {
+pub fn delete_query(
+    state: State<AppState>,
+    id: String,
+    group_id: Option<String>,
+) -> Result<(), String> {
     state
         .store
         .lock()
         .unwrap()
-        .delete_query(&id)
+        .delete_query(&id, group_id.as_deref())
         .map_err(|e| e.to_string())
 }
 

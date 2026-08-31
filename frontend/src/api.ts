@@ -194,12 +194,20 @@ export const api = {
   // EXPLAIN execution plan (MySQL only).
   explainQuery: (connId: string, query: string, db?: string | null) =>
     invoke<QueryOutput>("explain_query", { connId, query, db: db ?? "" }),
-  // Query history / saved snippets.
-  logQuery: (connId: string | null, db: string | null, sql: string, limit?: number) =>
+  // Query history / saved snippets. `groupId` = 查询 tab 的虚拟 ID，
+  // 同 tab 迭代执行的历史归为一个版本组。
+  logQuery: (
+    connId: string | null,
+    db: string | null,
+    sql: string,
+    groupId?: string | null,
+    limit?: number
+  ) =>
     invoke("log_query", {
       connId,
       db,
       sql,
+      groupId: groupId ?? null,
       limit: limit ?? getQueryHistoryLimit(),
     }),
   listQueries: (limit?: number) =>
@@ -217,7 +225,8 @@ export const api = {
     connId: string | null,
     db: string | null
   ) => invoke<string>("save_query", { id, name, sql, connId, db }),
-  deleteQuery: (id: string) => invoke("delete_query", { id }),
+  deleteQuery: (id: string, groupId?: string | null) =>
+    invoke("delete_query", { id, groupId: groupId ?? null }),
   // Write-back a single edited row (ADR-018).
   applyEdit: (p: EditPayload) =>
     invoke("apply_edit", {

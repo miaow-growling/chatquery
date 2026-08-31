@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::db::container::{Container, ContainerKind};
-use crate::store::{QueryRow, Storage};
+use crate::store::{QueryGroup, QueryRow, Storage};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,8 +198,14 @@ impl ConnectionStore {
 
     // --- Query history / saved snippets ----------------------------------
 
-    pub fn log_query(&self, conn_id: Option<&str>, db: Option<&str>, sql: &str) -> Result<()> {
-        self.storage.log_query(conn_id, db, sql)
+    pub fn log_query(
+        &self,
+        conn_id: Option<&str>,
+        db: Option<&str>,
+        sql: &str,
+        group_id: Option<&str>,
+    ) -> Result<()> {
+        self.storage.log_query(conn_id, db, sql, group_id)
     }
 
     pub fn list_queries(&self) -> Result<Vec<QueryRow>> {
@@ -208,6 +214,14 @@ impl ConnectionStore {
 
     pub fn list_queries_with_limit(&self, limit: Option<usize>) -> Result<Vec<QueryRow>> {
         self.storage.list_queries_with_limit(limit)
+    }
+
+    pub fn list_query_groups(&self, limit: usize) -> Result<Vec<QueryGroup>> {
+        self.storage.list_query_groups(limit)
+    }
+
+    pub fn delete_query(&self, id: &str, group_id: Option<&str>) -> Result<()> {
+        self.storage.delete_query(id, group_id)
     }
 
     pub fn prune_queries_history(&self, max_history: usize) -> Result<usize> {
@@ -224,10 +238,6 @@ impl ConnectionStore {
     ) -> Result<String> {
         self.storage
             .save_query(id, name, sql, conn_id, db)
-    }
-
-    pub fn delete_query(&self, id: &str) -> Result<()> {
-        self.storage.delete_query(id)
     }
 
     // --- Knowledge base (ADR-AI-6) -----------------------------------------

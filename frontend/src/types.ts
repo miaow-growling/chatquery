@@ -227,6 +227,10 @@ export interface QueryItem {
   db: string | null;
   /// Unix seconds.
   created: number;
+  /// 所属版本组（查询 tab 的虚拟 ID）。命名片段 / 旧数据为 null。
+  group_id?: string | null;
+  /// 同一查询更早的迭代版本（时间倒序，不含本条）。命名片段 / 旧数据为空。
+  versions?: QueryItem[];
 }
 
 export interface ChatMessage {

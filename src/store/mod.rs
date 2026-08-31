@@ -19,6 +19,15 @@ pub struct QueryRow {
     pub created: i64,
 }
 
+/// 一个查询的版本组：`head` 是该查询最后一次执行的记录（SQL / 连接 / 库），
+/// `versions` 是更早的迭代版本，时间倒序。命名片段 / 无组旧数据是单条组
+/// （group_id 为 None、versions 为空）。
+pub struct QueryGroup {
+    pub group_id: Option<String>,
+    pub head: QueryRow,
+    pub versions: Vec<QueryRow>,
+}
+
 /// A knowledge-base document (plain text / Markdown). Stored in plaintext
 /// (same sensitivity tier as saved queries); encrypt later via `crypto` if needed.
 pub struct KbDoc {
@@ -266,10 +275,20 @@ impl Storage {
     /// Auto-log an executed query (history). `name` stays NULL; the entry can
     /// later be promoted to a named snippet via `save_query`.
     ///
+    /// `group_id` 是查询 tab 的虚拟 ID：同一 tab 迭代执行的每个版本都挂在
+    /// 同组下，历史面板按组展示（最新一条 + 可展开的版本列表）。NULL 表示
+    /// 无组的旧数据路径，面板按独立条目展示。
+    ///
     /// 按（连接 + 库 + 归一化 SQL）去重：命中未命名的既有条目时不再插入，
     /// 而是把它的 `created` 顶到当前时间——等价于"这条 SQL 最近又跑了一次"，
     /// 历史面板自然排到最前。命名的片段（name IS NOT NULL）永远不参与去重。
-    pub fn log_query(&self, conn_id: Option<&str>, db: Option<&str>, sql: &str) -> Result<()> {
+    pub fn log_query(
+        &self,
+        conn_id: Option<&str>,
+        db: Option<&str>,
+        sql: &str,
+        group_id: Option<&str>,
+    ) -> Result<()> {
         let hash = sql_norm_hash(sql);
         let bumped = self.conn.execute(
             "UPDATE queries SET created = ?1
@@ -281,11 +300,69 @@ impl Storage {
         }
         let id = gen_id("q");
         self.conn.execute(
-            "INSERT INTO queries (id, name, sql, conn_id, db, created, norm_hash)
-             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6)",
-            params![id, sql, conn_id, db, now_secs(), hash],
+            "INSERT INTO queries (id, name, sql, conn_id, db, created, norm_hash, group_id)
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, sql, conn_id, db, now_secs(), hash, group_id],
         )?;
         Ok(())
+    }
+
+    /// 按版本组列出查询历史：每组返回最新一条作为 head（该查询最后一次
+    /// 执行的 SQL / 连接 / 库），其余按时间倒序挂在 versions 下。命名片段
+    /// 是独立的单条组。`limit` 限制返回的组数（版本数不另设上限，总量由
+    /// `prune_queries_history` 的行数修剪兜底）。
+    pub fn list_query_groups(&self, limit: usize) -> Result<Vec<QueryGroup>> {
+        // 全量按时间倒序拉出（行数受修剪上限约束，几百~几千行），在内存
+        // 里按组聚合：组内第一行即 head。
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, sql, conn_id, db, created, group_id FROM queries
+             ORDER BY created DESC, rowid DESC",
+        )?;
+        let rows: Vec<(QueryRow, Option<String>)> = stmt
+            .query_map([], |r| {
+                Ok((
+                    QueryRow {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        sql: r.get(2)?,
+                        conn_id: r.get(3)?,
+                        db: r.get(4)?,
+                        created: r.get(5)?,
+                    },
+                    r.get(6)?,
+                ))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(stmt);
+
+        let mut groups: Vec<QueryGroup> = Vec::new();
+        let mut by_group: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (row, group_id) in rows {
+            let named = row.name.is_some();
+            // 有组的未命名行：挂到既有组（组内第一行即 head）；组不存在或
+            // 命名片段 / 无组旧数据：自成一个新组。
+            let attach_to: Option<usize> = match (&group_id, named) {
+                (Some(g), false) => by_group.get(g).copied(),
+                _ => None,
+            };
+            match attach_to {
+                Some(i) => groups[i].versions.push(row),
+                None => {
+                    let gid = group_id.filter(|_| !named);
+                    if let Some(g) = &gid {
+                        by_group.insert(g.clone(), groups.len());
+                    }
+                    groups.push(QueryGroup {
+                        group_id: gid,
+                        head: row,
+                        versions: Vec::new(),
+                    });
+                }
+            }
+        }
+        groups.truncate(limit);
+        Ok(groups)
     }
 
     /// Return recent queries (most recent first), capped to default 200.
@@ -366,9 +443,19 @@ impl Storage {
         Ok(row_id)
     }
 
-    pub fn delete_query(&self, id: &str) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM queries WHERE id = ?1", params![id])?;
+    /// 删除一条查询历史。带 `group_id` 时删除整个版本组（组头 + 全部版本），
+    /// 否则按行 id 删除（兼容无组的旧条目与命名片段）。
+    pub fn delete_query(&self, id: &str, group_id: Option<&str>) -> Result<()> {
+        match group_id {
+            Some(g) => {
+                self.conn
+                    .execute("DELETE FROM queries WHERE group_id = ?1", params![g])?;
+            }
+            None => {
+                self.conn
+                    .execute("DELETE FROM queries WHERE id = ?1", params![id])?;
+            }
+        }
         Ok(())
     }
 
@@ -898,12 +985,18 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // 在迁移里回填，之后 log_query 按 (conn_id, db, norm_hash) 命中即
         // 顶置既有条目，不再插入重复行。
         let mut pragma = conn.prepare("PRAGMA table_info(queries)")?;
-        let has_norm: bool = pragma
+        let cols: Vec<String> = pragma
             .query_map([], |r| r.get::<_, String>(1))?
-            .any(|c| c.map(|n| n == "norm_hash").unwrap_or(false));
+            .collect::<std::result::Result<_, _>>()?;
         drop(pragma);
-        if !has_norm {
+        if !cols.iter().any(|n| n == "norm_hash") {
             conn.execute("ALTER TABLE queries ADD COLUMN norm_hash INTEGER", [])?;
+        }
+        // 版本组：同一个查询 tab 的虚拟 ID（前端在建 tab 时生成），同组行
+        // 是该查询迭代执行的各个版本。NULL = 旧数据/无组，历史面板按独立
+        // 条目展示。
+        if !cols.iter().any(|n| n == "group_id") {
+            conn.execute("ALTER TABLE queries ADD COLUMN group_id TEXT", [])?;
         }
         // 回填存量行（新行由 log_query 写入）。只处理 NULL，幂等。
         let backfill = |conn: &Connection| -> Result<()> {
@@ -1111,7 +1204,7 @@ mod tests {
     fn query_history_limit_and_pruning() {
         let s = mem_store();
         for i in 1..=5 {
-            s.log_query(Some("c1"), Some("db1"), &format!("SELECT {i}")).unwrap();
+            s.log_query(Some("c1"), Some("db1"), &format!("SELECT {i}"), Some("g1")).unwrap();
         }
         // Save one snippet
         s.save_query(None, "my_fav", "SELECT 999", Some("c1"), Some("db1")).unwrap();
@@ -1139,25 +1232,25 @@ mod tests {
     #[test]
     fn log_query_dedups_by_conn_and_normalized_sql() {
         let s = mem_store();
-        s.log_query(Some("c1"), Some("db1"), "SELECT a\n  FROM t;").unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT a\n  FROM t;", Some("g1")).unwrap();
         // 同一 SQL 换排版再跑：不新增行，顶置原行，且保留首次的原文。
-        s.log_query(Some("c1"), Some("db1"), "select a from t").unwrap();
+        s.log_query(Some("c1"), Some("db1"), "select a from t", Some("g1")).unwrap();
         let rows = s.list_queries().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].sql, "SELECT a\n  FROM t;");
 
         // 不同连接的同一条 SQL 是不同历史。
-        s.log_query(Some("c2"), Some("db1"), "SELECT a FROM t").unwrap();
+        s.log_query(Some("c2"), Some("db1"), "SELECT a FROM t", Some("g1")).unwrap();
         assert_eq!(s.list_queries().unwrap().len(), 2);
 
         // 不同库的同一条 SQL 也是不同历史（载入时要还原正确的执行上下文）。
-        s.log_query(Some("c1"), Some("db2"), "SELECT a FROM t").unwrap();
+        s.log_query(Some("c1"), Some("db2"), "SELECT a FROM t", Some("g1")).unwrap();
         assert_eq!(s.list_queries().unwrap().len(), 3);
 
         // 命名片段与历史互不去重：同键的历史条目再次执行时仍只顶置历史行，
         // 片段（name 非空）不受影响、也不顶置。
         s.save_query(None, "fav", "SELECT a FROM t", Some("c1"), Some("db1")).unwrap();
-        s.log_query(Some("c1"), Some("db1"), "SELECT a FROM t").unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT a FROM t", Some("g1")).unwrap();
         let rows = s.list_queries().unwrap();
         assert_eq!(rows.len(), 4);
         // 最新一条是被顶置的首条历史（保留首次原文），片段紧随其后。
@@ -1165,6 +1258,65 @@ mod tests {
         assert!(rows[0].name.is_none());
         let snippet = rows.iter().find(|r| r.name.as_deref() == Some("fav")).unwrap();
         assert!(rows.iter().position(|r| r.id == snippet.id).unwrap() > 0);
+    }
+
+    /// 版本组：同一虚拟 ID（查询 tab）的迭代执行归为一组，head 是最新一次
+    /// 执行；命名片段和旧数据（无组）是独立条目；limit 截断组数。
+    #[test]
+    fn list_query_groups_versions_and_heads() {
+        let s = mem_store();
+        // tab g1 迭代三个版本（时间递增）
+        s.log_query(Some("c1"), Some("db1"), "SELECT 1", Some("g1")).unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 1, 2", Some("g1")).unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 1, 2, 3", Some("g1")).unwrap();
+        // tab g2 一个版本
+        s.log_query(Some("c2"), Some("db2"), "SELECT 9", Some("g2")).unwrap();
+        // 命名片段 + 无组旧数据
+        s.save_query(None, "fav", "SELECT 8", Some("c1"), Some("db1")).unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 7", None).unwrap();
+
+        let groups = s.list_query_groups(10).unwrap();
+        assert_eq!(groups.len(), 4); // g1, g2, fav, 无组旧数据
+
+        // g1：head 是最新版本，versions 按时间倒序挂旧版本
+        let g1 = groups.iter().find(|g| g.group_id.as_deref() == Some("g1")).unwrap();
+        assert_eq!(g1.head.sql, "SELECT 1, 2, 3");
+        assert_eq!(g1.versions.len(), 2);
+        assert_eq!(g1.versions[0].sql, "SELECT 1, 2");
+        assert_eq!(g1.versions[1].sql, "SELECT 1");
+
+        // g2 是单版本组
+        let g2 = groups.iter().find(|g| g.group_id.as_deref() == Some("g2")).unwrap();
+        assert_eq!(g2.head.sql, "SELECT 9");
+        assert!(g2.versions.is_empty());
+
+        // 组按 head 时间倒序：g2（后建）排在 g1 前
+        let g1_pos = groups.iter().position(|g| g.group_id.is_some() && g.head.sql.starts_with("SELECT 1,")).unwrap();
+        let g2_pos = groups.iter().position(|g| g.group_id.as_deref() == Some("g2")).unwrap();
+        assert!(g2_pos < g1_pos);
+
+        // 命名片段是独立单条组；limit 截断组数
+        assert!(groups.iter().any(|g| g.head.name.as_deref() == Some("fav")));
+        assert_eq!(s.list_query_groups(2).unwrap().len(), 2);
+    }
+
+    /// 组删除：删组头时整组（含全部版本）删除；按 id 删除只删单行。
+    #[test]
+    fn delete_query_group_vs_row() {
+        let s = mem_store();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 1", Some("g1")).unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 1, 2", Some("g1")).unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 7", None).unwrap();
+
+        // 按行 id 只删那一行
+        s.delete_query("nonexistent", None).unwrap();
+        assert_eq!(s.list_queries().unwrap().len(), 3);
+
+        // 整组删除
+        s.delete_query("whatever", Some("g1")).unwrap();
+        let left = s.list_queries().unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].sql, "SELECT 7");
     }
 
     /// 归一化哈希的关键语义：排版差异折叠、大小写不敏感、结尾分号可无；
