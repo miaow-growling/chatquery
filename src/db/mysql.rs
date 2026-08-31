@@ -86,10 +86,18 @@ pub fn is_stale_connection_err(e: &sqlx::Error) -> bool {
 /// `database` 是闭包里连接池使用的库名（决定缓存池 key），与
 /// `connect_pool` / `connect_pool_db` 的取库逻辑保持一致。
 ///
+/// 闭包收到 `attempt`（1 起始）。`attempt >= 2` 表示之前每次尝试都死于
+/// 连接 EOF：除了可能是空闲连接被杀，还有一种常见情形是 **rdsproxy 这类
+/// 代理在 COM_STMT_PREPARE 报错时直接掐断连接**（如字段/表名写错，本应
+/// 返回 1054 Unknown column）——EOF 把真实错误吞掉了。处理用户自由输入
+/// SQL 的入口应在重试时切换到 TEXT 协议（`raw_sql`，不走 prepare）：代理
+/// 对「COM_QUERY → ERR 包」这条最基本流程处理正确，能把真实错误透传回来。
+///
 /// ```ignore
-/// with_stale_retry("mysql.browse", cfg, database, || async {
+/// with_stale_retry("mysql.browse", cfg, database, |attempt| async move {
 ///     let pool = connect_pool_db(cfg, database).await?;
-///     sqlx::query(...).fetch_all(&pool).await.map_err(AppError::Sqlx)
+///     let stmt = if attempt >= 2 { sqlx::raw_sql(sql) } else { sqlx::query(sql) };
+///     stmt.fetch_all(&pool).await.map_err(AppError::Sqlx)
 /// }).await
 /// ```
 async fn with_stale_retry<F, Fut, T>(
@@ -99,12 +107,12 @@ async fn with_stale_retry<F, Fut, T>(
     mut op: F,
 ) -> Result<T>
 where
-    F: FnMut() -> Fut,
+    F: FnMut(usize) -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
     const MAX_ATTEMPTS: usize = 3;
     for attempt in 1..=MAX_ATTEMPTS {
-        match op().await {
+        match op(attempt).await {
             Ok(v) => return Ok(v),
             Err(AppError::Sqlx(e)) if is_stale_connection_err(&e) && attempt < MAX_ATTEMPTS => {
                 eprintln!(
@@ -161,17 +169,22 @@ pub async fn query(
         Some(d) if !d.is_empty() => d,
         _ => cfg.database.as_str(),
     };
-    with_stale_retry("mysql.query", cfg, key_db, || {
-        query_once(cfg, sql, database, allow_risky)
+    with_stale_retry("mysql.query", cfg, key_db, |attempt| {
+        query_once(cfg, sql, database, allow_risky, attempt >= 2)
     })
     .await
 }
 
+/// `text_mode`：走 TEXT 协议（`raw_sql`，不发 COM_STMT_PREPARE）。仅在
+/// prepare 路径刚因连接 EOF 失败后开启——见 `with_stale_retry` 的文档：
+/// rdsproxy 类代理会把 prepare 阶段的 SQL 错误（字段/表名不存在）转换成
+/// 连接中断，只有 TEXT 协议能把真实的数据库错误透传回来。
 async fn query_once(
     cfg: &ConnectionConfig,
     sql: &str,
     database: Option<&str>,
     allow_risky: bool,
+    text_mode: bool,
 ) -> Result<QueryResult> {
     let pool = match database {
         Some(db) if !db.is_empty() => connect_pool_db(cfg, db).await?,
@@ -199,7 +212,11 @@ async fn query_once(
     // silent 0-row table. Multi-statement scripts keep the legacy fetch path
     // (frontend already splits them, so this only guards direct callers).
     if !is_read_query(sql) && !has_unquoted_semicolon(sql.trim().trim_end_matches(';')) {
-        let done = sqlx::query(sql).execute(&pool).await.map_err(AppError::Sqlx)?;
+        let done = if text_mode {
+            sqlx::raw_sql(sql).execute(&pool).await.map_err(AppError::Sqlx)?
+        } else {
+            sqlx::query(sql).execute(&pool).await.map_err(AppError::Sqlx)?
+        };
         return Ok(QueryResult {
             columns: vec![],
             rows: vec![],
@@ -211,7 +228,11 @@ async fn query_once(
         });
     }
 
-    let mut stream = sqlx::query(sql).fetch(&pool);
+    let mut stream = if text_mode {
+        sqlx::raw_sql(sql).fetch(&pool)
+    } else {
+        sqlx::query(sql).fetch(&pool)
+    };
     let mut columns: Vec<String> = Vec::new();
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut count: usize = 0;
@@ -284,7 +305,8 @@ pub async fn query_paged(
         Some(d) if !d.is_empty() => d,
         _ => cfg.database.as_str(),
     };
-    with_stale_retry("mysql.query_paged", cfg, key_db, || async {
+    with_stale_retry("mysql.query_paged", cfg, key_db, move |attempt| async move {
+        let text_mode = attempt >= 2;
         let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
         let offset = page.saturating_mul(page_size);
         let pool = match database {
@@ -302,25 +324,49 @@ pub async fn query_paged(
             || format!("SELECT COUNT(*) FROM ({}) AS _cq_sub", base),
             |limit| format!("SELECT COUNT(*) FROM ({} LIMIT {}) AS _cq_sub", base, limit),
         );
-        let total: Option<usize> = sqlx::query_scalar::<_, i64>(&count_sql)
-            .fetch_one(&pool)
-            .await
-            .ok()
-            .map(|n| n.max(0) as usize);
+        let total: Option<usize> = if text_mode {
+            sqlx::raw_sql(&count_sql)
+                .fetch_one(&pool)
+                .await
+                .ok()
+                .and_then(|r| r.try_get::<i64, _>(0).ok())
+                .map(|n| n.max(0) as usize)
+        } else {
+            sqlx::query_scalar::<_, i64>(&count_sql)
+                .fetch_one(&pool)
+                .await
+                .ok()
+                .map(|n| n.max(0) as usize)
+        };
 
         // If the user supplied a LIMIT, paginate inside a derived table so we never
-        // return rows beyond their requested cap.
-        let page_sql = user_limit.map_or_else(
-            || format!("{} LIMIT ? OFFSET ?", base),
-            |limit| format!(
-                "SELECT * FROM ({} LIMIT {}) AS _cq_limited LIMIT ? OFFSET ?",
-                base, limit
-            ),
-        );
-        let mut stream = sqlx::query(&page_sql)
-            .bind(page_size as u64)
-            .bind(offset as u64)
-            .fetch(&pool);
+        // return rows beyond their requested cap. TEXT 协议不支持 bind，直接内联
+        // 内部生成的整数（page_size/offset/user_limit 均为本地数值，无注入面）。
+        let page_sql = if text_mode {
+            user_limit.map_or_else(
+                || format!("{} LIMIT {page_size} OFFSET {offset}", base),
+                |limit| format!(
+                    "SELECT * FROM ({} LIMIT {limit}) AS _cq_limited LIMIT {page_size} OFFSET {offset}",
+                    base
+                ),
+            )
+        } else {
+            user_limit.map_or_else(
+                || format!("{} LIMIT ? OFFSET ?", base),
+                |limit| format!(
+                    "SELECT * FROM ({} LIMIT {}) AS _cq_limited LIMIT ? OFFSET ?",
+                    base, limit
+                ),
+            )
+        };
+        let mut stream = if text_mode {
+            sqlx::raw_sql(&page_sql).fetch(&pool)
+        } else {
+            sqlx::query(&page_sql)
+                .bind(page_size as u64)
+                .bind(offset as u64)
+                .fetch(&pool)
+        };
         let mut columns: Vec<String> = Vec::new();
         let mut rows: Vec<Vec<String>> = Vec::new();
         while let Some(row) = stream.try_next().await.map_err(AppError::Sqlx)? {
@@ -893,7 +939,7 @@ pub async fn schema(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Sc
             cfg.database.clone()
         }
     };
-    with_stale_retry("mysql.schema", cfg, &db, || async {
+    with_stale_retry("mysql.schema", cfg, &db, |_attempt| async {
         let pool = connect_pool_db(cfg, &db).await?;
         // CAST every INFORMATION_SCHEMA text column to CHAR so sqlx decodes them as
         // VARCHAR instead of BINARY (binary charset would break String mapping).
@@ -948,7 +994,7 @@ pub async fn schema(cfg: &ConnectionConfig, database: Option<&str>) -> Result<Sc
 
 /// Lightweight connectivity check used by the connection form.
 pub async fn test(cfg: &ConnectionConfig) -> Result<()> {
-    with_stale_retry("mysql.test", cfg, &cfg.database, || async {
+    with_stale_retry("mysql.test", cfg, &cfg.database, |_attempt| async {
         let pool = connect_pool(cfg).await?;
         sqlx::query("SELECT 1")
             .execute(&pool)
@@ -996,7 +1042,7 @@ pub struct TableMeta {
 
 /// List non-system databases on the server (Navicat's "database" level).
 pub async fn list_databases(cfg: &ConnectionConfig) -> Result<Vec<String>> {
-    with_stale_retry("mysql.list_databases", cfg, &cfg.database, || async {
+    with_stale_retry("mysql.list_databases", cfg, &cfg.database, |_attempt| async {
         // 只查 INFORMATION_SCHEMA，无需（也不应）连接 mysql 系统库——托管账号往往
         // 对 mysql 库无权限。走默认连接（空库或无库连接均可）。
         let pool = connect_pool(cfg).await?;
@@ -1021,7 +1067,7 @@ pub async fn list_databases(cfg: &ConnectionConfig) -> Result<Vec<String>> {
 
 /// List tables and views within a single database, ordered by name.
 pub async fn list_tables(cfg: &ConnectionConfig, database: &str) -> Result<Vec<TableMeta>> {
-    with_stale_retry("mysql.list_tables", cfg, database, || async {
+    with_stale_retry("mysql.list_tables", cfg, database, |_attempt| async {
         let pool = connect_pool_db(cfg, database).await?;
         // INFORMATION_SCHEMA text columns are defined with a binary charset in MySQL,
         // so sqlx reports them as SQL type BINARY and refuses to map them to String.
@@ -1086,7 +1132,7 @@ pub async fn search_tables(
     like: Option<&str>,
     limit: usize,
 ) -> Result<Vec<TableMeta>> {
-    with_stale_retry("mysql.search_tables", cfg, database, || async {
+    with_stale_retry("mysql.search_tables", cfg, database, |_attempt| async {
         let pool = connect_pool_db(cfg, database).await?;
 
         // FUZZY mode: `~k_tsk~` — edit-distance (≤2) match against every
@@ -1182,7 +1228,7 @@ pub async fn list_columns(
     database: &str,
     table: &str,
 ) -> Result<Vec<ColumnInfo>> {
-    with_stale_retry("mysql.list_columns", cfg, database, || async {
+    with_stale_retry("mysql.list_columns", cfg, database, |_attempt| async {
         let pool = connect_pool_db(cfg, database).await?;
         // CAST every INFORMATION_SCHEMA text column to CHAR: on some servers
         // (e.g. older MySQL behind rdsproxy) they are declared with a binary
@@ -1242,7 +1288,7 @@ pub async fn browse(
     page: usize,
     page_size: usize,
 ) -> Result<QueryResult> {
-    with_stale_retry("mysql.browse", cfg, database, || async {
+    with_stale_retry("mysql.browse", cfg, database, |_attempt| async {
         let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
         let offset = page.saturating_mul(page_size);
         let pool = connect_pool_db(cfg, database).await?;
@@ -1328,7 +1374,7 @@ pub async fn apply_edit(
     // Wrap the whole body (tx + execute + commit) in stale-retry. If begin()
     // or execute() hits EOF, sqlx auto-rolls back the half-started tx on
     // drop and the retry re-runs against a freshly-acquired connection.
-    with_stale_retry("mysql.apply_edit", cfg, database, || async {
+    with_stale_retry("mysql.apply_edit", cfg, database, |_attempt| async {
         let pool = connect_pool_db(cfg, database).await?;
         let table_ref = qualified_table(database, table);
 
@@ -1376,7 +1422,7 @@ pub async fn insert_row(
     if values.is_empty() {
         return Ok(());
     }
-    with_stale_retry("mysql.insert_row", cfg, database, || async {
+    with_stale_retry("mysql.insert_row", cfg, database, |_attempt| async {
         let pool = connect_pool_db(cfg, database).await?;
         let table_ref = qualified_table(database, table);
 
@@ -1416,7 +1462,7 @@ pub async fn delete_row(
             "无法删除：该表没有主键，无法安全定位行".into(),
         ));
     }
-    with_stale_retry("mysql.delete_row", cfg, database, || async {
+    with_stale_retry("mysql.delete_row", cfg, database, |_attempt| async {
         let pool = connect_pool_db(cfg, database).await?;
         let table_ref = qualified_table(database, table);
 
@@ -1488,7 +1534,7 @@ pub async fn describe_table(
     database: &str,
     table: &str,
 ) -> Result<TableStructure> {
-    with_stale_retry("mysql.describe_table", cfg, database, || async {
+    with_stale_retry("mysql.describe_table", cfg, database, |_attempt| async {
         let pool = connect_pool_db(cfg, database).await?;
 
         // 1. Column details — use COLUMN_TYPE (full) and EXTRA which list_columns
@@ -1590,7 +1636,7 @@ pub async fn list_relationships(
     cfg: &ConnectionConfig,
     database: &str,
 ) -> Result<Vec<ForeignKeyInfo>> {
-    with_stale_retry("mysql.list_relationships", cfg, database, || async {
+    with_stale_retry("mysql.list_relationships", cfg, database, |_attempt| async {
         let pool = connect_pool_db(cfg, database).await?;
         // CAST every INFORMATION_SCHEMA text column to CHAR: they use a binary
         // charset and would decode as SQL type BINARY, incompatible with Rust String.
@@ -1696,7 +1742,7 @@ pub async fn explain_visual(
         Some(d) if !d.is_empty() => d,
         _ => cfg.database.as_str(),
     };
-    with_stale_retry("mysql.explain_visual", cfg, key_db, || async {
+    with_stale_retry("mysql.explain_visual", cfg, key_db, |_attempt| async {
         let pool = match database {
             Some(db) if !db.is_empty() => connect_pool_db(cfg, db).await?,
             _ => connect_pool(cfg).await?,
