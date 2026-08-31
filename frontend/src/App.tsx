@@ -2803,8 +2803,13 @@ export function App() {
     const editor = editorRef.current;
     if (!editor) return;
     const sel = editor.getSelection().trim();
-    const q = forceFull ? editor.getDoc() : sel || editor.getDoc();
+    const fullDoc = editor.getDoc();
+    const q = forceFull ? fullDoc : sel || fullDoc;
     if (!q.trim()) return;
+    // 选中执行 = 实际执行的只是选中的片段。此时额外把编辑器完整内容也存
+    // 一条版本，保证"一键还原完整脚本"始终可用。完整内容先记录（rowid 更
+    // 小），实际执行的选中片段后记录，仍是组头显示的最新一条。
+    const ranSelection = !!sel && q.trim() !== fullDoc.trim();
     // Whole-table UPDATE/DELETE guardrail: confirm before running.
     const g = await guardWriteConfirm(q);
     if (!g.ok) return;
@@ -2822,6 +2827,7 @@ export function App() {
       // result set gets its own sub-tab.
       const stmts = splitStatements(q);
       if (stmts.length > 1) {
+        if (ranSelection) void api.logQuery(t.connId, t.db, fullDoc, t.qid);
         const results: QueryOutput[] = [];
         let lastError: string | null = null;
         for (let si = 0; si < stmts.length; si++) {
@@ -2860,6 +2866,7 @@ export function App() {
         const r = await api.executeQuery(t.connId, q, t.db, 0, pageSize, g.allowRisky);
         const ms = Math.round(performance.now() - t0);
         setActiveTab((tab) => ({ ...tab, sql: q, result: r, browseCtx: null }));
+        if (ranSelection) void api.logQuery(t.connId, t.db, fullDoc, t.qid);
         void api.logQuery(t.connId, t.db, q, t.qid);
         setRunInfo(runStatFor(r, ms));
       }
