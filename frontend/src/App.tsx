@@ -4286,7 +4286,15 @@ export function App() {
     const name = await promptAsync("片段名称", item.name ?? "我的查询");
     if (!name || !name.trim()) return;
     try {
-      await api.saveQuery(item.id, name.trim(), item.sql, item.conn_id, item.db);
+      // 已是片段 → 原地重命名；历史条目 → 复制为片段（新插命名行，不改
+      // 原行）。原地提升会让该行脱离版本组，组头一走整组的版本展示就散了。
+      await api.saveQuery(
+        item.name ? item.id : null,
+        name.trim(),
+        item.sql,
+        item.conn_id,
+        item.db
+      );
       setHistory(await api.listQueries());
     } catch (e) {
       showToast("保存失败: " + String(e));
