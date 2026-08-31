@@ -265,12 +265,25 @@ impl Storage {
 
     /// Auto-log an executed query (history). `name` stays NULL; the entry can
     /// later be promoted to a named snippet via `save_query`.
+    ///
+    /// 按（连接 + 库 + 归一化 SQL）去重：命中未命名的既有条目时不再插入，
+    /// 而是把它的 `created` 顶到当前时间——等价于"这条 SQL 最近又跑了一次"，
+    /// 历史面板自然排到最前。命名的片段（name IS NOT NULL）永远不参与去重。
     pub fn log_query(&self, conn_id: Option<&str>, db: Option<&str>, sql: &str) -> Result<()> {
+        let hash = sql_norm_hash(sql);
+        let bumped = self.conn.execute(
+            "UPDATE queries SET created = ?1
+             WHERE name IS NULL AND conn_id IS ?2 AND db IS ?3 AND norm_hash = ?4",
+            params![now_secs(), conn_id, db, hash],
+        )?;
+        if bumped > 0 {
+            return Ok(());
+        }
         let id = gen_id("q");
         self.conn.execute(
-            "INSERT INTO queries (id, name, sql, conn_id, db, created)
-             VALUES (?1, NULL, ?2, ?3, ?4, ?5)",
-            params![id, sql, conn_id, db, now_secs()],
+            "INSERT INTO queries (id, name, sql, conn_id, db, created, norm_hash)
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6)",
+            params![id, sql, conn_id, db, now_secs(), hash],
         )?;
         Ok(())
     }
@@ -795,6 +808,54 @@ fn preview_of(content: Option<&str>) -> String {
     content.unwrap_or_default().chars().take(60).collect()
 }
 
+/// 归一化 SQL 并产出用于历史去重的稳定哈希。归一化规则：折叠引号外的
+/// 所有空白（含换行/制表）为单个空格、去掉结尾分号、忽略大小写——同一
+/// 语句的排版差异（紧凑 vs 多行格式化）、`select` vs `SELECT`、结尾有无
+/// 分号视为同一条。引号内的字符串字面量保留原样参与哈希：'ABC' 与 'abc'
+/// 是不同的过滤条件，不算重复。
+///
+/// 哈希用 FNV-1a 64：手工实现、跨进程跨版本逐字节稳定（std 的
+/// DefaultHasher 不承诺跨版本一致，会让存量行哈希失效），且不引入依赖。
+/// 哈希只做去重桶定位，非安全用途。
+fn sql_norm_hash(sql: &str) -> i64 {
+    let mut norm = String::with_capacity(sql.len());
+    let mut prev_ws = true; // 开头空白直接跳过，等价于 trim_start
+    let mut in_str: Option<char> = None; // 当前所处的引号（' 或 "）
+    for ch in sql.chars() {
+        if let Some(quote) = in_str {
+            // 字面量内部：逐字符原样保留（含空白），遇配对引号结束。
+            norm.push(ch);
+            if ch == quote {
+                in_str = None;
+            }
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !prev_ws {
+                norm.push(' ');
+                prev_ws = true;
+            }
+            continue;
+        }
+        prev_ws = false;
+        if ch == '\'' || ch == '"' {
+            in_str = Some(ch);
+            norm.push(ch);
+        } else {
+            for lc in ch.to_lowercase() {
+                norm.push(lc);
+            }
+        }
+    }
+    let norm = norm.trim_end_matches([';', ' ']);
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
+    for b in norm.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3); // FNV prime
+    }
+    h as i64
+}
+
 /// Schema bootstrap, extracted from `open()` so tests can build an isolated
 /// in-memory store without touching the on-disk DB or the encryption key.
 fn init_schema(conn: &Connection) -> Result<()> {
@@ -832,6 +893,40 @@ fn init_schema(conn: &Connection) -> Result<()> {
             created INTEGER NOT NULL
         );",
     )?;
+    {
+        // 历史去重键：归一化 SQL 的稳定哈希（见 sql_norm_hash）。老库存量行
+        // 在迁移里回填，之后 log_query 按 (conn_id, db, norm_hash) 命中即
+        // 顶置既有条目，不再插入重复行。
+        let mut pragma = conn.prepare("PRAGMA table_info(queries)")?;
+        let has_norm: bool = pragma
+            .query_map([], |r| r.get::<_, String>(1))?
+            .any(|c| c.map(|n| n == "norm_hash").unwrap_or(false));
+        drop(pragma);
+        if !has_norm {
+            conn.execute("ALTER TABLE queries ADD COLUMN norm_hash INTEGER", [])?;
+        }
+        // 回填存量行（新行由 log_query 写入）。只处理 NULL，幂等。
+        let backfill = |conn: &Connection| -> Result<()> {
+            let mut stmt =
+                conn.prepare("SELECT id, sql FROM queries WHERE norm_hash IS NULL")?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<std::result::Result<_, _>>()?;
+            drop(stmt);
+            for (id, sql) in rows {
+                conn.execute(
+                    "UPDATE queries SET norm_hash = ?1 WHERE id = ?2",
+                    params![sql_norm_hash(&sql), id],
+                )?;
+            }
+            Ok(())
+        };
+        backfill(conn)?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_queries_norm
+                 ON queries(conn_id, db, norm_hash);",
+        )?;
+    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS kb_docs (
             id      TEXT PRIMARY KEY,
@@ -1037,6 +1132,55 @@ mod tests {
         let remaining = s.list_queries().unwrap();
         assert_eq!(remaining.len(), 3);
         assert!(remaining.iter().any(|q| q.name.as_deref() == Some("my_fav")));
+    }
+
+    /// 同一连接下重复执行相同 SQL（含排版/大小写/结尾分号差异）只保留一条
+    /// 历史且顶置到最新；跨连接不去重；命名片段不受影响。
+    #[test]
+    fn log_query_dedups_by_conn_and_normalized_sql() {
+        let s = mem_store();
+        s.log_query(Some("c1"), Some("db1"), "SELECT a\n  FROM t;").unwrap();
+        // 同一 SQL 换排版再跑：不新增行，顶置原行，且保留首次的原文。
+        s.log_query(Some("c1"), Some("db1"), "select a from t").unwrap();
+        let rows = s.list_queries().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].sql, "SELECT a\n  FROM t;");
+
+        // 不同连接的同一条 SQL 是不同历史。
+        s.log_query(Some("c2"), Some("db1"), "SELECT a FROM t").unwrap();
+        assert_eq!(s.list_queries().unwrap().len(), 2);
+
+        // 不同库的同一条 SQL 也是不同历史（载入时要还原正确的执行上下文）。
+        s.log_query(Some("c1"), Some("db2"), "SELECT a FROM t").unwrap();
+        assert_eq!(s.list_queries().unwrap().len(), 3);
+
+        // 命名片段与历史互不去重：同键的历史条目再次执行时仍只顶置历史行，
+        // 片段（name 非空）不受影响、也不顶置。
+        s.save_query(None, "fav", "SELECT a FROM t", Some("c1"), Some("db1")).unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT a FROM t").unwrap();
+        let rows = s.list_queries().unwrap();
+        assert_eq!(rows.len(), 4);
+        // 最新一条是被顶置的首条历史（保留首次原文），片段紧随其后。
+        assert_eq!(rows[0].sql, "SELECT a\n  FROM t;");
+        assert!(rows[0].name.is_none());
+        let snippet = rows.iter().find(|r| r.name.as_deref() == Some("fav")).unwrap();
+        assert!(rows.iter().position(|r| r.id == snippet.id).unwrap() > 0);
+    }
+
+    /// 归一化哈希的关键语义：排版差异折叠、大小写不敏感、结尾分号可无；
+    /// 字符串字面量内容参与哈希（不同字面量不同条）。
+    #[test]
+    fn sql_norm_hash_folds_formatting_only() {
+        let a = sql_norm_hash("SELECT a\n\tFROM  t ;");
+        let b = sql_norm_hash("select a from t");
+        assert_eq!(a, b);
+        // 字面量内容不同 → 不同条（去重只在字面量之外折叠大小写）。
+        assert_ne!(
+            sql_norm_hash("SELECT * FROM t WHERE s = 'ABC'"),
+            sql_norm_hash("SELECT * FROM t WHERE s = 'abc'")
+        );
+        // 空串与纯空白/分号同桶。
+        assert_eq!(sql_norm_hash(";"), sql_norm_hash("  \n "));
     }
 
     // --- Conversation persistence ----------------------------------------
