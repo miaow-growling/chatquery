@@ -305,6 +305,8 @@ export interface ConfirmRequest {
   id: string;
   turn_id: string;
   connection: string;
+  /// 目标库（AI 未显式传库时为自动应用的当前库）；null = 连接默认库。
+  db?: string | null;
   sql: string;
   reason: string;
 }

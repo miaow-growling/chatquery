@@ -1068,7 +1068,13 @@ async fn exec_with_policy(
                 // Build a reusable audit emitter so every guardrail decision
                 // (deny / approve / reject / expire) lands in the same store.
                 let conn_id = cfg.id.clone();
-                let db = args.get("db").and_then(|v| v.as_str()).map(|s| s.to_string());
+                // 目标库：AI 显式传的 db 优先，否则是工具层自动应用的当前库。
+                // 确认弹窗与审计都按这个真实目标展示/留痕。
+                let db = args
+                    .get("db")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| ctx.current_db.map(|s| s.to_string()));
                 let emit = |decision: &'static str| {
                     audit(&AuditEvent {
                         conn_id: conn_id.clone(),
@@ -1093,6 +1099,7 @@ async fn exec_with_policy(
                             id,
                             turn_id: ctl.turn_id().to_string(),
                             connection: conn_name.to_string(),
+                            db: db.clone(),
                             sql: query.to_string(),
                             reason,
                         }));

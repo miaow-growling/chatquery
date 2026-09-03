@@ -22,6 +22,8 @@ pub struct ConfirmRequest {
     pub turn_id: String,
     /// Connection name the statement targets.
     pub connection: String,
+    /// 目标库（AI 未显式传库时为自动应用的当前库）；None = 连接默认库。
+    pub db: Option<String>,
     /// The exact statement that will run if approved.
     pub sql: String,
     /// Human-readable reason the guardrail intervened.

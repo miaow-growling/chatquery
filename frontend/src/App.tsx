@@ -8351,6 +8351,8 @@ export function App() {
             <p className="modal-msg">{confirmQueue[0].reason}</p>
             <div className="ai-confirm-meta">
               连接：<b>{confirmQueue[0].connection}</b>
+              {" · "}
+              库：<b>{confirmQueue[0].db || "默认库"}</b>
               {confirmQueue.length > 1 && (
                 <span className="ai-confirm-more">
                   还有 {confirmQueue.length - 1} 条待确认
