@@ -443,7 +443,7 @@ fn is_select_query(sql: &str) -> bool {
 /// everything else (INSERT/UPDATE/DELETE/REPLACE/CREATE/ALTER/DROP/TRUNCATE/
 /// GRANT/SET/CALL/...) is a write and should be executed via `execute` so the
 /// caller learns rows_affected / last_insert_id.
-fn is_read_query(sql: &str) -> bool {
+pub fn is_read_query(sql: &str) -> bool {
     let no_tail = sql.trim().trim_end_matches(';').trim();
     let body = skip_leading_inline_comment(no_tail);
     // Decide by the FIRST keyword only — a formatted `SELECT\n  col…` has a
@@ -1680,7 +1680,7 @@ pub async fn list_relationships(
 /// Quote a SQL identifier safely: strip any backtick (so a name containing one
 /// can't escape the quotes) then wrap in backticks. Preserves spaces and other
 /// legal characters, unlike an alphanumeric sanitizer.
-fn quote_ident(s: &str) -> String {
+pub fn quote_ident(s: &str) -> String {
     format!("`{}`", s.replace('`', ""))
 }
 

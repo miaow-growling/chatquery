@@ -4751,6 +4751,7 @@ select.field-input:disabled {
 .audit-write-rejected { background: var(--bg-inset); color: var(--text-secondary); }
 .audit-write-expired { background: var(--bg-inset); color: var(--text-tertiary); }
 .audit-deny { background: var(--danger-soft); color: var(--danger-500); }
+.audit-manual { background: var(--brand-soft, var(--bg-inset)); color: var(--brand); }
 .audit-item .history-sql { margin-bottom: 0; }
 .history-actions button {
   background: var(--bg-subtle);

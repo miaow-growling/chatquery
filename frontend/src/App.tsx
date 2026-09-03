@@ -7073,7 +7073,7 @@ export function App() {
           <div className="modal wide" onClick={(e) => e.stopPropagation()}>
             <h3>写操作审计日志</h3>
             <p className="hint">
-              AI 每次触碰写语句都会留痕：批准、拒绝、超时、直接阻断（DDL /
+              所有写语句都会留痕（AI 与手动）：手动执行、AI 批准、拒绝、超时、直接阻断（DDL /
               破坏性语句）。只读查询不记录。最近 200 条，新的在前。
             </p>
             <div className="audit-list">
@@ -8725,6 +8725,8 @@ function auditLabel(d: string): string {
       return "已超时";
     case "deny":
       return "已阻断";
+    case "manual":
+      return "手动执行";
     default:
       return d;
   }

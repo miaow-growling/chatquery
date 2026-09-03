@@ -5,7 +5,8 @@ use chatquery::db::importexport::{
     export_template as export_template_yaml, export_yaml, import_yaml, ImportResult,
 };
 use chatquery::db::mysql::{
-    ColumnInfo, ExplainVisual, ForeignKeyInfo, QueryResult, Schema, TableMeta, TableStructure,
+    quote_ident, ColumnInfo, ExplainVisual, ForeignKeyInfo, QueryResult, Schema, TableMeta,
+    TableStructure,
 };
 use chatquery::db::redis::{KeyMeta, RedisValueView};
 use chatquery::llm::control::TurnControl;
@@ -104,6 +105,26 @@ pub struct QueryItem {
     pub created: i64,
     pub group_id: Option<String>,
     pub versions: Vec<QueryItem>,
+}
+
+/// 发一条「手动执行」审计事件（写操作全量留痕）。best-effort：审计失败不
+/// 影响执行结果。仅 MySQL；写判定复用 mysql::is_read_query 的反向语义
+/// （INSERT/UPDATE/DELETE/REPLACE/DDL/SET 等都算写）。
+fn audit_manual(state: &State<'_, AppState>, conn_id: &str, db: Option<&str>, sql: &str) {
+    let conn_name = state
+        .store
+        .lock()
+        .unwrap()
+        .list()
+        .iter()
+        .find(|c| c.id == conn_id)
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| conn_id.to_string());
+    let _ = state
+        .store
+        .lock()
+        .unwrap()
+        .add_audit(conn_id, &conn_name, db, sql, "manual");
 }
 
 fn to_cfg(i: ConnInput) -> ConnectionConfig {
@@ -875,7 +896,16 @@ pub async fn execute_query(
     .await;
 
     match res {
-        Ok(inner) => inner,
+        Ok(inner) => {
+            // 写操作全量留痕：手动执行（编辑器 / 聊天按钮）也进审计日志。
+            // AI 的写库已经由护栏链路记录（write-approved 等），不走这里，
+            // 不会重复计数。
+            if cfg.db_type == DbType::Mysql && !chatquery::db::mysql::is_read_query(&query) {
+                let target_db = if db.is_empty() { None } else { Some(db.as_str()) };
+                audit_manual(&state, &conn_id, target_db, &query);
+            }
+            inner
+        }
         Err(_) => Err(format!("查询超时（服务端限制 {} 秒）", secs)),
     }
 }
@@ -1113,9 +1143,18 @@ pub async fn apply_edit(
     if set.is_empty() {
         return Ok(());
     }
-    chatquery::db::mysql::apply_edit(&cfg, &database, &table, pk, set)
+    chatquery::db::mysql::apply_edit(&cfg, &database, &table, pk.clone(), set.clone())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let audit_sql = format!(
+        "UPDATE {}.{} SET {} WHERE {}",
+        quote_ident(&database),
+        quote_ident(&table),
+        set.iter().map(|(c, v)| format!("{}={}", quote_ident(c), v)).collect::<Vec<_>>().join(", "),
+        pk.iter().map(|(c, v)| format!("{}={}", quote_ident(c), v)).collect::<Vec<_>>().join(" AND ")
+    );
+    audit_manual(&state, &conn_id, Some(&database), &audit_sql);
+    Ok(())
 }
 
 /// Insert a new row (ADR-019). `values` is the list of column/value pairs the
@@ -1134,9 +1173,18 @@ pub async fn insert_row(
     if values.is_empty() {
         return Ok(());
     }
-    chatquery::db::mysql::insert_row(&cfg, &database, &table, values)
+    chatquery::db::mysql::insert_row(&cfg, &database, &table, values.clone())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let audit_sql = format!(
+        "INSERT INTO {}.{} ({}) VALUES ({})",
+        quote_ident(&database),
+        quote_ident(&table),
+        values.iter().map(|(c, _)| quote_ident(c)).collect::<Vec<_>>().join(", "),
+        values.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>().join(", ")
+    );
+    audit_manual(&state, &conn_id, Some(&database), &audit_sql);
+    Ok(())
 }
 
 /// Delete a single row by its primary-key snapshot (ADR-019). Reuses `PkPair`.
@@ -1150,9 +1198,17 @@ pub async fn delete_row(
 ) -> Result<(), String> {
     let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
     let pk: Vec<(String, String)> = pk.into_iter().map(|p| (p.col, p.val)).collect();
-    chatquery::db::mysql::delete_row(&cfg, &database, &table, pk)
+    chatquery::db::mysql::delete_row(&cfg, &database, &table, pk.clone())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let audit_sql = format!(
+        "DELETE FROM {}.{} WHERE {}",
+        quote_ident(&database),
+        quote_ident(&table),
+        pk.iter().map(|(c, v)| format!("{}={}", quote_ident(c), v)).collect::<Vec<_>>().join(" AND ")
+    );
+    audit_manual(&state, &conn_id, Some(&database), &audit_sql);
+    Ok(())
 }
 
 /// Fetch the full structure of a table: column details (with full type and
