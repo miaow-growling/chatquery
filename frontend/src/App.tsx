@@ -5233,7 +5233,8 @@ export function App() {
   return (
     <div className="root">
       <div className="titlebar" data-tauri-drag-region>
-        <span className="titlebar-title">ChatQuery</span>
+        {/* 窗口标题由系统原生渲染（tauri.conf.json 的 title），这里只保留
+            拖拽区，避免与原生标题叠加显示成两份文字。 */}
       </div>
       <div
         className={"app" + (chatOpen ? "" : " chat-collapsed")}
