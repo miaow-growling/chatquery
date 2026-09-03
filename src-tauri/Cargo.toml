@@ -10,6 +10,8 @@ license = "MIT"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# 勿在此启用 "devtools" feature：debug 构建自带调试菜单（Reload/Inspect），
+# 启用该 feature 会让 release 构建也带上它。
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
