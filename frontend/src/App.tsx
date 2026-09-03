@@ -125,13 +125,21 @@ function nodeText(node: React.ReactNode): string {
 function CodeBlock({
   children,
   onImport,
+  onExecute,
 }: {
   children?: React.ReactNode;
   onImport?: (code: string) => void;
+  /** 提供 = 该代码块可一键执行（写语句 + AI 回复带库绑定时） */
+  onExecute?: (code: string) => Promise<void>;
 }) {
   const [copied, setCopied] = useState(false);
   const [imported, setImported] = useState(false);
+  const [execState, setExecState] = useState<"idle" | "running" | "done" | "dismissed">("idle");
   const codeText = useMemo(() => nodeText(children).replace(/\n$/, ""), [children]);
+  // 只对写语句显示执行按钮：聊天里的写 SQL 是"待你拍板"的，给个一键执行/
+  // 不执行，免得手动打字回复。只读查询交给编辑器，不在此诱导执行。
+  const isWrite = /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(codeText);
+  const canExecute = !!onExecute && isWrite;
   return (
     <div className="md-code">
       <div className="md-code-actions">
@@ -166,6 +174,41 @@ function CodeBlock({
           {copied ? "✓" : <CopyIcon />}
         </button>
       </div>
+      {canExecute && execState !== "dismissed" && (
+        <div className="md-code-exec">
+          {execState === "done" ? (
+            <span className="md-code-exec-done">✓ 已执行，结果见下方 toast</span>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="md-code-exec-btn exec"
+                disabled={execState === "running"}
+                title="在绑定的连接/库上执行这条 SQL（写操作仍会走确认弹窗）"
+                onClick={async () => {
+                  setExecState("running");
+                  try {
+                    await onExecute!(codeText);
+                    setExecState("done");
+                  } catch {
+                    setExecState("idle");
+                  }
+                }}
+              >
+                {execState === "running" ? "执行中…" : "▶ 执行"}
+              </button>
+              <button
+                type="button"
+                className="md-code-exec-btn dismiss"
+                title="不执行这条 SQL"
+                onClick={() => setExecState("dismissed")}
+              >
+                不执行
+              </button>
+            </>
+          )}
+        </div>
+      )}
       <pre>{children}</pre>
     </div>
   );
@@ -323,9 +366,12 @@ function repairCodeFences(src: string): string {
 function MarkdownMessage({
   content,
   onImportSql,
+  onExecuteSql,
 }: {
   content: string;
   onImportSql?: (sql: string) => void;
+  /** 提供 = AI 回复里的写语句代码块显示「执行 / 不执行」按钮 */
+  onExecuteSql?: (sql: string) => Promise<void>;
 }) {
   const { thinking, isThinking, content: rawContent } = splitThinkContent(content);
   const actualContent = useMemo(() => repairCodeFences(rawContent), [rawContent]);
@@ -338,10 +384,12 @@ function MarkdownMessage({
         </a>
       ),
       pre: ({ children }: any) => (
-        <CodeBlock onImport={onImportSql}>{children}</CodeBlock>
+        <CodeBlock onImport={onImportSql} onExecute={onExecuteSql}>
+          {children}
+        </CodeBlock>
       ),
     }),
-    [onImportSql]
+    [onImportSql, onExecuteSql]
   );
 
   return (
@@ -2951,6 +2999,34 @@ export function App() {
     },
     [pageSize, active?.qid],
   );
+
+  // 一键执行 AI 回复里的写语句（消息 SQL 代码块上的「执行」按钮）。走同一条
+  // 护栏：整表 UPDATE/DELETE 先弹危险确认；执行成功 toast 影响行数并记入
+  // 查询历史，失败 toast 错误并把按钮复位可重试。结果不入对话上下文——
+  // AI 并不知道你手动执行了，需要它感知时继续对话说明即可。
+  const execChatWriteSql = async (
+    connId: string,
+    db: string | null,
+    sql: string
+  ) => {
+    if (!connId) {
+      showToast("这条回复缺少连接信息，请导入查询后手动执行");
+      return;
+    }
+    const g = await guardWriteConfirm(sql);
+    if (!g.ok) return;
+    try {
+      const r = await api.executeQuery(connId, sql, db, 0, 50, g.allowRisky);
+      const affected = "affected" in r && r.affected != null ? r.affected : null;
+      showToast(
+        affected != null ? `✓ 已执行 · 影响 ${affected} 行` : "✓ 已执行"
+      );
+      void api.logQuery(connId, db, sql);
+    } catch (e) {
+      showToast("✗ 执行失败: " + String(e));
+      throw e;
+    }
+  };
 
   // Keep a live ref so the editor's run-key (registered once) always calls the
   // latest `runQuery` closure with the current selected connection.
@@ -5955,6 +6031,11 @@ export function App() {
                         content={m.content || "…"}
                         onImportSql={(sql) =>
                           handleImportToEditor(sql, "dbBinding" in m ? m.dbBinding : undefined)
+                        }
+                        onExecuteSql={
+                          m.role === "assistant" && "dbBinding" in m && m.dbBinding
+                            ? (sql) => execChatWriteSql(m.dbBinding!.conn_id, m.dbBinding!.db, sql)
+                            : undefined
                         }
                       />
                     </div>

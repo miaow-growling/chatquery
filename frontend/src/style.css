@@ -2691,6 +2691,46 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .md-code-actions:focus-within {
   opacity: 1;
 }
+/* AI 写语句代码块下方的「执行 / 不执行」操作条 */
+.md-code-exec {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 4px;
+}
+.md-code-exec-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 6px);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.md-code-exec-btn:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.md-code-exec-btn.exec {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+.md-code-exec-btn.exec:hover {
+  opacity: 0.9;
+  color: #fff;
+}
+.md-code-exec-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.md-code-exec-done {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
 .md-code-btn {
   display: inline-flex;
   align-items: center;
