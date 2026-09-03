@@ -17,16 +17,26 @@ pub struct ConstitutionRule {
 
 /// 宪法条文本体。顺序即渲染顺序。每条都会注入到每个 agent 的提示词里，
 /// 所以保持条目精炼、无条件生效——冗长的宪法是对每一轮对话的 token 税。
-pub const RULES: &[ConstitutionRule] = &[ConstitutionRule {
-    id: "C1",
-    title: "SQL 禁止凭印象输出字段",
-    body: "为现有数据库编写任何 SQL（查询、写操作或示例）时，严禁凭记忆、印象或猜测\
+pub const RULES: &[ConstitutionRule] = &[
+    ConstitutionRule {
+        id: "C1",
+        title: "SQL 禁止凭印象输出字段",
+        body: "为现有数据库编写任何 SQL（查询、写操作或示例）时，严禁凭记忆、印象或猜测\
            输出表名、字段名或字段类型。只要表结构能通过工具获取——execute_query 执行 \
            SHOW CREATE TABLE / DESCRIBE / information_schema 查询，或 search_knowledge \
            检索知识库——就必须先拿到真实表结构，再基于它编写 SQL，并在写之前核对你用到的\
            每个字段都真实存在。只有当目标表结构确实无法通过任何工具获取时，才允许基于\
            上下文已有信息输出，且必须明确标注其中未经核实的部分，提醒用户先行确认。",
-}];
+    },
+    ConstitutionRule {
+        id: "C2",
+        title: "严禁谎报执行结果",
+        body: "查询或写入是否执行、结果如何，只能以工具返回的真实输出为准。没有调用\
+           execute_query 并拿到成功结果，就严禁说「已执行」「已写入」「查询完成」；工具\
+           返回错误时必须如实转述错误内容。宁可告知用户「我还没有执行」，也绝不允许\
+           在缺少工具结果的情况下编造成功结论。",
+    },
+];
 
 /// 把宪法渲染成系统提示词块。宪法为空时返回空串，注入点因此是无副作用的，
 /// 没有规则的部署得到的提示词与之前逐字节一致。
@@ -73,5 +83,15 @@ mod tests {
         assert!(c1.body.contains("印象"));
         assert!(c1.body.contains("表结构"));
         assert!(c1.body.contains("知识库"));
+    }
+
+    /// C2 的核心语义：结果只能来自工具返回、无工具结果不得宣称成功、
+    /// 工具报错必须如实转述。
+    #[test]
+    fn c2_requires_tool_backed_claims() {
+        let c2 = RULES.iter().find(|r| r.id == "C2").expect("C2 exists");
+        assert!(c2.body.contains("工具返回"));
+        assert!(c2.body.contains("严禁"));
+        assert!(c2.body.contains("如实"));
     }
 }
