@@ -38,6 +38,64 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .setup(|app| {
+            // macOS 应用菜单中文化：Tauri 默认菜单是英文（About/Hide/Quit 等，
+            // 应用未声明本地化时系统不翻译）。这里用预定义菜单项（行为不变）
+            // + 中文文案整体重建菜单。
+            use tauri::menu::{AboutMetadata, MenuBuilder, SubmenuBuilder};
+            let handle = app.handle();
+
+            let app_submenu = SubmenuBuilder::new(handle, "智询")
+                .about_with_text(
+                    "关于智询",
+                    Some(AboutMetadata {
+                        name: Some("智询".to_string()),
+                        version: Some(handle.package_info().version.to_string()),
+                        ..Default::default()
+                    }),
+                )
+                .separator()
+                .services_with_text("服务")
+                .separator()
+                .hide_with_text("隐藏智询")
+                .hide_others_with_text("隐藏其他")
+                .show_all_with_text("全部显示")
+                .separator()
+                .quit_with_text("退出智询")
+                .build()?;
+
+            let file_submenu = SubmenuBuilder::new(handle, "文件")
+                .close_window_with_text("关闭窗口")
+                .build()?;
+
+            let edit_submenu = SubmenuBuilder::new(handle, "编辑")
+                .undo_with_text("撤销")
+                .redo_with_text("重做")
+                .separator()
+                .cut_with_text("剪切")
+                .copy_with_text("拷贝")
+                .paste_with_text("粘贴")
+                .select_all_with_text("全选")
+                .build()?;
+
+            let view_submenu = SubmenuBuilder::new(handle, "显示")
+                .fullscreen_with_text("进入全屏")
+                .build()?;
+
+            let window_submenu = SubmenuBuilder::new(handle, "窗口")
+                .minimize_with_text("最小化")
+                .build()?;
+
+            let menu = MenuBuilder::new(handle)
+                .item(&app_submenu)
+                .item(&file_submenu)
+                .item(&edit_submenu)
+                .item(&view_submenu)
+                .item(&window_submenu)
+                .build()?;
+            handle.set_menu(menu)?;
+            Ok(())
+        })
         .manage(AppState {
             store: Arc::new(Mutex::new(store)),
             schema_cache: Mutex::new(HashMap::new()),
