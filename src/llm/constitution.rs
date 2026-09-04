@@ -36,6 +36,15 @@ pub const RULES: &[ConstitutionRule] = &[
            返回错误时必须如实转述错误内容。宁可告知用户「我还没有执行」，也绝不允许\
            在缺少工具结果的情况下编造成功结论。",
     },
+    ConstitutionRule {
+        id: "C3",
+        title: "写后验证严禁全表扫描",
+        body: "执行 INSERT、UPDATE 或 DELETE 后若需验证结果，必须优先依据 execute_query \
+           返回的受影响行数（affected）与自增 ID（last_insert_id）进行确认。若确需通过 \
+           SELECT 回查验证，严禁执行不带精确条件的全表查询（如 SELECT * FROM table）！\
+           必须严格指定本次操作的主键或唯一条件并带 LIMIT 1，只精确查回刚刚变动的那一条\
+           数据，坚决避免给线上大表带来性能冲击与慢查询。",
+    },
 ];
 
 /// 把宪法渲染成系统提示词块。宪法为空时返回空串，注入点因此是无副作用的，
@@ -93,5 +102,14 @@ mod tests {
         assert!(c2.body.contains("工具返回"));
         assert!(c2.body.contains("严禁"));
         assert!(c2.body.contains("如实"));
+    }
+
+    /// C3 的核心语义：写后验证禁止全表扫描、优先看受影响行数/自增ID、回查必须单条。
+    #[test]
+    fn c3_forbids_full_table_scan_on_verify() {
+        let c3 = RULES.iter().find(|r| r.id == "C3").expect("C3 exists");
+        assert!(c3.body.contains("受影响行数"));
+        assert!(c3.body.contains("全表"));
+        assert!(c3.body.contains("LIMIT 1"));
     }
 }
