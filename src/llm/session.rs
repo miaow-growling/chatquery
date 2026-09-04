@@ -532,36 +532,20 @@ impl Agent {
              ✅ 正确写法：直接给结论，例 \"t_parameter 表在「测试环境配置库」里不存在。当前可用库有：xxx，\
                 如需查询请补充正确的连接或库名。\"\n",
         );
-        let messages = vec![ChatMessage::system(p)];
-        // 一次性收集完整 content，不逐 token 推给前端 —— 见 fn-level note。
-        let mut sink = |_d: &str| {};
+        let messages = vec![
+            ChatMessage::system(p),
+            ChatMessage::user("请根据以上各步骤的实际执行结果，给出最终简明的综合结论。"),
+        ];
+        // 实时流式输出给前端，让用户看到打字机效果，避免长时间静默
+        let mut sink = |d: &str| {
+            let _ = tx.send(BackendMsg::ChatToken(d.to_string()));
+        };
         let choice = tokio::select! {
             biased;
             _ = self.ctl.cancelled() => return Ok(None),
             r = stream_chat(&self.cfg, &messages, &[], &mut sink) => r?,
         };
-        // Prompt 写了「禁止罗列执行步骤」+「不要重复完整 SQL 除非结论必要」，
-        // 但模型不一定守。三层后端兜底：
-        // 1. 去掉 "一步骤 N: ..." / "步骤 N: ..." 这类行（见 strip_step_prose）
-        // 2. 去掉 markdown SQL 代码块 ```sql ... ```（见 strip_sql_blocks）
-        // 3. 去掉 inline SQL 行（见 strip_inline_sql）——模型经常把 SQL
-        //    直接写在 prose 里当"举例"，看着像工具调用结果，但实际是
-        //    答案里的冗余内容
-        let raw = choice.content.trim();
-        let no_steps = strip_step_prose(raw);
-        let final_text = if no_steps.trim().is_empty() {
-            if raw.is_empty() {
-                String::new()
-            } else {
-                raw.to_string()
-            }
-        } else {
-            no_steps
-        };
-        if !final_text.is_empty() {
-            let _ = tx.send(BackendMsg::ChatToken(final_text));
-            let _ = tx.send(BackendMsg::ChatToken("\n".to_string()));
-        }
+        let _ = tx.send(BackendMsg::ChatToken("\n".to_string()));
         Ok(choice.usage)
     }
 }

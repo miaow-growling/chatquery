@@ -5120,8 +5120,8 @@ export function App() {
     onChatTool((t) => {
       setChat((prev) => [...prev, { role: "tool", content: t }]);
     }).then(safe);
-    // The plan arrives as its own card, then a fresh assistant bubble takes
-    // over so the worker output doesn't get appended onto the plan.
+    // The plan arrives as its own card. Tools and steps will run under it;
+    // assistant conclusion card will be created when synthesis tokens stream in.
     onChatPlan((steps) => {
       setChat((prev) => {
         const base =
@@ -5133,7 +5133,6 @@ export function App() {
         return [
           ...base,
           { role: "plan", content: "", steps },
-          { role: "assistant", content: "" },
         ];
       });
       const snap = turnItemsRef.current;
@@ -5148,7 +5147,6 @@ export function App() {
         items: [
           ...baseItems,
           { role: "plan", content: "", steps },
-          { role: "assistant", content: "" },
         ],
       };
     }).then(safe);
@@ -5225,36 +5223,54 @@ export function App() {
       setChat((prev) => {
         if (prev.length === 0) return prev;
         const next = prev.slice();
+        let foundAssistant = false;
         for (let i = next.length - 1; i >= 0; i--) {
           if (next[i].role === "assistant") {
+            foundAssistant = true;
             const item = next[i];
-            const content = item.content.trim() === "" ? "（未获取到回复内容，操作未执行）" : item.content;
+            const content = item.content.trim() === "" ? "（操作完成，未生成额外说明）" : item.content;
             const usage = ("usage" in item && item.usage) || finalUsage || undefined;
             const dbBinding = ("dbBinding" in item && item.dbBinding) || turnBinding || undefined;
             next[i] = { ...item, content, usage, dbBinding };
             break;
           }
         }
+        if (!foundAssistant) {
+          next.push({
+            role: "assistant",
+            content: "（操作完成，未生成额外说明）",
+            usage: finalUsage || undefined,
+            dbBinding: turnBinding || undefined,
+          });
+        }
         return next;
       });
 
       const convId_ = snap.convId;
       turnItemsRef.current = { convId: null, items: [] };
+      let hasAssistantInSnap = false;
+      const patchedItems = snap.items.map((m, i, arr) => {
+        if (m.role === "assistant") {
+          hasAssistantInSnap = true;
+          const content = m.content.trim() === "" ? "（操作完成，未生成额外说明）" : m.content;
+          const usage = (m as any).usage || finalUsage || undefined;
+          const dbBinding =
+            (i === arr.length - 1 && (m as any).dbBinding) || (i === arr.length - 1 ? turnBinding : undefined) || undefined;
+          return { ...m, content, usage, dbBinding };
+        }
+        return m;
+      });
+      if (!hasAssistantInSnap) {
+        patchedItems.push({
+          role: "assistant",
+          content: "（操作完成，未生成额外说明）",
+          usage: finalUsage || undefined,
+          dbBinding: turnBinding || undefined,
+        } as any);
+      }
       const patchedSnap = {
         convId: snap.convId,
-        items: snap.items.map((m, i, arr) => {
-          if (m.role === "assistant") {
-            const content = m.content.trim() === "" ? "（未获取到回复内容，操作未执行）" : m.content;
-            const usage = (m as any).usage || finalUsage || undefined;
-            // Only the LAST assistant bubble of the turn carries the binding —
-            // it's the reply the user reads; intermediate bubbles (pre-plan
-            // placeholders) stay unbound.
-            const dbBinding =
-              (i === arr.length - 1 && (m as any).dbBinding) || (i === arr.length - 1 ? turnBinding : undefined) || undefined;
-            return { ...m, content, usage, dbBinding };
-          }
-          return m;
-        }),
+        items: patchedItems,
       };
 
       if (convId_) {

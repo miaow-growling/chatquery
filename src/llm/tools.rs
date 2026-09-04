@@ -212,12 +212,10 @@ async fn exec_builtin(
         Some(s) if !s.is_empty() => Some(s.to_string()),
         _ => None,
     };
-    // If the user picked a different db than the conn's default, surface
-    // it in the summary line so the UI/transcript can show what was
-    // actually queried.
-    let db_label = effective_db
-        .as_deref()
-        .filter(|d| !d.is_empty() && *d != cfg.database.as_str());
+    let target_label = match effective_db.as_deref().filter(|d| !d.is_empty()) {
+        Some(d) => format!("{} · {}", conn_name, d),
+        None => conn_name.clone(),
+    };
 
     match cfg.db_type {
         DbType::Mysql => match mysql::query(cfg, &query, effective_db.as_deref(), false).await {
@@ -229,12 +227,11 @@ async fn exec_builtin(
                         } else {
                             String::new()
                         };
-                        format!("{}{}: 影响 {} 行{}", conn_name, db_label.unwrap_or(""), n, id)
+                        format!("{}: 影响 {} 行{}", target_label, n, id)
                     }
                     None => format!(
-                        "{}{}: {} 行",
-                        conn_name,
-                        db_label.unwrap_or(""),
+                        "{}: {} 行",
+                        target_label,
                         r.rows.len()
                     ),
                 };
