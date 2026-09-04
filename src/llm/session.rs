@@ -899,14 +899,15 @@ async fn context_block(
             };
             p.push_str(&format!("\n当前连接：{} ({})\n", cfg.name, kind));
             if cfg.db_type == DbType::Mysql {
-                let db = if cfg.database.is_empty() {
-                    "mysql"
-                } else {
-                    &cfg.database
-                };
-                if let Ok(tables) = mysql::search_tables(cfg, db, None, 100).await {
+                let target_db = memory
+                    .current_db
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| if cfg.database.is_empty() { None } else { Some(cfg.database.as_str()) })
+                    .unwrap_or("mysql");
+                if let Ok(tables) = mysql::search_tables(cfg, target_db, None, 100).await {
                     if !tables.is_empty() {
-                        p.push_str(&format!("该库（{}）中的部分表（最多 100 张）：\n", db));
+                        p.push_str(&format!("该库（{}）中的部分表（最多 100 张）：\n", target_db));
                         for t in &tables {
                             p.push_str(&format!(
                                 "- {}{}\n",

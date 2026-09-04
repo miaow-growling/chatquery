@@ -5228,7 +5228,7 @@ export function App() {
         for (let i = next.length - 1; i >= 0; i--) {
           if (next[i].role === "assistant") {
             const item = next[i];
-            const content = item.content.trim() === "" ? "查询已执行，详见上方工具结果。" : item.content;
+            const content = item.content.trim() === "" ? "（未获取到回复内容，操作未执行）" : item.content;
             const usage = ("usage" in item && item.usage) || finalUsage || undefined;
             const dbBinding = ("dbBinding" in item && item.dbBinding) || turnBinding || undefined;
             next[i] = { ...item, content, usage, dbBinding };
@@ -5244,7 +5244,7 @@ export function App() {
         convId: snap.convId,
         items: snap.items.map((m, i, arr) => {
           if (m.role === "assistant") {
-            const content = m.content.trim() === "" ? "查询已执行，详见上方工具结果。" : m.content;
+            const content = m.content.trim() === "" ? "（未获取到回复内容，操作未执行）" : m.content;
             const usage = (m as any).usage || finalUsage || undefined;
             // Only the LAST assistant bubble of the turn carries the binding —
             // it's the reply the user reads; intermediate bubbles (pre-plan

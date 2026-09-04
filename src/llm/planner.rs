@@ -83,6 +83,7 @@ pub async fn plan_task(
          - 输出 1 到 6 个步骤。为了最大化执行效率，必须对步骤进行阶段（Stage）分组以支持并发调度：\n\
            * 无依赖、可同时进行的探索操作（如同时查多个表的结构/信息、同时检索不同数据源）归入同一个 Stage（并行执行）；\n\
            * 必须依赖前面步骤产出结果的操作（如基于查到的表结构编写/执行关联 SQL）归入后续的 Stage（串行执行）。\n\
+         - 目标库范围硬性约束：如果上下文已指定当前连接与数据库，所有步骤必须严格在当前指定的连接和库内完成。严禁擅自到其他无关连接中进行地毯式扫描或探测，除非用户在提问中明确要求了跨库/跨连接对比或迁移！\n\
          - 格式规范（每行必须带 [Stage N] 前缀）：\n\
            [Stage 1] 1. 并行步骤 A（说明目标连接与探索意图）\n\
            [Stage 1] 2. 并行步骤 B\n\
@@ -328,15 +329,28 @@ async fn build_plan_context(
     }
     if let Some(conn_id) = &memory.current_conn {
         if let Some(cfg) = conns.iter().find(|c| &c.id == conn_id) {
+            let kind = match cfg.db_type {
+                DbType::Mysql => "MySQL",
+                DbType::Redis => "Redis",
+            };
+            p.push_str(&format!("\n当前用户选定连接：{} ({})\n", cfg.name, kind));
+
+            // 优先使用用户选定的当前库（memory.current_db），未选定才退回到连接配置的默认库
+            let target_db = memory
+                .current_db
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .or_else(|| if cfg.database.is_empty() { None } else { Some(cfg.database.as_str()) });
+
+            if let Some(db) = target_db {
+                p.push_str(&format!("当前用户选定数据库：`{}`（所有规划操作默认必须作用在此库）\n", db));
+            }
+
             if cfg.db_type == DbType::Mysql {
-                let db = if cfg.database.is_empty() {
-                    "mysql"
-                } else {
-                    &cfg.database
-                };
-                if let Ok(tables) = mysql::search_tables(cfg, db, None, 30).await {
+                let db = target_db.unwrap_or("mysql");
+                if let Ok(tables) = mysql::search_tables(cfg, db, None, 50).await {
                     if !tables.is_empty() {
-                        p.push_str(&format!("\n当前库 {} 的部分表（最多 30）：\n", db));
+                        p.push_str(&format!("\n当前选定库 `{}` 中的部分表（最多 50 张）：\n", db));
                         for t in &tables {
                             p.push_str(&format!("- {}\n", t.name));
                         }
