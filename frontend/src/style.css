@@ -2856,6 +2856,104 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---- Tool execution card with expandable SQL (可展开查看完整 SQL) ---- */
+.chat-tool-card {
+  align-self: flex-start;
+  max-width: 98%;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 3px 0;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-secondary);
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  animation: toolFadeIn 0.2s ease-out;
+}
+.chat-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.chat-tool-head:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.03));
+}
+.chat-tool-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  background: var(--brand-soft, rgba(0, 102, 204, 0.1));
+  color: var(--brand);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.chat-tool-sql-preview {
+  color: var(--text-primary);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+.chat-tool-sep {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+.chat-tool-summary {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.chat-tool-toggle {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  padding-left: 4px;
+}
+.chat-tool-detail {
+  padding: 8px 10px;
+  background: var(--bg-canvas, var(--bg-inset));
+  border-top: 1px dashed var(--border);
+}
+.chat-tool-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.tool-act-btn {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.tool-act-btn:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.chat-tool-sql-full {
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--bg-inset, #1a1a1a);
+  color: var(--text-primary);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
 @keyframes toolFadeIn {
   from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: translateY(0); }

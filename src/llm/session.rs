@@ -477,7 +477,18 @@ impl Agent {
             }
             let results = join_all(futures).await;
             for (tc, (summary, detail)) in choice.tool_calls.iter().zip(results.into_iter()) {
-                let _ = tx.send(BackendMsg::ChatTool(format!("{} → {}", tc.name, summary)));
+                let notice = if tc.name == "execute_query" {
+                    let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(Value::Null);
+                    let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("").trim();
+                    if !q.is_empty() {
+                        format!("execute_query「{}」→ {}", q, summary)
+                    } else {
+                        format!("{} → {}", tc.name, summary)
+                    }
+                } else {
+                    format!("{} → {}", tc.name, summary)
+                };
+                let _ = tx.send(BackendMsg::ChatTool(notice));
                 messages.push(ChatMessage {
                     role: ChatRole::Tool,
                     content: detail,

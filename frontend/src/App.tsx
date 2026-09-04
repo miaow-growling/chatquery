@@ -361,6 +361,83 @@ function repairCodeFences(src: string): string {
   return out.join("\n");
 }
 
+/** 工具调用卡片：如果是 execute_query「<SQL>」→ <SUMMARY> 则渲染为可展开查看完整 SQL 的卡片，
+ *  带复制和导入编辑器按钮；其他工具提示（如“正在执行步骤...”）以轻量胶囊显示。 */
+function ToolCallCard({
+  content,
+  onImportSql,
+}: {
+  content: string;
+  onImportSql?: (sql: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // 解析 execute_query「<SQL>」→ <SUMMARY>
+  const match = /^execute_query「([\s\S]+?)」→\s*(.*)$/.exec(content);
+  if (!match) {
+    return (
+      <div className="chat-tool-chip" title={content}>
+        <span className="chat-tool-icon">⚡</span>
+        <span className="chat-tool-text">{content}</span>
+      </div>
+    );
+  }
+
+  const sql = match[1].trim();
+  const summary = match[2].trim();
+  const previewSql = sql.replace(/\s+/g, " ");
+
+  return (
+    <div className={"chat-tool-card" + (expanded ? " expanded" : "")}>
+      <div
+        className="chat-tool-head"
+        onClick={() => setExpanded(!expanded)}
+        title="点击展开 / 收起完整 SQL"
+      >
+        <span className="chat-tool-icon">⚡</span>
+        <span className="chat-tool-tag">SQL</span>
+        <span className="chat-tool-sql-preview" title={previewSql}>
+          {previewSql}
+        </span>
+        <span className="chat-tool-sep">→</span>
+        <span className="chat-tool-summary">{summary}</span>
+        <span className="chat-tool-toggle">{expanded ? "▴" : "▾"}</span>
+      </div>
+      {expanded && (
+        <div className="chat-tool-detail">
+          <div className="chat-tool-actions">
+            {onImportSql && (
+              <button
+                type="button"
+                className="tool-act-btn"
+                onClick={() => onImportSql(sql)}
+                title="导入此 SQL 到查询编辑器"
+              >
+                导入编辑器
+              </button>
+            )}
+            <button
+              type="button"
+              className="tool-act-btn"
+              onClick={async () => {
+                const ok = await copyText(sql);
+                if (ok) {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1500);
+                }
+              }}
+            >
+              {copied ? "已复制" : "复制 SQL"}
+            </button>
+          </div>
+          <pre className="chat-tool-sql-full">{sql}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 渲染 AI 消息内容为 Markdown：标题/加粗/列表/代码块/表格/链接等。
  *  用 react-markdown + remark-gfm，默认不 dangerouslySetInnerHTML，XSS 安全。 */
 function MarkdownMessage({
@@ -5118,7 +5195,17 @@ export function App() {
       turnItemsRef.current = { convId: snap.convId, items };
     }).then(safe);
     onChatTool((t) => {
-      setChat((prev) => [...prev, { role: "tool", content: t }]);
+      setChat((prev) => {
+        // 如果末尾存在内容为空的 assistant 预置气泡（handleChatSubmit 发起时添加），
+        // 把 tool 插入到该气泡之前，保证时间线上工具调用永远位于最终回答之前！
+        const lastIdx = prev.length - 1;
+        if (lastIdx >= 0 && prev[lastIdx].role === "assistant" && prev[lastIdx].content === "") {
+          const next = [...prev];
+          next.splice(lastIdx, 0, { role: "tool", content: t });
+          return next;
+        }
+        return [...prev, { role: "tool", content: t }];
+      });
     }).then(safe);
     // The plan arrives as its own card. Tools and steps will run under it;
     // assistant conclusion card will be created when synthesis tokens stream in.
@@ -5974,10 +6061,11 @@ export function App() {
               </div>
             ) :
             m.role === "tool" ? (
-              <div key={i} className="chat-tool-chip" title={m.content}>
-                <span className="chat-tool-icon">⚡</span>
-                <span className="chat-tool-text">{m.content}</span>
-              </div>
+              <ToolCallCard
+                key={i}
+                content={m.content}
+                onImportSql={(sql) => handleImportToEditor(sql, undefined)}
+              />
             ) :
             m.role === "ref" ? (
               <div key={i} className="chat-ref">
