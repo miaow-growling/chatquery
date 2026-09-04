@@ -260,7 +260,12 @@ export interface SqlReference {
 /// model received, so an answer can never be attributed to SQL the user
 /// didn't knowingly attach.
 export type ChatItem =
-  | (ChatMessage & { usage?: TokenUsage; dbBinding?: ChatDbBinding })
+  | (ChatMessage & {
+      usage?: TokenUsage;
+      dbBinding?: ChatDbBinding;
+      plan?: string[];
+      tools?: string[];
+    })
   | {
       role: "plan";
       content: string;

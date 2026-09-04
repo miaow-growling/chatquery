@@ -2616,6 +2616,114 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   border: none !important;
   padding: 0 !important;
 }
+
+/* ---- Execution block (执行步骤 / 计划与工具调用可折叠组件) ---- */
+.execution-container {
+  margin: 2px 0 10px;
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+  transition: all var(--t-fast);
+}
+.execution-container.is-running {
+  border-color: color-mix(in srgb, var(--brand) 40%, var(--border));
+  background: color-mix(in srgb, var(--brand) 4%, var(--bg-inset));
+}
+.execution-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  transition: color var(--t-fast), background var(--t-fast);
+}
+.execution-summary::-webkit-details-marker {
+  display: none;
+}
+.execution-summary:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+.execution-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.execution-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: var(--fw-medium, 500);
+  color: var(--text-secondary);
+}
+.is-running .execution-title {
+  color: var(--brand);
+}
+.execution-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.execution-badge.plan {
+  background: var(--brand-soft, rgba(99, 102, 241, 0.12));
+  color: var(--brand);
+}
+.execution-badge.sql {
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+}
+.execution-live-hint {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+.execution-toggle {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-elevated);
+}
+.execution-content {
+  padding: 8px 12px 10px;
+  border-top: 1px dashed var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.execution-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.execution-plan-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+.execution-plan-list li {
+  margin-bottom: 2px;
+}
+.execution-tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 .md p { margin: 6px 0; }

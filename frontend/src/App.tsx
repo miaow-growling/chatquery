@@ -316,6 +316,94 @@ function ThinkingBlock({ text, isThinking }: { text: string; isThinking: boolean
   );
 }
 
+/** 执行步骤与工具调用折叠组件（类似思考过程，可一键展开/收起完整步骤与所有 SQL） */
+function ExecutionBlock({
+  plan,
+  tools,
+  isRunning,
+  onImportSql,
+}: {
+  plan?: string[];
+  tools?: string[];
+  isRunning: boolean;
+  onImportSql?: (sql: string) => void;
+}) {
+  const hasPlan = !!(plan && plan.length > 0);
+  const hasTools = !!(tools && tools.length > 0);
+  if (!hasPlan && !hasTools) return null;
+
+  // 运行中默认展开让用户看到实时进展；运行完成后默认折叠保持界面整洁
+  const [open, setOpen] = useState<boolean>(isRunning);
+
+  useEffect(() => {
+    if (isRunning) setOpen(true);
+  }, [isRunning]);
+
+  // 统计实际执行了多少次 SQL
+  const sqlCount = useMemo(() => {
+    if (!tools) return 0;
+    return tools.filter((t) => t.startsWith("execute_query")).length;
+  }, [tools]);
+
+  // 获取最新的进行中文案
+  const latestStatus = useMemo(() => {
+    if (!tools || tools.length === 0) {
+      if (hasPlan) return "已制定执行计划，正在准备执行…";
+      return "";
+    }
+    const last = tools[tools.length - 1];
+    return last;
+  }, [tools, hasPlan]);
+
+  return (
+    <div className={`execution-container ${isRunning ? "is-running" : ""}`}>
+      <details
+        open={open}
+        onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      >
+        <summary className="execution-summary">
+          <span className="execution-icon">{isRunning ? "⏳" : "⚡"}</span>
+          <span className="execution-title">
+            {isRunning ? "正在执行步骤" : "执行步骤"}
+            {hasPlan && <span className="execution-badge plan">{plan!.length} 步计划</span>}
+            {sqlCount > 0 && <span className="execution-badge sql">{sqlCount} 次查询</span>}
+          </span>
+          {isRunning && !open && (
+            <span className="execution-live-hint">{latestStatus}</span>
+          )}
+          <span className="execution-toggle">{open ? "收起" : "展开"}</span>
+        </summary>
+        <div className="execution-content">
+          {hasPlan && (
+            <div className="execution-plan-section">
+              <div className="execution-section-title">📋 任务执行计划</div>
+              <ol className="execution-plan-list">
+                {plan!.map((step, idx) => (
+                  <li key={idx}>{step}</li>
+                ))}
+              </ol>
+            </div>
+          )}
+          {hasTools && (
+            <div className="execution-tools-section">
+              {hasPlan && <div className="execution-section-title">🛠️ 实际执行与工具调用</div>}
+              <div className="execution-tools-list">
+                {tools!.map((toolContent, idx) => (
+                  <ToolCallCard
+                    key={idx}
+                    content={toolContent}
+                    onImportSql={onImportSql}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 /** 修复模型输出里"粘行"的代码围栏。CommonMark 要求闭合围栏独占一行；部分模型
  *  会把结尾 ``` 直接接在最后一行内容后面（如 `WHERE x = 'y'```，中间无换行），
  *  导致围栏永远不闭合，后续的 `---`、说明文字全部被吞进同一个代码块。
@@ -4515,12 +4603,16 @@ export function App() {
         const meta = m.meta as {
           usage?: TokenUsage;
           db_binding?: ChatDbBinding;
+          plan?: string[];
+          tools?: string[];
         } | null;
         return {
           role: "assistant",
           content: m.content,
           usage: meta?.usage,
           dbBinding: meta?.db_binding,
+          plan: meta?.plan,
+          tools: meta?.tools,
         };
       }
       return { role: m.role as ChatMessage["role"], content: m.content };
@@ -5162,80 +5254,76 @@ export function App() {
       else unlisteners.push(u);
     };
     onChatToken((t) => {
-      // Token accumulation: extend the *most recent* assistant bubble, not
-      // whatever happens to be at the tail. Tool breadcrumbs (`onChatTool`
-      // below) push `role:"tool"` cards into the array even though the
-      // renderer hides them — a tool call followed by a streamed reply used
-      // to spawn a second AI card because the tail was no longer an
-      // assistant. Same trap for the persistence snapshot below. 2026-08-17.
+      // 严格追加到当前正在进行的本轮 assistant 消息，绝不向历史轮次逆向匹配
       setChat((prev) => {
-        let lastIdx = -1;
-        for (let i = prev.length - 1; i >= 0; i--) {
-          if (prev[i].role === "assistant") { lastIdx = i; break; }
-        }
-        if (lastIdx === -1) {
-          return [...prev, { role: "assistant", content: t }];
-        }
+        if (prev.length === 0) return prev;
         const next = [...prev];
-        next[lastIdx] = { ...next[lastIdx], content: next[lastIdx].content + t };
+        const lastIdx = next.length - 1;
+        if (next[lastIdx].role === "assistant") {
+          const last = next[lastIdx];
+          next[lastIdx] = { ...last, content: last.content + t };
+        } else {
+          next.push({ role: "assistant", content: t, plan: undefined, tools: [] });
+        }
         return next;
       });
       // Keep the persistence snapshot in step so chat-done writes the full text.
       const snap = turnItemsRef.current;
       const items = [...snap.items];
-      let lastIdx = -1;
-      for (let i = items.length - 1; i >= 0; i--) {
-        if (items[i].role === "assistant") { lastIdx = i; break; }
-      }
-      if (lastIdx === -1) {
-        items.push({ role: "assistant", content: t });
+      const lastIdx = items.length - 1;
+      if (lastIdx >= 0 && items[lastIdx].role === "assistant") {
+        const last = items[lastIdx];
+        items[lastIdx] = { ...last, content: (last as any).content + t };
       } else {
-        items[lastIdx] = { ...items[lastIdx], content: items[lastIdx].content + t };
+        items.push({ role: "assistant", content: t });
       }
       turnItemsRef.current = { convId: snap.convId, items };
     }).then(safe);
+
     onChatTool((t) => {
+      // 工具调用直接挂载到当前本轮 assistant 消息的 tools 数组，物理隔离步骤与正文
       setChat((prev) => {
-        // 如果末尾存在内容为空的 assistant 预置气泡（handleChatSubmit 发起时添加），
-        // 把 tool 插入到该气泡之前，保证时间线上工具调用永远位于最终回答之前！
-        const lastIdx = prev.length - 1;
-        if (lastIdx >= 0 && prev[lastIdx].role === "assistant" && prev[lastIdx].content === "") {
-          const next = [...prev];
-          next.splice(lastIdx, 0, { role: "tool", content: t });
-          return next;
+        if (prev.length === 0) return prev;
+        const next = [...prev];
+        const lastIdx = next.length - 1;
+        if (next[lastIdx].role === "assistant") {
+          const last = next[lastIdx];
+          const tools = [...(last.tools || []), t];
+          next[lastIdx] = { ...last, tools };
         }
-        return [...prev, { role: "tool", content: t }];
-      });
-    }).then(safe);
-    // The plan arrives as its own card. Tools and steps will run under it;
-    // assistant conclusion card will be created when synthesis tokens stream in.
-    onChatPlan((steps) => {
-      setChat((prev) => {
-        const base =
-          prev.length > 0 &&
-          prev[prev.length - 1].role === "assistant" &&
-          prev[prev.length - 1].content === ""
-            ? prev.slice(0, -1)
-            : prev;
-        return [
-          ...base,
-          { role: "plan", content: "", steps },
-        ];
+        return next;
       });
       const snap = turnItemsRef.current;
-      const baseItems =
-        snap.items.length > 0 &&
-        snap.items[snap.items.length - 1].role === "assistant" &&
-        snap.items[snap.items.length - 1].content === ""
-          ? snap.items.slice(0, -1)
-          : snap.items;
-      turnItemsRef.current = {
-        convId: snap.convId,
-        items: [
-          ...baseItems,
-          { role: "plan", content: "", steps },
-        ],
-      };
+      const items = [...snap.items];
+      const lastIdx = items.length - 1;
+      if (lastIdx >= 0 && items[lastIdx].role === "assistant") {
+        const last = items[lastIdx];
+        const tools = [...((last as any).tools || []), t];
+        items[lastIdx] = { ...(last as any), tools };
+      }
+      turnItemsRef.current = { convId: snap.convId, items };
+    }).then(safe);
+
+    // 计划步骤直接挂载到当前本轮 assistant 消息的 plan 数组
+    onChatPlan((steps) => {
+      setChat((prev) => {
+        if (prev.length === 0) return prev;
+        const next = [...prev];
+        const lastIdx = next.length - 1;
+        if (next[lastIdx].role === "assistant") {
+          const last = next[lastIdx];
+          next[lastIdx] = { ...last, plan: steps };
+        }
+        return next;
+      });
+      const snap = turnItemsRef.current;
+      const items = [...snap.items];
+      const lastIdx = items.length - 1;
+      if (lastIdx >= 0 && items[lastIdx].role === "assistant") {
+        const last = items[lastIdx];
+        items[lastIdx] = { ...last, plan: steps } as any;
+      }
+      turnItemsRef.current = { convId: snap.convId, items };
     }).then(safe);
     onChatConfirm((req) => {
       setConfirmQueue((prev) => [...prev, req]);
@@ -5246,11 +5334,9 @@ export function App() {
       latestUsage = u;
       setChat((prev) => {
         const next = [...prev];
-        for (let i = next.length - 1; i >= 0; i--) {
-          if (next[i].role === "assistant") {
-            next[i] = { ...next[i], usage: u };
-            break;
-          }
+        const lastIdx = next.length - 1;
+        if (lastIdx >= 0 && next[lastIdx].role === "assistant") {
+          next[lastIdx] = { ...next[lastIdx], usage: u };
         }
         return next;
       });
@@ -5309,52 +5395,29 @@ export function App() {
       // Front-end fallback: ensure assistant message has content and usage attached
       setChat((prev) => {
         if (prev.length === 0) return prev;
-        const next = prev.slice();
-        let foundAssistant = false;
-        for (let i = next.length - 1; i >= 0; i--) {
-          if (next[i].role === "assistant") {
-            foundAssistant = true;
-            const item = next[i];
-            const content = item.content.trim() === "" ? "（操作完成，未生成额外说明）" : item.content;
-            const usage = ("usage" in item && item.usage) || finalUsage || undefined;
-            const dbBinding = ("dbBinding" in item && item.dbBinding) || turnBinding || undefined;
-            next[i] = { ...item, content, usage, dbBinding };
-            break;
-          }
-        }
-        if (!foundAssistant) {
-          next.push({
-            role: "assistant",
-            content: "（操作完成，未生成额外说明）",
-            usage: finalUsage || undefined,
-            dbBinding: turnBinding || undefined,
-          });
+        const next = [...prev];
+        const lastIdx = next.length - 1;
+        if (next[lastIdx].role === "assistant") {
+          const item = next[lastIdx];
+          const content = item.content.trim() === "" ? "（操作完成，未生成额外说明）" : item.content;
+          const usage = ("usage" in item && item.usage) || finalUsage || undefined;
+          const dbBinding = ("dbBinding" in item && item.dbBinding) || turnBinding || undefined;
+          next[lastIdx] = { ...item, content, usage, dbBinding };
         }
         return next;
       });
 
       const convId_ = snap.convId;
       turnItemsRef.current = { convId: null, items: [] };
-      let hasAssistantInSnap = false;
       const patchedItems = snap.items.map((m, i, arr) => {
-        if (m.role === "assistant") {
-          hasAssistantInSnap = true;
+        if (i === arr.length - 1 && m.role === "assistant") {
           const content = m.content.trim() === "" ? "（操作完成，未生成额外说明）" : m.content;
           const usage = (m as any).usage || finalUsage || undefined;
-          const dbBinding =
-            (i === arr.length - 1 && (m as any).dbBinding) || (i === arr.length - 1 ? turnBinding : undefined) || undefined;
+          const dbBinding = (m as any).dbBinding || turnBinding || undefined;
           return { ...m, content, usage, dbBinding };
         }
         return m;
       });
-      if (!hasAssistantInSnap) {
-        patchedItems.push({
-          role: "assistant",
-          content: "（操作完成，未生成额外说明）",
-          usage: finalUsage || undefined,
-          dbBinding: turnBinding || undefined,
-        } as any);
-      }
       const patchedSnap = {
         convId: snap.convId,
         items: patchedItems,
@@ -5364,22 +5427,24 @@ export function App() {
         const msgs: NewChatMessage[] = patchedSnap.items
           .filter((m) => !(m.role === "assistant" && m.content.trim() === ""))
           .map((m) => {
-            if (m.role === "plan") {
-              return { role: "plan", content: m.content, meta: { steps: (m as any).steps } };
-            }
             if (m.role === "ref") {
               return { role: "ref", content: m.content, meta: { refs: (m as any).refs } };
             }
             if (m.role === "assistant") {
               const u = (m as any).usage;
               const b = (m as any).dbBinding;
-              const meta =
-                u || b ? { ...(u ? { usage: u } : {}), ...(b ? { db_binding: b } : {}) } : undefined;
-              return {
-                role: "assistant",
-                content: m.content,
-                meta,
-              };
+              const plan = (m as any).plan;
+              const tools = (m as any).tools;
+              const metaObj =
+                u || b || plan || tools
+                  ? {
+                      ...(u ? { usage: u } : {}),
+                      ...(b ? { db_binding: b } : {}),
+                      ...(plan ? { plan } : {}),
+                      ...(tools ? { tools } : {}),
+                    }
+                  : undefined;
+              return { role: "assistant", content: m.content, meta: metaObj };
             }
             return { role: m.role, content: m.content };
           });
@@ -6050,23 +6115,7 @@ export function App() {
         </div>
         <div className="chat-log">
           {chat.map((m, i) =>
-            m.role === "plan" ? (
-              <div key={i} className="chat-plan">
-                <div className="chat-plan-head">📋 任务执行计划</div>
-                <ol className="chat-plan-steps">
-                  {m.steps.map((s, j) => (
-                    <li key={j}>{s}</li>
-                  ))}
-                </ol>
-              </div>
-            ) :
-            m.role === "tool" ? (
-              <ToolCallCard
-                key={i}
-                content={m.content}
-                onImportSql={(sql) => handleImportToEditor(sql, undefined)}
-              />
-            ) :
+            m.role === "plan" || m.role === "tool" ? null :
             m.role === "ref" ? (
               <div key={i} className="chat-ref">
                 <div className="chat-ref-head">已引用 SQL</div>
@@ -6139,6 +6188,14 @@ export function App() {
                 ) : (
                   <div className="msg-bubble">
                     <div className="msg-role">{roleLabel(m.role)}</div>
+                    {m.role === "assistant" && ("plan" in m || "tools" in m) && (
+                      <ExecutionBlock
+                        plan={(m as any).plan}
+                        tools={(m as any).tools}
+                        isRunning={streaming && i === chat.length - 1}
+                        onImportSql={(sql) => handleImportToEditor(sql, undefined)}
+                      />
+                    )}
                     <div className="msg-body">
                       {streaming && i === chat.length - 1 && !m.content ? (
                         <div className="msg-streaming-indicator">
