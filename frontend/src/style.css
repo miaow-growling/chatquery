@@ -2829,6 +2829,60 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 }
 .chat-plan-steps li::marker { color: var(--text-tertiary); }
 
+/* ---- Tool invocation breadcrumbs (实时执行反馈) ---- */
+.chat-tool-chip {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 95%;
+  padding: 4px 10px;
+  margin: 2px 0;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-secondary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  animation: toolFadeIn 0.2s ease-out;
+}
+.chat-tool-icon {
+  font-size: 11px;
+  color: var(--brand);
+}
+.chat-tool-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@keyframes toolFadeIn {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 正在执行时的动态呼吸占位 */
+.msg-streaming-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  padding: 2px 0;
+}
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--brand);
+  animation: pulseAnim 1.4s ease-in-out infinite;
+}
+@keyframes pulseAnim {
+  0% { transform: scale(0.8); opacity: 0.4; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.8); opacity: 0.4; }
+}
+
 /* ---- SQL references (ADR: Chat 引用 SQL) --------------------------------
    Two placements share one chip: the composer tray (removable, pre-send) and
    the transcript card (read-only, post-send). Same visual language on purpose

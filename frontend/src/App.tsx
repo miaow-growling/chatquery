@@ -5947,13 +5947,22 @@ export function App() {
         </div>
         <div className="chat-log">
           {chat.map((m, i) =>
-            // Hidden roles — the backend still emits them as structured
-            // events (the planner's plan + tool breadcrumbs), but the
-            // user transcript reads cleaner without them. The model
-            // already used the plan internally; the tool calls were
-            // already summarised in the final answer. Showing them
-            // would only add noise to the chat log.
-            m.role === "plan" || m.role === "tool" ? null :
+            m.role === "plan" ? (
+              <div key={i} className="chat-plan">
+                <div className="chat-plan-head">📋 任务执行计划</div>
+                <ol className="chat-plan-steps">
+                  {m.steps.map((s, j) => (
+                    <li key={j}>{s}</li>
+                  ))}
+                </ol>
+              </div>
+            ) :
+            m.role === "tool" ? (
+              <div key={i} className="chat-tool-chip" title={m.content}>
+                <span className="chat-tool-icon">⚡</span>
+                <span className="chat-tool-text">{m.content}</span>
+              </div>
+            ) :
             m.role === "ref" ? (
               <div key={i} className="chat-ref">
                 <div className="chat-ref-head">已引用 SQL</div>
@@ -6027,17 +6036,23 @@ export function App() {
                   <div className="msg-bubble">
                     <div className="msg-role">{roleLabel(m.role)}</div>
                     <div className="msg-body">
-                      <MarkdownMessage
-                        content={m.content || "…"}
-                        onImportSql={(sql) =>
-                          handleImportToEditor(sql, "dbBinding" in m ? m.dbBinding : undefined)
-                        }
-                        onExecuteSql={
-                          m.role === "assistant" && "dbBinding" in m && m.dbBinding
-                            ? (sql) => execChatWriteSql(m.dbBinding!.conn_id, m.dbBinding!.db, sql)
-                            : undefined
-                        }
-                      />
+                      {streaming && i === chat.length - 1 && !m.content ? (
+                        <div className="msg-streaming-indicator">
+                          <span className="pulse-dot" /> 正在分析并执行任务…
+                        </div>
+                      ) : (
+                        <MarkdownMessage
+                          content={m.content || "…"}
+                          onImportSql={(sql) =>
+                            handleImportToEditor(sql, "dbBinding" in m ? m.dbBinding : undefined)
+                          }
+                          onExecuteSql={
+                            m.role === "assistant" && "dbBinding" in m && m.dbBinding
+                              ? (sql) => execChatWriteSql(m.dbBinding!.conn_id, m.dbBinding!.db, sql)
+                              : undefined
+                          }
+                        />
+                      )}
                     </div>
                     {m.role === "assistant" && "dbBinding" in m && m.dbBinding && (
                       <button

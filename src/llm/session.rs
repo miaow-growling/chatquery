@@ -233,6 +233,7 @@ impl Agent {
             if steps.len() == 1 {
                 let step = &steps[0];
                 let role = classify_step(&step.description);
+                let _ = tx.send(BackendMsg::ChatTool(format!("正在执行步骤 {}: {}", step.index, step.description)));
                 let mut worker = Agent::build_worker(
                     role,
                     self.cfg.clone(),
@@ -264,6 +265,7 @@ impl Agent {
                     self.usage = add_usage(self.usage, Some(worker.usage));
                 }
                 if let Some(result) = wres? {
+                    let _ = tx.send(BackendMsg::ChatTool(format!("步骤 {} 完成（{}）", step.index, role.label())));
                     shared_context.push_str(&format!(
                         "步骤 {}（{}）：{}\n\n",
                         step.index,
@@ -275,6 +277,11 @@ impl Agent {
                 }
             } else {
                 // 并发执行同阶段无依赖任务（受 Semaphore(3) 限流保护，兼顾并发与 API 限速）
+                let _ = tx.send(BackendMsg::ChatTool(format!(
+                    "正在并行执行阶段 {}（共 {} 个步骤）…",
+                    _stage_num,
+                    steps.len()
+                )));
                 let sem = Arc::new(tokio::sync::Semaphore::new(3));
                 let mut join_set = tokio::task::JoinSet::new();
 
@@ -300,6 +307,10 @@ impl Agent {
                             return (step, None, TokenUsage::default());
                         }
                         let role = classify_step(&step.description);
+                        let _ = tx_clone.send(BackendMsg::ChatTool(format!(
+                            "正在执行步骤 {}: {}",
+                            step.index, step.description
+                        )));
                         let mut worker = Agent::build_worker(
                             role,
                             cfg,
@@ -329,6 +340,13 @@ impl Agent {
                         let wres = worker.react(wmsg, &tx_clone).await;
                         let usage = worker.usage;
                         let res_text = wres.ok().flatten();
+                        if res_text.is_some() {
+                            let _ = tx_clone.send(BackendMsg::ChatTool(format!(
+                                "步骤 {} 完成（{}）",
+                                step.index,
+                                role.label()
+                            )));
+                        }
                         (step, res_text, usage)
                     });
                 }
@@ -365,6 +383,7 @@ impl Agent {
             return Ok(());
         }
         // Orchestrator 综合所有 Worker 的结果，给用户一个面向结论的回答。
+        let _ = tx.send(BackendMsg::ChatTool("正在综合分析所有步骤结果，整理最终回答…".to_string()));
         if let Some(u) = self.synthesize(&last_user, &plan_desc, &shared_context, tx).await? {
             self.usage = add_usage(self.usage, Some(u));
         }
