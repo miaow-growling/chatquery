@@ -13,6 +13,32 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    const CLI_COMMANDS: &[&str] = &[
+        "env", "group", "conn", "tree", "meta", "query", "redis", "guard", "mcp", "install",
+        "--help", "-h", "--version", "-V",
+    ];
+    let is_cli = args
+        .get(1)
+        .map(|arg| CLI_COMMANDS.contains(&arg.as_str()))
+        .unwrap_or(false);
+    if is_cli {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create tokio runtime for CLI");
+        let dispatched = rt.block_on(async {
+            chatquery::cli::dispatch(Some(args)).await
+        });
+        match dispatched {
+            Ok(_) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("错误: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
     let storage = match Storage::open() {
         Ok(s) => s,
         Err(e) => {
@@ -39,11 +65,20 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            // 启动时静默检查并建立 ~/.local/bin/chatquery 软链接
+            #[cfg(unix)]
+            let _ = chatquery::cli::install::ensure_cli_symlink();
+
             // macOS 应用菜单中文化：Tauri 默认菜单是英文（About/Hide/Quit 等，
             // 应用未声明本地化时系统不翻译）。这里用预定义菜单项（行为不变）
             // + 中文文案整体重建菜单。
-            use tauri::menu::{AboutMetadata, MenuBuilder, SubmenuBuilder};
+            use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
             let handle = app.handle();
+            let install_cli = MenuItemBuilder::with_id(
+                "install_cli",
+                "安装/修复命令行工具 (chatquery)",
+            )
+            .build(handle)?;
 
             let app_submenu = SubmenuBuilder::new(handle, "智询")
                 .about_with_text(
@@ -54,6 +89,8 @@ fn main() {
                         ..Default::default()
                     }),
                 )
+                .separator()
+                .item(&install_cli)
                 .separator()
                 .services_with_text("服务")
                 .separator()
@@ -95,6 +132,20 @@ fn main() {
                 .build()?;
             handle.set_menu(menu)?;
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == "install_cli" {
+                use tauri_plugin_dialog::DialogExt;
+                let message = match chatquery::cli::install::ensure_cli_symlink() {
+                    Ok(Some(path)) => format!("命令行工具已就绪：{}", path.display()),
+                    Ok(None) => "当前平台不需要安装软链接".to_string(),
+                    Err(err) => format!("未修改现有文件：{}", err),
+                };
+                app.dialog()
+                    .message(message)
+                    .title("ChatQuery 命令行工具")
+                    .show(|_| {});
+            }
         })
         .manage(AppState {
             store: Arc::new(Mutex::new(store)),

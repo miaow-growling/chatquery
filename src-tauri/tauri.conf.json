@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.chatquery.app",
   "build": {
-    "beforeDevCommand": "npm --prefix /Users/hel04/Desktop/mycode/chatquery/frontend run dev",
+    "beforeDevCommand": "npm --prefix ../frontend run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm --prefix /Users/hel04/Desktop/mycode/chatquery/frontend run build",
+    "beforeBuildCommand": "npm --prefix ../frontend run build",
     "frontendDist": "../frontend/dist"
   },
   "app": {
@@ -35,7 +35,10 @@
       "icons/icon.ico"
     ],
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": "all",
+    "resources": {
+      "scripts/php_unserialize.py": "php_unserialize.py"
+    },
     "macOS": {
       "minimumSystemVersion": "10.15",
       "frameworks": [],

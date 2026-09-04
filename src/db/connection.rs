@@ -1,5 +1,5 @@
-use crate::error::Result;
 use crate::db::container::{Container, ContainerKind};
+use crate::error::Result;
 use crate::store::{QueryGroup, QueryRow, Storage};
 use serde::{Deserialize, Serialize};
 
@@ -103,7 +103,7 @@ impl ConnectionStore {
                     } else {
                         lc.group.trim()
                     };
-                    let env_id = ensure_env(&mut containers, &storage, env_name)?;
+                    let env_id = ensure_env(&mut containers, &storage, env_name, lc.db_type)?;
                     ensure_group(&mut containers, &storage, &env_id, grp_name)?
                 }
             };
@@ -116,16 +116,16 @@ impl ConnectionStore {
                 user: lc.user,
                 password: lc.password,
                 database: lc.database,
-                ssl_mode: String::new(),
-                ssl_ca: String::new(),
-                client_cert: String::new(),
-                client_key: String::new(),
-                ssh_host: String::new(),
-                ssh_port: 22,
-                ssh_user: String::new(),
-                ssh_auth_kind: String::new(),
-                ssh_password: String::new(),
-                ssh_private_key: String::new(),
+                ssl_mode: lc.ssl_mode,
+                ssl_ca: lc.ssl_ca,
+                client_cert: lc.client_cert,
+                client_key: lc.client_key,
+                ssh_host: lc.ssh_host,
+                ssh_port: lc.ssh_port,
+                ssh_user: lc.ssh_user,
+                ssh_auth_kind: lc.ssh_auth_kind,
+                ssh_password: lc.ssh_password,
+                ssh_private_key: lc.ssh_private_key,
                 group_id: Some(group_id),
             });
         }
@@ -236,8 +236,7 @@ impl ConnectionStore {
         conn_id: Option<&str>,
         db: Option<&str>,
     ) -> Result<String> {
-        self.storage
-            .save_query(id, name, sql, conn_id, db)
+        self.storage.save_query(id, name, sql, conn_id, db)
     }
 
     // --- Knowledge base (ADR-AI-6) -----------------------------------------
@@ -279,7 +278,8 @@ impl ConnectionStore {
         sql: &str,
         decision: &str,
     ) -> Result<()> {
-        self.storage.add_audit(conn_id, conn_name, db, sql, decision)
+        self.storage
+            .add_audit(conn_id, conn_name, db, sql, decision)
     }
     pub fn list_audits(
         &self,
@@ -290,9 +290,7 @@ impl ConnectionStore {
 
     // --- Conversations (docs/chat-conversation-design.md) ------------------
 
-    pub fn list_conversations(
-        &self,
-    ) -> Result<Vec<crate::model::ConversationSummary>> {
+    pub fn list_conversations(&self) -> Result<Vec<crate::model::ConversationSummary>> {
         self.storage.list_conversations()
     }
     pub fn create_conversation(
@@ -313,7 +311,10 @@ impl ConnectionStore {
         id: &str,
         offset: i64,
         limit: i64,
-    ) -> Result<(crate::model::ConversationSummary, Vec<crate::model::StoredChatMessage>)> {
+    ) -> Result<(
+        crate::model::ConversationSummary,
+        Vec<crate::model::StoredChatMessage>,
+    )> {
         self.storage.get_conversation(id, offset, limit)
     }
     pub fn append_chat_messages(
@@ -350,9 +351,11 @@ impl ConnectionStore {
     }
 
     pub fn create_group(&mut self, env_id: &str, name: &str) -> Result<String> {
-        if !self.containers.iter().any(|c| {
-            c.kind == ContainerKind::Env && c.id == env_id
-        }) {
+        if !self
+            .containers
+            .iter()
+            .any(|c| c.kind == ContainerKind::Env && c.id == env_id)
+        {
             return Err(crate::error::AppError::Msg(format!(
                 "环境不存在: {}",
                 env_id
@@ -376,24 +379,40 @@ impl ConnectionStore {
     /// import so connections merge into existing containers instead of
     /// duplicating them.
     pub fn ensure_env(&mut self, name: &str, db_type: Option<DbType>) -> Result<String> {
-        if let Some(c) = self.containers.iter().find(|c| {
-            c.kind == ContainerKind::Env && c.name == name && c.db_type == db_type
-        }) {
-            return Ok(c.id.clone());
+        let matches: Vec<_> = self
+            .containers
+            .iter()
+            .filter(|c| c.kind == ContainerKind::Env && c.name == name && c.db_type == db_type)
+            .collect();
+        match matches.as_slice() {
+            [c] => Ok(c.id.clone()),
+            [] => self.create_env(name, db_type),
+            _ => Err(crate::error::AppError::Msg(format!(
+                "环境名称 '{}' 存在重名，请使用环境 ID",
+                name
+            ))),
         }
-        self.create_env(name, db_type)
     }
 
     /// Find a group by (env, name), creating it if missing.
     pub fn ensure_group(&mut self, env_id: &str, name: &str) -> Result<String> {
-        if let Some(c) = self.containers.iter().find(|c| {
-            c.kind == ContainerKind::Group
-                && c.parent.as_deref() == Some(env_id)
-                && c.name == name
-        }) {
-            return Ok(c.id.clone());
+        let matches: Vec<_> = self
+            .containers
+            .iter()
+            .filter(|c| {
+                c.kind == ContainerKind::Group
+                    && c.parent.as_deref() == Some(env_id)
+                    && c.name == name
+            })
+            .collect();
+        match matches.as_slice() {
+            [c] => Ok(c.id.clone()),
+            [] => self.create_group(env_id, name),
+            _ => Err(crate::error::AppError::Msg(format!(
+                "分组名称 '{}' 在该环境下存在重名，请使用分组 ID",
+                name
+            ))),
         }
-        self.create_group(env_id, name)
     }
 
     pub fn rename_container(&mut self, id: &str, name: &str) -> Result<()> {
@@ -426,10 +445,11 @@ impl ConnectionStore {
                         "该环境还有分组，请先删除分组".into(),
                     ));
                 }
-                let used = self
-                    .connections
-                    .iter()
-                    .any(|c| child_groups.iter().any(|g| c.group_id.as_deref() == Some(g)));
+                let used = self.connections.iter().any(|c| {
+                    child_groups
+                        .iter()
+                        .any(|g| c.group_id.as_deref() == Some(g))
+                });
                 if used {
                     return Err(crate::error::AppError::Msg(
                         "该环境还有连接，请先移除连接".into(),
@@ -437,7 +457,11 @@ impl ConnectionStore {
                 }
             }
             ContainerKind::Group => {
-                if self.connections.iter().any(|c| c.group_id.as_deref() == Some(id)) {
+                if self
+                    .connections
+                    .iter()
+                    .any(|c| c.group_id.as_deref() == Some(id))
+                {
                     return Err(crate::error::AppError::Msg(
                         "该分组还有连接，请先移除连接".into(),
                     ));
@@ -448,6 +472,20 @@ impl ConnectionStore {
         self.containers.retain(|c| c.id != id);
         Ok(())
     }
+
+    pub fn delete_topology_force(
+        &mut self,
+        connection_ids: &[String],
+        container_ids: &[String],
+    ) -> Result<()> {
+        self.storage
+            .delete_topology_atomic(connection_ids, container_ids)?;
+        self.connections
+            .retain(|c| !connection_ids.iter().any(|id| id == &c.id));
+        self.containers
+            .retain(|c| !container_ids.iter().any(|id| id == &c.id));
+        Ok(())
+    }
 }
 
 /// Find an environment by name, creating it (and recording it) if missing.
@@ -455,19 +493,20 @@ fn ensure_env(
     containers: &mut Vec<Container>,
     storage: &Storage,
     name: &str,
+    db_type: DbType,
 ) -> Result<String> {
     if let Some(c) = containers
         .iter()
-        .find(|c| c.kind == ContainerKind::Env && c.name == name)
+        .find(|c| c.kind == ContainerKind::Env && c.name == name && c.db_type == Some(db_type))
     {
         return Ok(c.id.clone());
     }
-    let id = storage.create_container(ContainerKind::Env, name, None, None)?;
+    let id = storage.create_container(ContainerKind::Env, name, None, Some(db_type))?;
     containers.push(Container {
         id: id.clone(),
         kind: ContainerKind::Env,
         name: name.to_string(),
-        db_type: None,
+        db_type: Some(db_type),
         parent: None,
         ord: 0,
     });
@@ -482,9 +521,7 @@ fn ensure_group(
     name: &str,
 ) -> Result<String> {
     if let Some(c) = containers.iter().find(|c| {
-        c.kind == ContainerKind::Group
-            && c.parent.as_deref() == Some(env_id)
-            && c.name == name
+        c.kind == ContainerKind::Group && c.parent.as_deref() == Some(env_id) && c.name == name
     }) {
         return Ok(c.id.clone());
     }

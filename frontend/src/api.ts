@@ -24,6 +24,7 @@ import type {
   NewChatMessage,
   QueryItem,
   QueryOutput,
+  RedisDbInfo,
   Schema,
   SqlReference,
   StatusInfo,
@@ -137,7 +138,7 @@ export const api = {
   listDatabases: (connId: string) =>
     invoke<string[]>("list_databases", { connId }),
   listRedisDbs: (connId: string) =>
-    invoke<number[]>("list_redis_dbs", { connId }),
+    invoke<RedisDbInfo[]>("list_redis_dbs", { connId }),
   listTables: (connId: string, database: string) =>
     invoke<TableMeta[]>("list_tables", { connId, database }),
   // Lazy, bounded table search for the editor autocomplete + tree folder

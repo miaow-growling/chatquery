@@ -1009,7 +1009,7 @@ pub async fn list_databases(
 pub async fn list_redis_dbs(
     state: State<'_, AppState>,
     conn_id: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<chatquery::db::redis::RedisDbInfo>, String> {
     let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
     chatquery::db::redis::list_dbs(&cfg)
         .await

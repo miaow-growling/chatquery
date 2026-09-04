@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback, type FormEvent } from "react";
+import { useEffect, useState, useCallback, useMemo, type FormEvent } from "react";
 import { api } from "./api";
-import type { KeyMeta, QueryOutput, RedisValueView } from "./types";
+import type { KeyMeta, QueryOutput, RedisDbInfo, RedisValueView } from "./types";
 import { Icon } from "./components/ui";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -71,7 +71,7 @@ export interface RedisBrowserProps {
 
 export function RedisBrowser({ connId, db: initialDb, showToast }: RedisBrowserProps) {
   // db 选择
-  const [dbList, setDbList] = useState<number[]>([]);
+  const [dbList, setDbList] = useState<RedisDbInfo[]>([]);
   const [db, setDb] = useState(initialDb);
 
   // key 列表
@@ -101,9 +101,23 @@ export function RedisBrowser({ connId, db: initialDb, showToast }: RedisBrowserP
   const [deleting, setDeleting] = useState(false);
 
   // ── load db list ──
-  useEffect(() => {
-    api.listRedisDbs(connId).then((dbs) => setDbList(dbs.map(Number))).catch(() => {});
+  const loadDbList = useCallback(() => {
+    if (!connId) return;
+    api.listRedisDbs(connId).then((dbs) => setDbList(dbs)).catch(() => {});
   }, [connId]);
+
+  useEffect(() => {
+    loadDbList();
+  }, [loadDbList]);
+
+  const dbOptions = useMemo(() => {
+    if (dbList.length === 0) return [{ db, keys: 0 }];
+    const hasCurrent = dbList.some((item) => item.db === db);
+    if (!hasCurrent) {
+      return [...dbList, { db, keys: 0 }].sort((a, b) => a.db - b.db);
+    }
+    return dbList;
+  }, [dbList, db]);
 
   // ── load keys ──
   const loadKeys = useCallback(async () => {
@@ -155,6 +169,7 @@ export function RedisBrowser({ connId, db: initialDb, showToast }: RedisBrowserP
       // remove from list
       setKeys((prev) => prev.filter((k) => k.key !== deleteTarget.key));
       setKeyTotal((prev) => prev - 1);
+      loadDbList();
       if (selectedKey === deleteTarget.key) {
         setSelectedKey(null);
         setValueResult(null);
@@ -426,13 +441,15 @@ export function RedisBrowser({ connId, db: initialDb, showToast }: RedisBrowserP
           <span className="rb-db-label">
             DB
             <select value={db} onChange={(e) => { setDb(Number(e.target.value)); setSelectedKey(null); setValueResult(null); }}>
-              {dbList.map((d) => (
-                <option key={d} value={d}>db{d}</option>
+              {dbOptions.map((item) => (
+                <option key={item.db} value={item.db}>
+                  db{item.db} ({item.keys})
+                </option>
               ))}
             </select>
           </span>
           {tab === "browser" && (
-            <button className="rb-btn" onClick={loadKeys} disabled={keysLoading}>
+            <button className="rb-btn" onClick={() => { loadKeys(); loadDbList(); }} disabled={keysLoading}>
               {keysLoading ? "⏳ 刷新中" : "↻ 刷新"}
             </button>
           )}

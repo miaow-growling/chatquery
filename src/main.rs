@@ -1,94 +1,32 @@
 use anyhow::Result as AnyResult;
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io;
 use tokio::sync::mpsc;
 
-use chatquery::db::connection::{ConnectionConfig, ConnectionStore, DbType};
 use chatquery::model::{BackendMsg, DisplayResult};
 use chatquery::store::Storage;
 use chatquery::tui::app::App;
 use chatquery::tui::event::{self, InputEvent};
 use chatquery::tui::ui;
 
-#[derive(Parser)]
-#[command(name = "chatquery", about = "本地数据库终端工具 (Navicat 替代品)")]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// 添加一个数据库连接并持久化到本地 SQLite
-    Add(AddArgs),
-}
-
-#[derive(Args)]
-struct AddArgs {
-    #[arg(long)] name: String,
-    #[arg(long, value_enum)] r#type: DbTypeArg,
-    #[arg(long)] host: String,
-    #[arg(long, default_value_t = 0)] port: u16,
-    #[arg(long, default_value = "")] user: String,
-    #[arg(long, default_value = "")] password: String,
-    #[arg(long, default_value = "")] database: String,
-}
-
-#[derive(ValueEnum, Clone, Copy)]
-enum DbTypeArg {
-    Mysql,
-    Redis,
-}
-
-impl From<DbTypeArg> for DbType {
-    fn from(v: DbTypeArg) -> Self {
-        match v {
-            DbTypeArg::Mysql => DbType::Mysql,
-            DbTypeArg::Redis => DbType::Redis,
-        }
-    }
-}
-
 fn main() -> AnyResult<()> {
-    let cli = Cli::parse();
-    let storage = Storage::open()?;
-
-    if let Some(Commands::Add(a)) = cli.command {
-        let mut store = ConnectionStore::load(storage)?;
-        store.add(ConnectionConfig {
-            id: String::new(),
-            name: a.name,
-            db_type: a.r#type.into(),
-            host: a.host,
-            port: a.port,
-            user: a.user,
-            password: a.password,
-            database: a.database,
-            ssl_mode: String::new(),
-            ssl_ca: String::new(),
-            client_cert: String::new(),
-            client_key: String::new(),
-            ssh_host: String::new(),
-            ssh_port: 22,
-            ssh_user: String::new(),
-            ssh_auth_kind: String::new(),
-            ssh_password: String::new(),
-            ssh_private_key: String::new(),
-            group_id: None,
-        })?;
-        println!("connection saved");
-        return Ok(());
-    }
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+
+    // 优先尝试分发 CLI / MCP 子命令
+    let handled = runtime.block_on(async { chatquery::cli::dispatch(None).await })?;
+
+    if handled {
+        return Ok(());
+    }
+
+    let storage = Storage::open()?;
 
     runtime.block_on(async move {
         let mut app = App::new(storage)?;
@@ -155,8 +93,6 @@ async fn run_app(
                 }
                 BackendMsg::ChatToken(s) => app.push_chat_token(&s),
                 BackendMsg::ChatTool(info) => app.push_chat_tool(info),
-                // The TUI has no plan card / confirm modal yet: render the
-                // plan inline and note the (auto-refused) confirmation.
                 BackendMsg::ChatPlan(steps) => {
                     app.push_chat_token(&format!(
                         "\n📋 执行计划：\n{}\n",
@@ -170,7 +106,14 @@ async fn run_app(
                 BackendMsg::ChatUsage(_u) => {}
                 BackendMsg::ConnHealth(id, ok) => {
                     use chatquery::tui::app::ConnStatus;
-                    app.conn_status.insert(id, if ok { ConnStatus::Connected } else { ConnStatus::Failed });
+                    app.conn_status.insert(
+                        id,
+                        if ok {
+                            ConnStatus::Connected
+                        } else {
+                            ConnStatus::Failed
+                        },
+                    );
                 }
                 BackendMsg::Error(e) => {
                     app.status = format!("error: {}", e);

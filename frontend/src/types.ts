@@ -137,6 +137,11 @@ export interface KeyMeta {
   size?: number;
 }
 
+export interface RedisDbInfo {
+  db: number;
+  keys: number;
+}
+
 export interface ColumnInfo {
   name: string;
   data_type: string;

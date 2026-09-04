@@ -153,11 +153,12 @@ async function loader(node: Node): Promise<LoadResult | null> {
       if (node.conn.db_type === "redis") {
         const dbs = await api.listRedisDbs(node.conn.id);
         return {
-          nodes: dbs.map((db) => ({
+          nodes: dbs.map((item) => ({
             kind: "redisdb",
-            key: `rdb:${node.conn.id}:${db}`,
+            key: `rdb:${node.conn.id}:${item.db}`,
             connId: node.conn.id,
-            db,
+            db: item.db,
+            count: item.keys,
           })),
           count: dbs.length,
         };
@@ -657,7 +658,10 @@ export function Tree(props: TreeProps) {
           { type: "item", label: "复制列名", onClick: () => copy(node.col.name) },
         ];
       case "redisdb":
-        return [{ type: "item", label: "刷新", onClick: () => refreshNode(node) }];
+        return [
+          { type: "item", label: "打开查询", onClick: () => props.onNewQuery?.(node.connId, String(node.db)) },
+          { type: "item", label: "刷新", onClick: () => refreshNode(node) },
+        ];
       case "env": {
         if (isSynthetic(node.id))
           return [{ type: "item", label: "刷新连接列表", onClick: () => props.onRefreshConns() }];
@@ -704,7 +708,7 @@ export function Tree(props: TreeProps) {
       case "db":
         return node.db;
       case "redisdb":
-        return `db${node.db}`;
+        return node.count !== undefined ? `db${node.db} (${node.count})` : `db${node.db}`;
       case "folder":
         return node.label;
       case "table":
@@ -720,6 +724,8 @@ export function Tree(props: TreeProps) {
         return node.conn.id === selectedConnId;
       case "db":
         return node.connId === selectedConnId && node.db === (selectedDb ?? "");
+      case "redisdb":
+        return node.connId === selectedConnId && String(node.db) === (selectedDb ?? "");
       default:
         return false;
     }
@@ -745,6 +751,7 @@ export function Tree(props: TreeProps) {
     const onRowClick = () => {
       if (node.kind === "conn") props.onSelectConn(node.conn.id);
       if (node.kind === "db") props.onSelectDb?.(node.connId, node.db);
+      if (node.kind === "redisdb") props.onSelectDb?.(node.connId, String(node.db));
     };
 
     const onLabelClick = (e: React.MouseEvent) => {
@@ -762,6 +769,8 @@ export function Tree(props: TreeProps) {
         ? "双击插入到编辑器"
         : node.kind === "table"
         ? "双击浏览数据（点 ▸ 可展开字段，右键更多操作）"
+        : node.kind === "redisdb"
+        ? "单击选中，双击打开查询"
         : node.kind === "env" || node.kind === "group"
         ? "右键可新建组 / 新建链接 / 重命名 / 删除"
         : node.kind === "conn"
@@ -783,6 +792,8 @@ export function Tree(props: TreeProps) {
               props.onBrowseTable(node.connId, node.db, node.name, 0, PAGE_SIZE);
             } else if (node.kind === "column") {
               props.onInsertColumn(node.col.name);
+            } else if (node.kind === "redisdb") {
+              props.onNewQuery?.(node.connId, String(node.db));
             }
           }}
           title={title}

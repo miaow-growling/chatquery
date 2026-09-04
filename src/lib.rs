@@ -5,6 +5,7 @@
 // `tui` feature) and the Tauri desktop frontend (`src-tauri/`) both consume
 // this crate — the backend is written once and shared.
 
+pub mod cli;
 pub mod config;
 pub mod crypto;
 pub mod db;

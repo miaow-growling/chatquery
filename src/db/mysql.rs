@@ -1,10 +1,10 @@
 use crate::db::connection::ConnectionConfig;
 use crate::error::{AppError, Result};
 use futures::TryStreamExt;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlSslMode};
 use sqlx::types::chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use regex::Regex;
 use sqlx::{Column, Row, TypeInfo, ValueRef};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
@@ -213,9 +213,15 @@ async fn query_once(
     // (frontend already splits them, so this only guards direct callers).
     if !is_read_query(sql) && !has_unquoted_semicolon(sql.trim().trim_end_matches(';')) {
         let done = if text_mode {
-            sqlx::raw_sql(sql).execute(&pool).await.map_err(AppError::Sqlx)?
+            sqlx::raw_sql(sql)
+                .execute(&pool)
+                .await
+                .map_err(AppError::Sqlx)?
         } else {
-            sqlx::query(sql).execute(&pool).await.map_err(AppError::Sqlx)?
+            sqlx::query(sql)
+                .execute(&pool)
+                .await
+                .map_err(AppError::Sqlx)?
         };
         return Ok(QueryResult {
             columns: vec![],
@@ -439,21 +445,109 @@ fn is_select_query(sql: &str) -> bool {
     !has_unquoted_semicolon(no_tail)
 }
 
-/// True for statements that return a result set or otherwise read state —
-/// everything else (INSERT/UPDATE/DELETE/REPLACE/CREATE/ALTER/DROP/TRUNCATE/
-/// GRANT/SET/CALL/...) is a write and should be executed via `execute` so the
-/// caller learns rows_affected / last_insert_id.
-pub fn is_read_query(sql: &str) -> bool {
+/// Return the effective top-level statement keyword. For a CTE, this is the
+/// verb after the CTE definitions rather than `WITH`, so `WITH ... DELETE` is
+/// never mistaken for a read.
+pub fn statement_keyword(sql: &str) -> String {
     let no_tail = sql.trim().trim_end_matches(';').trim();
     let body = skip_leading_inline_comment(no_tail);
-    // Decide by the FIRST keyword only — a formatted `SELECT\n  col…` has a
-    // newline after SELECT, which a `starts_with("SELECT ")` check misses and
-    // the query would be misrouted down the write path ("写操作执行成功").
-    let up = body.to_ascii_uppercase();
-    let first = up.split(|c: char| c.is_whitespace()).next().unwrap_or("");
+    let first = body
+        .split(|c: char| c.is_whitespace())
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    if first != "WITH" {
+        return first;
+    }
+
+    let bytes = body.as_bytes();
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut i = 4usize;
+    let mut closed_cte = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' | b'`' => {
+                quote = Some(b);
+                i += 1;
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 {
+                        closed_cte = true;
+                    }
+                }
+                i += 1;
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+            }
+            _ if depth == 0 && closed_cte && (b as char).is_ascii_alphabetic() => {
+                let start = i;
+                while i < bytes.len()
+                    && ((bytes[i] as char).is_ascii_alphanumeric() || bytes[i] == b'_')
+                {
+                    i += 1;
+                }
+                let word = body[start..i].to_ascii_uppercase();
+                if matches!(
+                    word.as_str(),
+                    "SELECT"
+                        | "INSERT"
+                        | "UPDATE"
+                        | "DELETE"
+                        | "REPLACE"
+                        | "CREATE"
+                        | "ALTER"
+                        | "DROP"
+                        | "TRUNCATE"
+                        | "SHOW"
+                        | "EXPLAIN"
+                        | "CALL"
+                ) {
+                    return word;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+
+    // Unknown CTE shape: fail closed and route it as a write/non-read.
+    "WITH".to_string()
+}
+
+/// True for statements that return a result set or otherwise read state.
+pub fn is_read_query(sql: &str) -> bool {
     matches!(
-        first,
-        "SELECT" | "WITH" | "SHOW" | "EXPLAIN" | "DESC" | "DESCRIBE" | "PRAGMA" | "HELP"
+        statement_keyword(sql).as_str(),
+        "SELECT" | "SHOW" | "EXPLAIN" | "DESC" | "DESCRIBE" | "PRAGMA" | "HELP"
     )
 }
 
@@ -468,6 +562,11 @@ fn skip_leading_inline_comment(s: &str) -> &str {
     } else {
         s
     }
+}
+
+pub fn is_single_statement(sql: &str) -> bool {
+    let body = sql.trim().trim_end_matches(';').trim_end();
+    !has_unquoted_semicolon(body)
 }
 
 /// True if the SQL contains a statement-terminating semicolon outside of
@@ -561,7 +660,9 @@ fn to_hex(bytes: &[u8]) -> String {
 /// payload is plain text — those columns land in the Vec<u8> branch too.
 fn bytes_to_display(bytes: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(bytes) {
-        if s.chars().all(|c| !c.is_control() || c == '\t' || c == '\n' || c == '\r') {
+        if s.chars()
+            .all(|c| !c.is_control() || c == '\t' || c == '\n' || c == '\r')
+        {
             return s.to_string();
         }
     }
@@ -573,10 +674,21 @@ fn bytes_to_display(bytes: &[u8]) -> String {
 /// export tool. Returns a string so it's unit-testable.
 pub fn to_csv(r: &QueryResult) -> String {
     let mut s = String::new();
-    s.push_str(&r.columns.iter().map(|c| csv_field(c)).collect::<Vec<_>>().join(","));
+    s.push_str(
+        &r.columns
+            .iter()
+            .map(|c| csv_field(c))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
     s.push('\n');
     for row in &r.rows {
-        s.push_str(&row.iter().map(|v| csv_field(v)).collect::<Vec<_>>().join(","));
+        s.push_str(
+            &row.iter()
+                .map(|v| csv_field(v))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         s.push('\n');
     }
     s
@@ -645,7 +757,11 @@ fn pool_key(cfg: &ConnectionConfig, database: &str) -> String {
 async fn connect_raw(cfg: &ConnectionConfig, database: &str) -> Result<MySqlPool> {
     // 空 database 时不指定默认库（MySQL 协议允许无当前库连接），避免无权访问
     // mysql 系统库的托管账号报 Access denied。
-    let db = if database.is_empty() { None } else { Some(database) };
+    let db = if database.is_empty() {
+        None
+    } else {
+        Some(database)
+    };
 
     // SSH 隧道：把逻辑目标 (cfg.host:cfg.port) 替换为本地转发端口。
     let (host, port) = if !cfg.ssh_host.is_empty() {
@@ -823,8 +939,9 @@ fn ensure_ssh_tunnel(key: &str, cfg: &ConnectionConfig) -> Result<u16> {
         // 用 sshpass 透传密码（注意：密码会出现在进程参数中，仅适合本地桌面工具）。
         let mut c = Command::new("sshpass");
         c.arg("-p").arg(&cfg.ssh_password).arg("ssh").args(&args);
-        c.spawn()
-            .map_err(|e| AppError::Msg(format!("无法启动 sshpass/ssh（请确认已安装 sshpass）: {e}")))?
+        c.spawn().map_err(|e| {
+            AppError::Msg(format!("无法启动 sshpass/ssh（请确认已安装 sshpass）: {e}"))
+        })?
     } else {
         let mut c = Command::new("ssh");
         c.args(&args);
@@ -835,10 +952,10 @@ fn ensure_ssh_tunnel(key: &str, cfg: &ConnectionConfig) -> Result<u16> {
     // 轮询本地端口直到转发就绪（有界等待，最长 3s），避免 ssh 尚未 bind 就连接。
     wait_for_local_port(local_port, Duration::from_secs(3))?;
 
-    ssh_tunnels().lock().unwrap().insert(
-        key.to_string(),
-        SshTunnel { child, local_port },
-    );
+    ssh_tunnels()
+        .lock()
+        .unwrap()
+        .insert(key.to_string(), SshTunnel { child, local_port });
     Ok(local_port)
 }
 
@@ -1042,26 +1159,31 @@ pub struct TableMeta {
 
 /// List non-system databases on the server (Navicat's "database" level).
 pub async fn list_databases(cfg: &ConnectionConfig) -> Result<Vec<String>> {
-    with_stale_retry("mysql.list_databases", cfg, &cfg.database, |_attempt| async {
-        // 只查 INFORMATION_SCHEMA，无需（也不应）连接 mysql 系统库——托管账号往往
-        // 对 mysql 库无权限。走默认连接（空库或无库连接均可）。
-        let pool = connect_pool(cfg).await?;
-        // CAST SCHEMA_NAME to CHAR: INFORMATION_SCHEMA columns use a binary charset
-        // and would decode as SQL type BINARY, incompatible with Rust String.
-        let rows = sqlx::query(
-            "SELECT CAST(SCHEMA_NAME AS CHAR) AS SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA \
+    with_stale_retry(
+        "mysql.list_databases",
+        cfg,
+        &cfg.database,
+        |_attempt| async {
+            // 只查 INFORMATION_SCHEMA，无需（也不应）连接 mysql 系统库——托管账号往往
+            // 对 mysql 库无权限。走默认连接（空库或无库连接均可）。
+            let pool = connect_pool(cfg).await?;
+            // CAST SCHEMA_NAME to CHAR: INFORMATION_SCHEMA columns use a binary charset
+            // and would decode as SQL type BINARY, incompatible with Rust String.
+            let rows = sqlx::query(
+                "SELECT CAST(SCHEMA_NAME AS CHAR) AS SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA \
              WHERE SCHEMA_NAME NOT IN ('information_schema','performance_schema','mysql','sys') \
              ORDER BY SCHEMA_NAME",
-        )
-        .fetch_all(&pool)
-        .await
-        .map_err(AppError::Sqlx)?;
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            out.push(row.try_get("SCHEMA_NAME").map_err(AppError::Sqlx)?);
-        }
-        Ok(out)
-    })
+            )
+            .fetch_all(&pool)
+            .await
+            .map_err(AppError::Sqlx)?;
+            let mut out = Vec::with_capacity(rows.len());
+            for row in rows {
+                out.push(row.try_get("SCHEMA_NAME").map_err(AppError::Sqlx)?);
+            }
+            Ok(out)
+        },
+    )
     .await
 }
 
@@ -1636,12 +1758,16 @@ pub async fn list_relationships(
     cfg: &ConnectionConfig,
     database: &str,
 ) -> Result<Vec<ForeignKeyInfo>> {
-    with_stale_retry("mysql.list_relationships", cfg, database, |_attempt| async {
-        let pool = connect_pool_db(cfg, database).await?;
-        // CAST every INFORMATION_SCHEMA text column to CHAR: they use a binary
-        // charset and would decode as SQL type BINARY, incompatible with Rust String.
-        let rows = sqlx::query(
-            "SELECT CAST(CONSTRAINT_NAME AS CHAR) AS CONSTRAINT_NAME, \
+    with_stale_retry(
+        "mysql.list_relationships",
+        cfg,
+        database,
+        |_attempt| async {
+            let pool = connect_pool_db(cfg, database).await?;
+            // CAST every INFORMATION_SCHEMA text column to CHAR: they use a binary
+            // charset and would decode as SQL type BINARY, incompatible with Rust String.
+            let rows = sqlx::query(
+                "SELECT CAST(CONSTRAINT_NAME AS CHAR) AS CONSTRAINT_NAME, \
                     CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, \
                     CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, \
                     CAST(REFERENCED_TABLE_NAME AS CHAR) AS REFERENCED_TABLE_NAME, \
@@ -1649,31 +1775,34 @@ pub async fn list_relationships(
              FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
              WHERE TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME IS NOT NULL \
              ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION",
-        )
-        .bind(database)
-        .fetch_all(&pool)
-        .await
-        .map_err(AppError::Sqlx)?;
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let constraint_name: String =
-                row.try_get("CONSTRAINT_NAME").map_err(AppError::Sqlx)?;
-            let table_name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
-            let column_name: String = row.try_get("COLUMN_NAME").map_err(AppError::Sqlx)?;
-            let referenced_table: String =
-                row.try_get("REFERENCED_TABLE_NAME").map_err(AppError::Sqlx)?;
-            let referenced_column: String =
-                row.try_get("REFERENCED_COLUMN_NAME").map_err(AppError::Sqlx)?;
-            out.push(ForeignKeyInfo {
-                constraint_name,
-                table_name,
-                column_name,
-                referenced_table,
-                referenced_column,
-            });
-        }
-        Ok(out)
-    })
+            )
+            .bind(database)
+            .fetch_all(&pool)
+            .await
+            .map_err(AppError::Sqlx)?;
+            let mut out = Vec::with_capacity(rows.len());
+            for row in rows {
+                let constraint_name: String =
+                    row.try_get("CONSTRAINT_NAME").map_err(AppError::Sqlx)?;
+                let table_name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
+                let column_name: String = row.try_get("COLUMN_NAME").map_err(AppError::Sqlx)?;
+                let referenced_table: String = row
+                    .try_get("REFERENCED_TABLE_NAME")
+                    .map_err(AppError::Sqlx)?;
+                let referenced_column: String = row
+                    .try_get("REFERENCED_COLUMN_NAME")
+                    .map_err(AppError::Sqlx)?;
+                out.push(ForeignKeyInfo {
+                    constraint_name,
+                    table_name,
+                    column_name,
+                    referenced_table,
+                    referenced_column,
+                });
+            }
+            Ok(out)
+        },
+    )
     .await
 }
 
@@ -1763,11 +1892,7 @@ pub async fn explain_visual(
         match row {
             Some(r) => {
                 // FORMAT=JSON 返回单列 "EXPLAIN"（MySQL 8）或 "QUERY PLAN"（MariaDB）。
-                let text: String = match r
-                    .try_get::<Option<String>, _>(0)
-                    .ok()
-                    .flatten()
-                {
+                let text: String = match r.try_get::<Option<String>, _>(0).ok().flatten() {
                     Some(t) => t,
                     None => r
                         .try_get::<String, _>(0)
@@ -1908,7 +2033,11 @@ fn parse_table(t: &serde_json::Value) -> ExplainNode {
         .and_then(|x| x.as_str())
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(0.0);
-    let key = t.get("key").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let key = t
+        .get("key")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
     let possible_keys = t
         .get("possible_keys")
         .and_then(|x| x.as_array())
@@ -1966,7 +2095,10 @@ mod tests {
     fn binary_column_with_plain_text_shows_text() {
         assert_eq!(bytes_to_display(b"aliyun:glm-5.1"), "aliyun:glm-5.1");
         // 中文、含制表换行的文本同样直出
-        assert_eq!(bytes_to_display("模型名\n\taliyun:glm-5.1".as_bytes()), "模型名\n\taliyun:glm-5.1");
+        assert_eq!(
+            bytes_to_display("模型名\n\taliyun:glm-5.1".as_bytes()),
+            "模型名\n\taliyun:glm-5.1"
+        );
         // 空值显示为空单元格，而不是 "0x"
         assert_eq!(bytes_to_display(b""), "");
     }
@@ -1984,7 +2116,10 @@ mod tests {
     fn to_csv_quotes_special_fields() {
         let r = QueryResult {
             columns: vec!["id".into(), "name".into()],
-            rows: vec![vec!["1".into(), "a,b".into()], vec!["2".into(), "he said \"hi\"".into()]],
+            rows: vec![
+                vec!["1".into(), "a,b".into()],
+                vec!["2".into(), "he said \"hi\"".into()],
+            ],
             truncated: false,
             total: None,
             primary_keys: vec![],
@@ -2016,7 +2151,9 @@ mod tests {
         assert!(is_select_query("SELECT * FROM t"));
         // Regression: formatted SQL has a NEWLINE after SELECT — used to miss
         // is_select_query, falling back to plain unpaged query (total=None, no pager).
-        assert!(is_select_query("SELECT\n    org.name AS 公司\nFROM k_task t"));
+        assert!(is_select_query(
+            "SELECT\n    org.name AS 公司\nFROM k_task t"
+        ));
         assert!(is_select_query("  select id from t where x = 1  "));
         assert!(is_select_query("-- comment\nSELECT * FROM t"));
         assert!(is_select_query("SELECT * FROM t WHERE msg = 'a;b'"));
@@ -2043,7 +2180,7 @@ mod tests {
         assert!(is_read_query("DESC t"));
         assert!(is_read_query("DESCRIBE t"));
         assert!(is_read_query("SELECT * FROM t WHERE a = ';'")); // 分号在字符串内不算多语句
-        // Writes: must go through execute to expose rows_affected.
+                                                                 // Writes: must go through execute to expose rows_affected.
         assert!(!is_read_query("UPDATE t SET a = 1"));
         assert!(!is_read_query("INSERT INTO t VALUES (1)"));
         assert!(!is_read_query("DELETE FROM t WHERE id = 1"));
@@ -2060,7 +2197,9 @@ mod tests {
     fn has_unquoted_semicolon_detects_statement_breaks() {
         assert!(!has_unquoted_semicolon("SELECT * FROM t WHERE x = 'a;b'"));
         assert!(!has_unquoted_semicolon("SELECT * FROM t WHERE x = \"a;b\""));
-        assert!(has_unquoted_semicolon("SELECT * FROM t; SHOW CREATE TABLE t"));
+        assert!(has_unquoted_semicolon(
+            "SELECT * FROM t; SHOW CREATE TABLE t"
+        ));
         assert!(has_unquoted_semicolon("SELECT * FROM t;"));
     }
 }

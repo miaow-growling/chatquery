@@ -19,13 +19,9 @@ const SCAN_MAX_ROUNDS: usize = 5000;
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum RedisValueView {
     /// GET — a single string value.
-    String {
-        value: String,
-    },
+    String { value: String },
     /// HGETALL — field → value pairs.
-    Hash {
-        entries: Vec<HashEntry>,
-    },
+    Hash { entries: Vec<HashEntry> },
     /// LRANGE — ordered list entries with 0-based index.
     List {
         entries: Vec<ListEntry>,
@@ -198,32 +194,87 @@ async fn connect_to_db(cfg: &ConnectionConfig, db: u8) -> Result<MultiplexedConn
     Ok(conn)
 }
 
-/// List database indices that actually contain keys. Asks `CONFIG GET
-/// databases` for the count (fallback 16) then DBSIZE-checks each; empty dbs
-/// are omitted so the tree isn't cluttered with 16 always-empty nodes.
-pub async fn list_dbs(cfg: &ConnectionConfig) -> Result<Vec<u8>> {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RedisDbInfo {
+    pub db: u8,
+    pub keys: usize,
+}
+
+/// Parse the `# Keyspace` section of `INFO keyspace` into a map from db index to key count.
+/// Format: `db0:keys=10,expires=0,avg_ttl=0`
+fn parse_keyspace(info: &str) -> std::collections::HashMap<u8, usize> {
+    let mut map = std::collections::HashMap::new();
+    for line in info.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("db") {
+            if let Some((db_str, metrics)) = rest.split_once(':') {
+                if let Ok(db_num) = db_str.parse::<u8>() {
+                    for part in metrics.split(',') {
+                        if let Some(k_str) = part.strip_prefix("keys=") {
+                            if let Ok(keys) = k_str.parse::<usize>() {
+                                map.insert(db_num, keys);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
+/// List all available database indices on the Redis server with their key count.
+/// Asks `CONFIG GET databases` for the configured count (typically 16).
+/// Key counts are obtained via `INFO keyspace` in a single command.
+/// If CONFIG is unavailable (e.g. cloud Redis or Cluster mode), probes DB indices
+/// directly to return only supported DBs.
+pub async fn list_dbs(cfg: &ConnectionConfig) -> Result<Vec<RedisDbInfo>> {
     let mut conn = connect(cfg).await?;
-    let count: u8 = match redis::cmd("CONFIG")
+
+    let info_str: String = redis::cmd("INFO")
+        .arg("keyspace")
+        .query_async(&mut conn)
+        .await
+        .unwrap_or_default();
+    let keyspace_map = parse_keyspace(&info_str);
+
+    let count_opt: Option<u8> = match redis::cmd("CONFIG")
         .arg("GET")
         .arg("databases")
         .query_async::<Vec<String>>(&mut conn)
         .await
     {
-        Ok(res) if res.len() == 2 => res[1].parse().unwrap_or(16),
-        _ => 16,
+        Ok(res) if res.len() == 2 => res[1].parse().ok(),
+        _ => None,
     };
-    let mut out = Vec::new();
-    for db in 0..count {
-        if let Ok(mut c) = connect_to_db(cfg, db).await {
-            let size: i64 = redis::cmd("DBSIZE")
-                .query_async(&mut c)
-                .await
-                .map_err(AppError::Redis)?;
-            if size > 0 {
-                out.push(db);
+
+    let dbs: Vec<u8> = if let Some(count) = count_opt {
+        (0..count).collect()
+    } else {
+        // When CONFIG command is restricted, probe DB indices (default up to 16)
+        let mut available = Vec::new();
+        for db in 0..16 {
+            if connect_to_db(cfg, db).await.is_ok() {
+                available.push(db);
+            } else if db > 0 {
+                // Cluster mode or DB index out of range — stop probing further
+                break;
             }
         }
-    }
+        if available.is_empty() {
+            available.push(0);
+        }
+        available
+    };
+
+    let out = dbs
+        .into_iter()
+        .map(|db| {
+            let keys = keyspace_map.get(&db).copied().unwrap_or(0);
+            RedisDbInfo { db, keys }
+        })
+        .collect();
+
     Ok(out)
 }
 
@@ -364,10 +415,8 @@ pub async fn browse_key(cfg: &ConnectionConfig, db: u8, key: &str) -> Result<Red
     pipe.cmd("TYPE").arg(key);
     pipe.cmd("TTL").arg(key);
     pipe.cmd("MEMORY").arg("USAGE").arg(key);
-    let results: (String, i64, redis::Value) = pipe
-        .query_async(&mut conn)
-        .await
-        .map_err(AppError::Redis)?;
+    let results: (String, i64, redis::Value) =
+        pipe.query_async(&mut conn).await.map_err(AppError::Redis)?;
     let (raw_type, ttl_raw, mem_val) = results;
 
     let ttl = if ttl_raw < 0 { None } else { Some(ttl_raw) };
@@ -392,12 +441,20 @@ pub async fn browse_key(cfg: &ConnectionConfig, db: u8, key: &str) -> Result<Red
             RedisValueView::String { value: s }
         }
         "HASH" => {
-            let v: redis::Value = redis::cmd("HGETALL")
+            let (cursor, pairs): (u64, Vec<(String, String)>) = redis::cmd("HSCAN")
                 .arg(key)
+                .arg(0u64)
+                .arg("COUNT")
+                .arg(PAGE_LIMIT)
                 .query_async(&mut conn)
                 .await
                 .map_err(AppError::Redis)?;
-            let entries = extract_hash(&v);
+            let entries: Vec<HashEntry> = pairs
+                .into_iter()
+                .take(PAGE_LIMIT)
+                .map(|(field, value)| HashEntry { field, value })
+                .collect();
+            truncated = cursor != 0 || entries.len() >= PAGE_LIMIT;
             for e in &entries {
                 lines.push(format!("{}  {}", e.field, e.value));
             }
@@ -419,13 +476,16 @@ pub async fn browse_key(cfg: &ConnectionConfig, db: u8, key: &str) -> Result<Red
             RedisValueView::List { entries, truncated }
         }
         "SET" => {
-            let v: redis::Value = redis::cmd("SMEMBERS")
+            let (cursor, scanned): (u64, Vec<String>) = redis::cmd("SSCAN")
                 .arg(key)
+                .arg(0u64)
+                .arg("COUNT")
+                .arg(PAGE_LIMIT)
                 .query_async(&mut conn)
                 .await
                 .map_err(AppError::Redis)?;
-            let members = extract_members(&v);
-            truncated = members.len() >= PAGE_LIMIT;
+            let members: Vec<String> = scanned.into_iter().take(PAGE_LIMIT).collect();
+            truncated = cursor != 0 || members.len() >= PAGE_LIMIT;
             for m in &members {
                 lines.push(m.clone());
             }
@@ -494,21 +554,6 @@ fn value_to_string(v: &redis::Value) -> String {
     }
 }
 
-/// Extract HGETALL result into HashEntry list. Input is the Redis Array
-/// `[field1, value1, field2, value2, ...]`.
-fn extract_hash(v: &redis::Value) -> Vec<HashEntry> {
-    let mut entries = Vec::new();
-    if let redis::Value::Array(items) = v {
-        for chunk in items.chunks(2) {
-            entries.push(HashEntry {
-                field: value_to_string(&chunk[0]),
-                value: value_to_string(chunk.get(1).unwrap_or(&redis::Value::Nil)),
-            });
-        }
-    }
-    entries
-}
-
 /// Extract LRANGE result into ListEntry list with 0-based indices.
 fn extract_list(v: &redis::Value) -> Vec<ListEntry> {
     let mut entries = Vec::new();
@@ -523,17 +568,6 @@ fn extract_list(v: &redis::Value) -> Vec<ListEntry> {
     entries
 }
 
-/// Extract SMEMBERS result into plain string list.
-fn extract_members(v: &redis::Value) -> Vec<String> {
-    let mut members = Vec::new();
-    if let redis::Value::Array(items) = v {
-        for item in items {
-            members.push(value_to_string(item));
-        }
-    }
-    members
-}
-
 /// Extract ZRANGE WITHSCORES result into ZsetEntry list.
 /// Input is `[member1, score1, member2, score2, ...]`.
 fn extract_zset(v: &redis::Value) -> Vec<ZsetEntry> {
@@ -545,9 +579,10 @@ fn extract_zset(v: &redis::Value) -> Vec<ZsetEntry> {
             }
             let member = value_to_string(&chunk[0]);
             let score = match &chunk[1] {
-                redis::Value::BulkString(b) => {
-                    std::str::from_utf8(b).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0)
-                }
+                redis::Value::BulkString(b) => std::str::from_utf8(b)
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0),
                 redis::Value::SimpleString(s) => s.parse().unwrap_or(0.0),
                 redis::Value::Int(i) => *i as f64,
                 _ => 0.0,
@@ -692,7 +727,10 @@ async fn scan(conn: &mut MultiplexedConnection, args: &[&str]) -> Result<RedisRe
         lines: keys.clone(),
         truncated,
         note: if truncated {
-            format!("已收集 {} 个键（达到上限），请缩小 MATCH 模式以查看更多", keys.len())
+            format!(
+                "已收集 {} 个键（达到上限），请缩小 MATCH 模式以查看更多",
+                keys.len()
+            )
         } else {
             format!("{} 个键", keys.len())
         },
@@ -721,11 +759,7 @@ fn value_to_lines(v: &redis::Value, out: &mut Vec<String>) {
 /// Delete one or more keys. Returns the number of keys actually removed.
 /// Uses a pipeline so the caller can batch-delete multiple keys atomically,
 /// but the frontend calls it with a single key for now.
-pub async fn delete_key(
-    cfg: &ConnectionConfig,
-    db: u8,
-    key: &str,
-) -> Result<u64> {
+pub async fn delete_key(cfg: &ConnectionConfig, db: u8, key: &str) -> Result<u64> {
     let mut conn = connect_to_db(cfg, db).await?;
     let deleted: u64 = redis::cmd("DEL")
         .arg(key)
@@ -826,7 +860,24 @@ mod tests {
         // empty / whitespace only
         assert!(tokenize("   ").is_empty());
         // escaped quote inside double quotes
-        assert_eq!(tokenize("SET k \"he said \\\"hi\\\"\""), vec!["SET", "k", "he said \"hi\""]);
+        assert_eq!(
+            tokenize("SET k \"he said \\\"hi\\\"\""),
+            vec!["SET", "k", "he said \"hi\""]
+        );
+    }
+
+    #[test]
+    fn test_parse_keyspace_metrics() {
+        let sample = "\
+# Keyspace
+db0:keys=12,expires=2,avg_ttl=100
+db3:keys=5432,expires=0,avg_ttl=0
+db15:keys=1,expires=1,avg_ttl=50
+";
+        let map = parse_keyspace(sample);
+        assert_eq!(map.get(&0), Some(&12));
+        assert_eq!(map.get(&3), Some(&5432));
+        assert_eq!(map.get(&15), Some(&1));
+        assert_eq!(map.get(&1), None);
     }
 }
-

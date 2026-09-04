@@ -9,8 +9,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
-use tui_textarea::TextArea;
 use tokio::sync::mpsc::UnboundedSender;
+use tui_textarea::TextArea;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -188,20 +188,25 @@ impl App {
     }
 
     /// Returns true when the app should quit.
-    pub fn handle_key(
-        &mut self,
-        key: KeyEvent,
-        result_tx: &UnboundedSender<BackendMsg>,
-    ) -> bool {
+    pub fn handle_key(&mut self, key: KeyEvent, result_tx: &UnboundedSender<BackendMsg>) -> bool {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return true;
         }
         // Ctrl+1/2/3 direct focus switching (works regardless of current focus)
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('1') => { self.focus = Focus::Connections; return false; }
-                KeyCode::Char('2') => { self.focus = Focus::Editor; return false; }
-                KeyCode::Char('3') => { self.focus = Focus::Chat; return false; }
+                KeyCode::Char('1') => {
+                    self.focus = Focus::Connections;
+                    return false;
+                }
+                KeyCode::Char('2') => {
+                    self.focus = Focus::Editor;
+                    return false;
+                }
+                KeyCode::Char('3') => {
+                    self.focus = Focus::Chat;
+                    return false;
+                }
                 _ => {}
             }
         }
@@ -346,27 +351,39 @@ impl App {
             self.status = "名称和主机不能为空".into();
             return; // stay in the form
         }
-        let cfg = ConnectionConfig {
-            id: f.editing_id.clone().unwrap_or_default(),
-            name,
-            db_type: f.db_type,
-            host,
-            port: f.fields[2].trim().parse().unwrap_or(0),
-            user: f.fields[3].trim().to_string(),
-            password: f.fields[4].clone(),
-            database: f.fields[5].trim().to_string(),
-            ssl_mode: String::new(),
-            ssl_ca: String::new(),
-            client_cert: String::new(),
-            client_key: String::new(),
-            ssh_host: String::new(),
-            ssh_port: 22,
-            ssh_user: String::new(),
-            ssh_auth_kind: String::new(),
-            ssh_password: String::new(),
-            ssh_private_key: String::new(),
-            group_id: None,
-        };
+        let editing_id = f.editing_id.clone();
+        let mut cfg = editing_id
+            .as_deref()
+            .and_then(|id| self.store.list().iter().find(|c| c.id == id).cloned())
+            .unwrap_or(ConnectionConfig {
+                id: String::new(),
+                name: String::new(),
+                db_type: f.db_type,
+                host: String::new(),
+                port: 0,
+                user: String::new(),
+                password: String::new(),
+                database: String::new(),
+                ssl_mode: String::new(),
+                ssl_ca: String::new(),
+                client_cert: String::new(),
+                client_key: String::new(),
+                ssh_host: String::new(),
+                ssh_port: 22,
+                ssh_user: String::new(),
+                ssh_auth_kind: String::new(),
+                ssh_password: String::new(),
+                ssh_private_key: String::new(),
+                group_id: None,
+            });
+        cfg.id = editing_id.unwrap_or_default();
+        cfg.name = name;
+        cfg.db_type = f.db_type;
+        cfg.host = host;
+        cfg.port = f.fields[2].trim().parse().unwrap_or(0);
+        cfg.user = f.fields[3].trim().to_string();
+        cfg.password = f.fields[4].clone();
+        cfg.database = f.fields[5].trim().to_string();
         let editing = f.editing_id.is_some();
         let _ = self.form.take();
         let res = if editing {
@@ -518,7 +535,8 @@ impl App {
                 std::sync::Arc::new(|_, _| Vec::new()),
                 std::sync::Arc::new(|_| {}),
             )
-            .await {
+            .await
+            {
                 Ok(()) => {
                     let _ = tx.send(BackendMsg::ChatDone);
                 }

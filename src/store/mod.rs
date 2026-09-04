@@ -139,7 +139,8 @@ impl Storage {
         let mut items: Vec<(String, String)> = Vec::new();
         {
             let mut stmt = tx.prepare("SELECT id, data FROM connections")?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
             for row in rows {
                 items.push(row?);
             }
@@ -230,14 +231,32 @@ impl Storage {
     }
 
     pub fn rename_container(&self, id: &str, name: &str) -> Result<()> {
-        self.conn
-            .execute("UPDATE containers SET name = ?1 WHERE id = ?2", params![name, id])?;
+        self.conn.execute(
+            "UPDATE containers SET name = ?1 WHERE id = ?2",
+            params![name, id],
+        )?;
         Ok(())
     }
 
     pub fn delete_container(&self, id: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM containers WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn delete_topology_atomic(
+        &mut self,
+        connection_ids: &[String],
+        container_ids: &[String],
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for id in connection_ids {
+            tx.execute("DELETE FROM connections WHERE id = ?1", params![id])?;
+        }
+        for id in container_ids {
+            tx.execute("DELETE FROM containers WHERE id = ?1", params![id])?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -545,11 +564,7 @@ impl Storage {
 
     /// Docs bound to (conn_id, whole-connection) OR (conn_id, specific db).
     /// This is the set the AI should see when operating in that context.
-    pub fn get_injected_kb_docs(
-        &self,
-        conn_id: &str,
-        db: Option<&str>,
-    ) -> Result<Vec<KbDoc>> {
+    pub fn get_injected_kb_docs(&self, conn_id: &str, db: Option<&str>) -> Result<Vec<KbDoc>> {
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT d.id, d.name, d.content, d.created, d.updated
              FROM kb_docs d
@@ -587,7 +602,15 @@ impl Storage {
         self.conn.execute(
             "INSERT INTO audit_log (id, ts, conn_id, conn_name, db, sql, decision)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![gen_id("aud"), now_secs(), conn_id, conn_name, db, sql, decision],
+            params![
+                gen_id("aud"),
+                now_secs(),
+                conn_id,
+                conn_name,
+                db,
+                sql,
+                decision
+            ],
         )?;
         Ok(())
     }
@@ -602,13 +625,7 @@ impl Storage {
             "SELECT conn_name, db, sql, decision, ts FROM audit_log ORDER BY ts DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit], |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-            ))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })?;
         let mut out = Vec::new();
         for row in rows {
@@ -663,7 +680,11 @@ impl Storage {
 
     /// Create a conversation bound to `conn_id` (None = generic) and return
     /// its id. `title` defaults to "新会话".
-    pub fn create_conversation(&self, conn_id: Option<&str>, title: Option<&str>) -> Result<String> {
+    pub fn create_conversation(
+        &self,
+        conn_id: Option<&str>,
+        title: Option<&str>,
+    ) -> Result<String> {
         let id = gen_id("s");
         let now = now_secs();
         self.conn.execute(
@@ -719,8 +740,7 @@ impl Storage {
                 id: r.get(0)?,
                 role: r.get(1)?,
                 content: r.get(2)?,
-                meta: meta
-                    .and_then(|m| serde_json::from_str(&m).ok()),
+                meta: meta.and_then(|m| serde_json::from_str(&m).ok()),
                 ts: r.get(4)?,
             })
         })?;
@@ -1000,8 +1020,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         }
         // 回填存量行（新行由 log_query 写入）。只处理 NULL，幂等。
         let backfill = |conn: &Connection| -> Result<()> {
-            let mut stmt =
-                conn.prepare("SELECT id, sql FROM queries WHERE norm_hash IS NULL")?;
+            let mut stmt = conn.prepare("SELECT id, sql FROM queries WHERE norm_hash IS NULL")?;
             let rows: Vec<(String, String)> = stmt
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<std::result::Result<_, _>>()?;
@@ -1069,9 +1088,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
             ts      INTEGER NOT NULL
         );",
     )?;
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_msg_conv ON chat_messages(conv_id, seq);",
-    )?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_msg_conv ON chat_messages(conv_id, seq);")?;
     Ok(())
 }
 
@@ -1085,7 +1102,10 @@ mod tests {
     fn mem_store() -> Storage {
         let conn = Connection::open(":memory:").expect("mem db");
         init_schema(&conn).expect("schema");
-        Storage { conn, key: [0u8; 32] }
+        Storage {
+            conn,
+            key: [0u8; 32],
+        }
     }
 
     fn names(mut docs: Vec<KbDoc>) -> Vec<String> {
@@ -1116,7 +1136,8 @@ mod tests {
         let b = s.add_kb_doc("库X专用", "B").unwrap();
         let c = s.add_kb_doc("连接B整条", "C").unwrap();
         s.set_kb_bindings(&a, &[("connA".into(), None)]).unwrap();
-        s.set_kb_bindings(&b, &[("connA".into(), Some("dbX".into()))]).unwrap();
+        s.set_kb_bindings(&b, &[("connA".into(), Some("dbX".into()))])
+            .unwrap();
         s.set_kb_bindings(&c, &[("connB".into(), None)]).unwrap();
 
         // db=None → only whole-connection bindings, not db-specific ones
@@ -1125,7 +1146,10 @@ mod tests {
 
         // connA + dbX → whole-connection (A) AND dbX-specific (B)
         let r = s.get_injected_kb_docs("connA", Some("dbX")).unwrap();
-        assert_eq!(names(r), vec!["库X专用".to_string(), "整条连接A".to_string()]);
+        assert_eq!(
+            names(r),
+            vec!["库X专用".to_string(), "整条连接A".to_string()]
+        );
 
         // connA + dbY → only whole-connection A (no binding for dbY)
         let r = s.get_injected_kb_docs("connA", Some("dbY")).unwrap();
@@ -1185,9 +1209,16 @@ mod tests {
     #[test]
     fn audit_roundtrip() {
         let s = mem_store();
-        s.add_audit("c1", "demo", Some("mydb"), "DELETE FROM t", "write-approved")
+        s.add_audit(
+            "c1",
+            "demo",
+            Some("mydb"),
+            "DELETE FROM t",
+            "write-approved",
+        )
+        .unwrap();
+        s.add_audit("c1", "demo", None, "DROP TABLE t", "deny")
             .unwrap();
-        s.add_audit("c1", "demo", None, "DROP TABLE t", "deny").unwrap();
         let rows = s.list_audits(10).unwrap();
         assert_eq!(rows.len(), 2);
         // Both decisions recorded (don't assert order — ts is second-granular).
@@ -1204,10 +1235,12 @@ mod tests {
     fn query_history_limit_and_pruning() {
         let s = mem_store();
         for i in 1..=5 {
-            s.log_query(Some("c1"), Some("db1"), &format!("SELECT {i}"), Some("g1")).unwrap();
+            s.log_query(Some("c1"), Some("db1"), &format!("SELECT {i}"), Some("g1"))
+                .unwrap();
         }
         // Save one snippet
-        s.save_query(None, "my_fav", "SELECT 999", Some("c1"), Some("db1")).unwrap();
+        s.save_query(None, "my_fav", "SELECT 999", Some("c1"), Some("db1"))
+            .unwrap();
 
         // 5 history + 1 snippet = 6
         let all = s.list_queries().unwrap();
@@ -1224,7 +1257,9 @@ mod tests {
         // After pruning: 2 history + 1 snippet = 3
         let remaining = s.list_queries().unwrap();
         assert_eq!(remaining.len(), 3);
-        assert!(remaining.iter().any(|q| q.name.as_deref() == Some("my_fav")));
+        assert!(remaining
+            .iter()
+            .any(|q| q.name.as_deref() == Some("my_fav")));
     }
 
     /// 同一连接下重复执行相同 SQL（含排版/大小写/结尾分号差异）只保留一条
@@ -1232,31 +1267,40 @@ mod tests {
     #[test]
     fn log_query_dedups_by_conn_and_normalized_sql() {
         let s = mem_store();
-        s.log_query(Some("c1"), Some("db1"), "SELECT a\n  FROM t;", Some("g1")).unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT a\n  FROM t;", Some("g1"))
+            .unwrap();
         // 同一 SQL 换排版再跑：不新增行，顶置原行，且保留首次的原文。
-        s.log_query(Some("c1"), Some("db1"), "select a from t", Some("g1")).unwrap();
+        s.log_query(Some("c1"), Some("db1"), "select a from t", Some("g1"))
+            .unwrap();
         let rows = s.list_queries().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].sql, "SELECT a\n  FROM t;");
 
         // 不同连接的同一条 SQL 是不同历史。
-        s.log_query(Some("c2"), Some("db1"), "SELECT a FROM t", Some("g1")).unwrap();
+        s.log_query(Some("c2"), Some("db1"), "SELECT a FROM t", Some("g1"))
+            .unwrap();
         assert_eq!(s.list_queries().unwrap().len(), 2);
 
         // 不同库的同一条 SQL 也是不同历史（载入时要还原正确的执行上下文）。
-        s.log_query(Some("c1"), Some("db2"), "SELECT a FROM t", Some("g1")).unwrap();
+        s.log_query(Some("c1"), Some("db2"), "SELECT a FROM t", Some("g1"))
+            .unwrap();
         assert_eq!(s.list_queries().unwrap().len(), 3);
 
         // 命名片段与历史互不去重：同键的历史条目再次执行时仍只顶置历史行，
         // 片段（name 非空）不受影响、也不顶置。
-        s.save_query(None, "fav", "SELECT a FROM t", Some("c1"), Some("db1")).unwrap();
-        s.log_query(Some("c1"), Some("db1"), "SELECT a FROM t", Some("g1")).unwrap();
+        s.save_query(None, "fav", "SELECT a FROM t", Some("c1"), Some("db1"))
+            .unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT a FROM t", Some("g1"))
+            .unwrap();
         let rows = s.list_queries().unwrap();
         assert_eq!(rows.len(), 4);
         // 最新一条是被顶置的首条历史（保留首次原文），片段紧随其后。
         assert_eq!(rows[0].sql, "SELECT a\n  FROM t;");
         assert!(rows[0].name.is_none());
-        let snippet = rows.iter().find(|r| r.name.as_deref() == Some("fav")).unwrap();
+        let snippet = rows
+            .iter()
+            .find(|r| r.name.as_deref() == Some("fav"))
+            .unwrap();
         assert!(rows.iter().position(|r| r.id == snippet.id).unwrap() > 0);
     }
 
@@ -1266,33 +1310,51 @@ mod tests {
     fn list_query_groups_versions_and_heads() {
         let s = mem_store();
         // tab g1 迭代三个版本（时间递增）
-        s.log_query(Some("c1"), Some("db1"), "SELECT 1", Some("g1")).unwrap();
-        s.log_query(Some("c1"), Some("db1"), "SELECT 1, 2", Some("g1")).unwrap();
-        s.log_query(Some("c1"), Some("db1"), "SELECT 1, 2, 3", Some("g1")).unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 1", Some("g1"))
+            .unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 1, 2", Some("g1"))
+            .unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 1, 2, 3", Some("g1"))
+            .unwrap();
         // tab g2 一个版本
-        s.log_query(Some("c2"), Some("db2"), "SELECT 9", Some("g2")).unwrap();
+        s.log_query(Some("c2"), Some("db2"), "SELECT 9", Some("g2"))
+            .unwrap();
         // 命名片段 + 无组旧数据
-        s.save_query(None, "fav", "SELECT 8", Some("c1"), Some("db1")).unwrap();
-        s.log_query(Some("c1"), Some("db1"), "SELECT 7", None).unwrap();
+        s.save_query(None, "fav", "SELECT 8", Some("c1"), Some("db1"))
+            .unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 7", None)
+            .unwrap();
 
         let groups = s.list_query_groups(10).unwrap();
         assert_eq!(groups.len(), 4); // g1, g2, fav, 无组旧数据
 
         // g1：head 是最新版本，versions 按时间倒序挂旧版本
-        let g1 = groups.iter().find(|g| g.group_id.as_deref() == Some("g1")).unwrap();
+        let g1 = groups
+            .iter()
+            .find(|g| g.group_id.as_deref() == Some("g1"))
+            .unwrap();
         assert_eq!(g1.head.sql, "SELECT 1, 2, 3");
         assert_eq!(g1.versions.len(), 2);
         assert_eq!(g1.versions[0].sql, "SELECT 1, 2");
         assert_eq!(g1.versions[1].sql, "SELECT 1");
 
         // g2 是单版本组
-        let g2 = groups.iter().find(|g| g.group_id.as_deref() == Some("g2")).unwrap();
+        let g2 = groups
+            .iter()
+            .find(|g| g.group_id.as_deref() == Some("g2"))
+            .unwrap();
         assert_eq!(g2.head.sql, "SELECT 9");
         assert!(g2.versions.is_empty());
 
         // 组按 head 时间倒序：g2（后建）排在 g1 前
-        let g1_pos = groups.iter().position(|g| g.group_id.is_some() && g.head.sql.starts_with("SELECT 1,")).unwrap();
-        let g2_pos = groups.iter().position(|g| g.group_id.as_deref() == Some("g2")).unwrap();
+        let g1_pos = groups
+            .iter()
+            .position(|g| g.group_id.is_some() && g.head.sql.starts_with("SELECT 1,"))
+            .unwrap();
+        let g2_pos = groups
+            .iter()
+            .position(|g| g.group_id.as_deref() == Some("g2"))
+            .unwrap();
         assert!(g2_pos < g1_pos);
 
         // 命名片段是独立单条组；limit 截断组数
@@ -1304,9 +1366,12 @@ mod tests {
     #[test]
     fn delete_query_group_vs_row() {
         let s = mem_store();
-        s.log_query(Some("c1"), Some("db1"), "SELECT 1", Some("g1")).unwrap();
-        s.log_query(Some("c1"), Some("db1"), "SELECT 1, 2", Some("g1")).unwrap();
-        s.log_query(Some("c1"), Some("db1"), "SELECT 7", None).unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 1", Some("g1"))
+            .unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 1, 2", Some("g1"))
+            .unwrap();
+        s.log_query(Some("c1"), Some("db1"), "SELECT 7", None)
+            .unwrap();
 
         // 按行 id 只删那一行
         s.delete_query("nonexistent", None).unwrap();
@@ -1370,11 +1435,8 @@ mod tests {
     fn conv_append_seq_order_and_preview() {
         let mut s = mem_store();
         let id = s.create_conversation(None, None).unwrap();
-        s.append_chat_messages(
-            &id,
-            &[msg("user", "第一问"), msg("assistant", "第一答")],
-        )
-        .unwrap();
+        s.append_chat_messages(&id, &[msg("user", "第一问"), msg("assistant", "第一答")])
+            .unwrap();
         s.append_chat_messages(&id, &[msg("user", "第二问")])
             .unwrap();
 
@@ -1433,9 +1495,7 @@ mod tests {
         // Unknown conversation → error.
         assert!(s.append_chat_messages("nope", &[msg("user", "x")]).is_err());
         // Role outside whitelist → error.
-        assert!(
-            s.append_chat_messages(&id, &[msg("spam", "x")]).is_err()
-        );
+        assert!(s.append_chat_messages(&id, &[msg("spam", "x")]).is_err());
         // Nothing was written by the rejected batches.
         assert_eq!(s.get_conversation(&id, 0, 100).unwrap().1.len(), 0);
         // Empty batch is a no-op, not an error.
@@ -1449,7 +1509,8 @@ mod tests {
         let b = s.create_conversation(None, None).unwrap();
         // B gets a message later → B floats above A.
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        s.append_chat_messages(&b, &[msg("user", "新活动")]).unwrap();
+        s.append_chat_messages(&b, &[msg("user", "新活动")])
+            .unwrap();
         let list = s.list_conversations().unwrap();
         assert_eq!(list[0].id, b);
         assert_eq!(list[0].last_preview, "新活动");
