@@ -251,12 +251,17 @@ async fn exec_builtin(
                     (format!("{}: {}", conn_name, r.note), r.note.clone())
                 } else {
                     let summary = format!("{}: {} 项", conn_name, r.lines.len());
-                    let detail = if crate::mask::masking_enabled() {
+                    let raw_lines = if crate::mask::masking_enabled() {
                         let m = crate::mask::mask_redis_result(&r);
-                        m.lines.join("\n")
+                        m.lines
                     } else {
-                        r.lines.join("\n")
+                        r.lines
                     };
+                    let detail = raw_lines
+                        .iter()
+                        .map(|l| truncate_line(l))
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     (summary, detail)
                 }
             }
@@ -344,6 +349,34 @@ fn search_kb_content(docs: &[(String, String)], query: &str) -> String {
     out
 }
 
+/// Maximum characters per table cell when formatting query results for the LLM.
+/// Protects the LLM context window from being flooded by huge JSON payloads,
+/// stack traces, or text blobs (inspired by DBX cell-level windowing).
+pub const CELL_CHAR_LIMIT: usize = 300;
+
+/// Maximum characters per Redis output line to protect LLM context.
+pub const REDIS_LINE_CHAR_LIMIT: usize = 500;
+
+fn truncate_cell(val: &str) -> String {
+    let char_count = val.chars().count();
+    if char_count <= CELL_CHAR_LIMIT {
+        val.to_string()
+    } else {
+        let prefix: String = val.chars().take(CELL_CHAR_LIMIT).collect();
+        format!("{}...[truncated {} chars]", prefix, char_count - CELL_CHAR_LIMIT)
+    }
+}
+
+fn truncate_line(val: &str) -> String {
+    let char_count = val.chars().count();
+    if char_count <= REDIS_LINE_CHAR_LIMIT {
+        val.to_string()
+    } else {
+        let prefix: String = val.chars().take(REDIS_LINE_CHAR_LIMIT).collect();
+        format!("{}...[truncated {} chars]", prefix, char_count - REDIS_LINE_CHAR_LIMIT)
+    }
+}
+
 fn format_result_table(columns: &[String], rows: &[Vec<String>]) -> String {
     if columns.is_empty() {
         return "(无结果集)".into();
@@ -352,7 +385,8 @@ fn format_result_table(columns: &[String], rows: &[Vec<String>]) -> String {
     s.push_str(&columns.join("\t"));
     s.push('\n');
     for row in rows {
-        s.push_str(&row.join("\t"));
+        let cells: Vec<String> = row.iter().map(|c| truncate_cell(c)).collect();
+        s.push_str(&cells.join("\t"));
         s.push('\n');
     }
     s
@@ -409,5 +443,23 @@ mod tests {
         assert!(out.contains("D1"));
         assert!(out.contains("D2"));
         assert!(!out.contains("D3"));
+    }
+
+    #[test]
+    fn format_result_table_truncates_huge_cells() {
+        let cols = vec!["id".into(), "payload".into()];
+        let huge_val = "x".repeat(500);
+        let rows = vec![vec!["1".into(), huge_val]];
+        let table = format_result_table(&cols, &rows);
+        assert!(table.contains("...[truncated 200 chars]"));
+        assert!(table.starts_with("id\tpayload\n"));
+    }
+
+    #[test]
+    fn format_result_table_preserves_short_cells() {
+        let cols = vec!["id".into(), "name".into()];
+        let rows = vec![vec!["1".into(), "Alice".into()]];
+        let table = format_result_table(&cols, &rows);
+        assert_eq!(table, "id\tname\n1\tAlice\n");
     }
 }

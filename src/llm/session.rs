@@ -564,6 +564,7 @@ impl Agent {
 /// Drop lines that look like the model reciting an execution plan in
 /// narrative form. The planner already showed the user the plan as its
 /// own structured card; the synthesizer MUST not repeat it as prose.
+#[allow(dead_code)]
 fn strip_step_prose(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
@@ -579,6 +580,7 @@ fn strip_step_prose(text: &str) -> String {
     out
 }
 
+#[allow(dead_code)]
 fn is_step_line(trimmed: &str) -> bool {
     const CN_DIGITS: &[&str] = &[
         "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",

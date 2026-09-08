@@ -58,13 +58,37 @@ import { createEditor, splitStatements, type EditorHandle } from "./editor";
 const RedisBrowser = lazy(() =>
   import("./RedisBrowser").then((m) => ({ default: m.RedisBrowser }))
 );
-import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { ContextMenu, useAutoMenuPosition, type MenuItem } from "./ContextMenu";
 import { Tree } from "./Tree";
 import { Icon } from "./components/ui";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { writeFile, writeTextFile, readTextFile } from "@tauri-apps/plugin-fs";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+/** 表格右键菜单自适应容器（具有视口边缘碰撞检测，自动翻转防止菜单底部被遮挡截断） */
+function TableContextMenuContainer({
+  x,
+  y,
+  children,
+}: {
+  x: number;
+  y: number;
+  children: React.ReactNode;
+}) {
+  const { pos, ref } = useAutoMenuPosition(x, y);
+  return (
+    <div
+      ref={ref}
+      className="ctx-menu"
+      style={{ position: "fixed", left: pos.x, top: pos.y }}
+      onContextMenu={(e) => e.preventDefault()}
+      role="menu"
+    >
+      {children}
+    </div>
+  );
+}
 
 /** 复制图标（内联 SVG，避免引入图标库）。 */
 function CopyIcon() {
@@ -108,6 +132,41 @@ function ImportSqlIcon() {
   );
 }
 
+function NewTabIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="13"
+      height="13"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <polyline points="15 3 21 3 21 9" />
+      <line x1="10" y1="14" x2="21" y2="3" />
+    </svg>
+  );
+}
+
+function RunCodeIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="11"
+      height="11"
+      fill="currentColor"
+      stroke="none"
+      aria-hidden="true"
+    >
+      <polygon points="6 4 20 12 6 20 6 4" />
+    </svg>
+  );
+}
+
 /** 从 React 子树里抽纯文本，用来喂剪贴板（避开 react-markdown 传进来的
  *  <code> 元素层级）。递归处理字符串、数字、数组、React 元素。 */
 function nodeText(node: React.ReactNode): string {
@@ -120,35 +179,72 @@ function nodeText(node: React.ReactNode): string {
   return "";
 }
 
-/** AI 消息里的代码块：在右上角支持复制代码与一键导入到查询。
+/** AI 消息里的代码块：在右上角支持复制代码、新Tab打开、直接运行与一键导入到查询。
  *  用 useMemo 缓存一次，codeText 在 children 引用变化时才重算。 */
 function CodeBlock({
   children,
   onImport,
+  onOpenNewTab,
   onExecute,
 }: {
   children?: React.ReactNode;
   onImport?: (code: string) => void;
-  /** 提供 = 该代码块可一键执行（写语句 + AI 回复带库绑定时） */
+  onOpenNewTab?: (code: string) => void;
+  /** 提供 = 该代码块可一键执行（结果展示在结果区） */
   onExecute?: (code: string) => Promise<void>;
 }) {
   const [copied, setCopied] = useState(false);
   const [imported, setImported] = useState(false);
+  const [openedTab, setOpenedTab] = useState(false);
   const [execState, setExecState] = useState<"idle" | "running" | "done" | "dismissed">("idle");
   const codeText = useMemo(() => nodeText(children).replace(/\n$/, ""), [children]);
-  // 只对写语句显示执行按钮：聊天里的写 SQL 是"待你拍板"的，给个一键执行/
-  // 不执行，免得手动打字回复。只读查询交给编辑器，不在此诱导执行。
   const isWrite = /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(codeText);
-  const canExecute = !!onExecute && isWrite;
+  const canExecute = !!onExecute;
   return (
     <div className="md-code">
       <div className="md-code-actions">
+        {canExecute && (
+          <button
+            type="button"
+            className={"md-code-btn md-code-run" + (execState === "running" ? " running" : execState === "done" ? " done" : "")}
+            title="直接运行这条 SQL（结果展示在下方结果区）"
+            aria-label="直接运行"
+            disabled={execState === "running"}
+            onClick={async () => {
+              setExecState("running");
+              try {
+                await onExecute!(codeText);
+                setExecState("done");
+                setTimeout(() => setExecState("idle"), 2000);
+              } catch {
+                setExecState("idle");
+              }
+            }}
+          >
+            {execState === "running" ? "…" : execState === "done" ? "✓" : <RunCodeIcon />}
+          </button>
+        )}
+        {onOpenNewTab && (
+          <button
+            type="button"
+            className={"md-code-btn md-code-newtab" + (openedTab ? " opened" : "")}
+            title="在新标签页打开（不覆盖当前草稿）"
+            aria-label="在新标签页打开"
+            onClick={() => {
+              onOpenNewTab(codeText);
+              setOpenedTab(true);
+              setTimeout(() => setOpenedTab(false), 1500);
+            }}
+          >
+            {openedTab ? "✓" : <NewTabIcon />}
+          </button>
+        )}
         {onImport && (
           <button
             type="button"
             className={"md-code-btn md-code-import" + (imported ? " imported" : "")}
-            title="导入到查询（相同数据库实例追加到末尾，否则新建查询）"
-            aria-label="导入到查询"
+            title="导入到当前查询"
+            aria-label="导入到当前查询"
             onClick={() => {
               onImport(codeText);
               setImported(true);
@@ -174,7 +270,7 @@ function CodeBlock({
           {copied ? "✓" : <CopyIcon />}
         </button>
       </div>
-      {canExecute && execState !== "dismissed" && (
+      {canExecute && isWrite && execState !== "dismissed" && (
         <div className="md-code-exec">
           {execState === "done" ? (
             <span className="md-code-exec-done">✓ 已执行，结果见下方 toast</span>
@@ -322,11 +418,13 @@ function ExecutionBlock({
   tools,
   isRunning,
   onImportSql,
+  onOpenNewTab,
 }: {
   plan?: string[];
   tools?: string[];
   isRunning: boolean;
   onImportSql?: (sql: string) => void;
+  onOpenNewTab?: (sql: string) => void;
 }) {
   const hasPlan = !!(plan && plan.length > 0);
   const hasTools = !!(tools && tools.length > 0);
@@ -393,6 +491,7 @@ function ExecutionBlock({
                     key={idx}
                     content={toolContent}
                     onImportSql={onImportSql}
+                    onOpenNewTab={onOpenNewTab}
                   />
                 ))}
               </div>
@@ -454,9 +553,11 @@ function repairCodeFences(src: string): string {
 function ToolCallCard({
   content,
   onImportSql,
+  onOpenNewTab,
 }: {
   content: string;
   onImportSql?: (sql: string) => void;
+  onOpenNewTab?: (sql: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -495,6 +596,16 @@ function ToolCallCard({
       {expanded && (
         <div className="chat-tool-detail">
           <div className="chat-tool-actions">
+            {onOpenNewTab && (
+              <button
+                type="button"
+                className="tool-act-btn"
+                onClick={() => onOpenNewTab(sql)}
+                title="在新标签页打开此 SQL"
+              >
+                新 Tab 打开
+              </button>
+            )}
             {onImportSql && (
               <button
                 type="button"
@@ -531,11 +642,13 @@ function ToolCallCard({
 function MarkdownMessage({
   content,
   onImportSql,
+  onOpenNewTab,
   onExecuteSql,
 }: {
   content: string;
   onImportSql?: (sql: string) => void;
-  /** 提供 = AI 回复里的写语句代码块显示「执行 / 不执行」按钮 */
+  onOpenNewTab?: (sql: string) => void;
+  /** 提供 = AI 回复里的 SQL 代码块支持直接运行 */
   onExecuteSql?: (sql: string) => Promise<void>;
 }) {
   const { thinking, isThinking, content: rawContent } = splitThinkContent(content);
@@ -549,12 +662,12 @@ function MarkdownMessage({
         </a>
       ),
       pre: ({ children }: any) => (
-        <CodeBlock onImport={onImportSql} onExecute={onExecuteSql}>
+        <CodeBlock onImport={onImportSql} onOpenNewTab={onOpenNewTab} onExecute={onExecuteSql}>
           {children}
         </CodeBlock>
       ),
     }),
-    [onImportSql, onExecuteSql]
+    [onImportSql, onOpenNewTab, onExecuteSql]
   );
 
   return (
@@ -1674,6 +1787,18 @@ export function App() {
   // each result set is stored here and shown as a sub-tab (③ enhancement).
   const [multiResults, setMultiResults] = useState<QueryOutput[] | null>(null);
   const [multiResultIdx, setMultiResultIdx] = useState(0);
+
+  // --- DBX-inspired enhancements ------------------------------------------
+  // Transpose View state (row-column swap for wide records)
+  const [isTransposed, setIsTransposed] = useState(false);
+  const [transposeRowIdx, setTransposeRowIdx] = useState(0);
+  const [transposeFilter, setTransposeFilter] = useState("");
+
+  // Result Pane Collapse state (Floating pill affordance to restore)
+  const [resultCollapsed, setResultCollapsed] = useState(false);
+
+  // AI Chat Maximize Canvas state (fullscreen / focused reasoning mode)
+  const [chatMaximized, setChatMaximized] = useState(false);
 
   // --- Bottom status bar / console (Phase 18) -----------------------------
   // Last operation feedback: timing, affected/returned rows, errors. Replaces
@@ -3837,6 +3962,107 @@ export function App() {
         return av.localeCompare(bv) * dir;
       });
     }
+
+    // --- Transpose View (inspired by DBX) ----------------------------------
+    if (isTransposed && viewRows.length > 0) {
+      const activeIdx = Math.min(Math.max(0, transposeRowIdx), viewRows.length - 1);
+      const activeRowObj = viewRows[activeIdx];
+      const activeRow = activeRowObj.row;
+      const origRi = activeRowObj.origRi;
+
+      const filteredCols = cols
+        .map((c, i) => ({ colName: c, colIdx: i, val: activeRow[i] }))
+        .filter(({ colName }) =>
+          !transposeFilter.trim() || colName.toLowerCase().includes(transposeFilter.toLowerCase())
+        );
+
+      return (
+        <div className="transpose-container">
+          <div className="transpose-toolbar">
+            <div className="transpose-nav">
+              <button
+                disabled={activeIdx <= 0}
+                onClick={() => setTransposeRowIdx(activeIdx - 1)}
+                title="查看上一条数据"
+                className="transpose-nav-btn"
+              >
+                ◀ 上一条
+              </button>
+              <span className="transpose-pos">
+                第 <b>{activeIdx + 1}</b> / {viewRows.length} 条
+                <span className="transpose-orig-idx">（原始行 #{origRi + 1}）</span>
+              </span>
+              <button
+                disabled={activeIdx >= viewRows.length - 1}
+                onClick={() => setTransposeRowIdx(activeIdx + 1)}
+                title="查看下一条数据"
+                className="transpose-nav-btn"
+              >
+                下一条 ▶
+              </button>
+            </div>
+            <div className="transpose-search">
+              <input
+                placeholder="筛选字段名…"
+                value={transposeFilter}
+                onChange={(e) => setTransposeFilter(e.target.value)}
+                className="transpose-filter-input"
+              />
+              {transposeFilter && (
+                <button
+                  className="clear-filter"
+                  onClick={() => setTransposeFilter("")}
+                  title="清空字段过滤"
+                  style={{ marginLeft: 4 }}
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            <div className="transpose-hint">
+              双击单元格查看完整内容 · 右键复制
+            </div>
+          </div>
+          <div className="transpose-table-wrap">
+            <table className="transpose-table">
+              <thead>
+                <tr>
+                  <th style={{ width: "48px" }}>#</th>
+                  <th style={{ width: "220px" }}>字段名</th>
+                  <th>字段值</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredCols.map(({ colName, colIdx, val }, idx) => {
+                  const isPk = pkSet.has(colName);
+                  const ov = edits[origRi]?.[colIdx];
+                  const rawVal = ov ?? val;
+                  const text = fmt(rawVal);
+                  const cls = getCellStyleClass(text, rawVal);
+                  return (
+                    <tr key={colIdx} className="transpose-row">
+                      <td className="row-num">{idx + 1}</td>
+                      <td className={"transpose-col-name" + (isPk ? " pk" : "")}>
+                        <span>{colName}</span>
+                        {isPk && <span className="th-pk-badge" title="主键">🔑</span>}
+                      </td>
+                      <td
+                        className="transpose-col-val"
+                        onDoubleClick={() => openCellView(origRi, colIdx)}
+                        onContextMenu={(e) => onCellCtx(origRi, colIdx, e)}
+                        title="双击查看完整内容 · 右键复制"
+                      >
+                        {cls ? <span className={cls}>{text}</span> : text}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      );
+    }
     return (
       <>
       <table className={"result-table" + (dragging ? " selecting" : "")}>
@@ -4014,13 +4240,9 @@ export function App() {
                           }}
                         />
                       ) : (() => {
-                        const text = fmt(ov ?? v);
-                        const cls =
-                          text === "NULL"
-                            ? "cell--null"
-                            : /^-?\d+(\.\d+)?$/.test(text)
-                            ? "cell--num"
-                            : undefined;
+                        const raw = ov ?? v;
+                        const text = fmt(raw);
+                        const cls = getCellStyleClass(text, raw);
                         return cls ? <span className={cls}>{text}</span> : text;
                       })()}
                     </td>
@@ -4490,6 +4712,53 @@ export function App() {
             : `已新建「${newTabObj.name}」并导入 SQL（未指定连接）`
         );
       }
+    },
+    [chatConnId, chatDb, active, selId, selDb, tabs, showToast, clearEditState]
+  );
+
+  /// 将代码块中的 SQL 在新标签页打开（不覆盖或追加到已有编辑器草稿中，保持独立）。
+  const handleOpenInNewTab = useCallback(
+    (sqlText: string, binding?: ChatDbBinding) => {
+      if (!sqlText || !sqlText.trim()) {
+        showToast("代码块内容为空");
+        return;
+      }
+      const sql = sqlText.trim();
+      const targetConnId = binding?.conn_id || chatConnId || active?.connId || selId || "";
+      const targetDb = binding
+        ? binding.db
+        : chatDb !== undefined
+        ? chatDb
+        : (active?.db ?? selDb ?? null);
+
+      const id = genTabId();
+      const n = tabs.length + 1;
+      const newDoc = `${sql}\n`;
+      const newTabObj: QueryTab = {
+        id,
+        name: "查询 " + n,
+        sql: newDoc,
+        result: null,
+        browseCtx: null,
+        connId: targetConnId,
+        db: targetDb,
+        qid: genQid(),
+      };
+
+      setTabs((prev) => [...prev, newTabObj]);
+      activeTabIdRef.current = id;
+      setActiveTabId(id);
+      clearEditState();
+      setTimeout(() => {
+        editorRef.current?.replaceValue(newDoc);
+        editorRef.current?.view.focus();
+      }, 30);
+
+      showToast(
+        targetConnId
+          ? `已在新标签页「${newTabObj.name}」打开 SQL`
+          : `已在新标签页「${newTabObj.name}」打开 SQL（未绑定连接）`
+      );
     },
     [chatConnId, chatDb, active, selId, selDb, tabs, showToast, clearEditState]
   );
@@ -5598,7 +5867,7 @@ export function App() {
             </Suspense>
           ) : (
           <>
-          <div className="editor-pane">
+          <div className={"editor-pane" + (resultCollapsed ? " expanded" : "")}>
           <div className="pane-head">
             <span className="ctx-conn-wrap">
               查询编辑器
@@ -5822,7 +6091,17 @@ export function App() {
               });
             }}
           />
+          {resultCollapsed && (
+            <button
+              className="floating-restore-pill"
+              onClick={() => setResultCollapsed(false)}
+              title="点击展开查询结果面板"
+            >
+              📊 展开查询结果 {result?.kind === "table" && Array.isArray(result.rows) ? `(${result.rows.length}行)` : ""} ↑
+            </button>
+          )}
         </div>
+        {!resultCollapsed && (
         <div className="result-pane">
           <div className="pane-head">
             <div className="result-tabs">
@@ -5905,6 +6184,15 @@ export function App() {
                       </button>
                     )}
                   </span>
+                  {result && result.kind === "table" && Array.isArray(result.rows) && result.rows.length > 0 && (
+                    <button
+                      className={"transpose-toggle-btn" + (isTransposed ? " active" : "")}
+                      onClick={() => setIsTransposed((v) => !v)}
+                      title={isTransposed ? "切换回表格视图" : "切换为单行转置视图（行列互换，适合宽表排查）"}
+                    >
+                      {isTransposed ? "⊞ 表格视图" : "⇄ 转置视图"}
+                    </button>
+                  )}
                   {result && result.kind === "table" && Array.isArray(result.columns) && result.columns.length > 0 && (
                     <div className="export-dropdown">
                       <button
@@ -5935,9 +6223,25 @@ export function App() {
                   {result && "truncated" in result && result.truncated && (
                     <span className="warn">已截断，请加 LIMIT</span>
                   )}
+                  <button
+                    className="pane-collapse-btn"
+                    onClick={() => setResultCollapsed(true)}
+                    title="收起结果面板（编辑器将全屏展开，右下角提供悬浮胶囊恢复）"
+                  >
+                    ⌄ 收起
+                  </button>
                 </>
               ) : (
-                <button onClick={() => setResultTab("data")}>返回数据</button>
+                <>
+                  <button onClick={() => setResultTab("data")}>返回数据</button>
+                  <button
+                    className="pane-collapse-btn"
+                    onClick={() => setResultCollapsed(true)}
+                    title="收起结果面板（编辑器将全屏展开，右下角提供悬浮胶囊恢复）"
+                  >
+                    ⌄ 收起
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -5995,6 +6299,7 @@ export function App() {
           </ErrorBoundary>
           {resultTab === "data" && pager}
         </div>
+        )}
         <div className={"status-bar" + (runInfo ? " " + runInfo.kind : "")}>
           <span className="status-dot" />
           <span className="status-text">{running ? "执行中…" : runInfo ? runInfo.text : "就绪"}</span>
@@ -6010,7 +6315,7 @@ export function App() {
       </main>
 
       {chatOpen ? (
-        <section className="chat">
+        <section className={"chat" + (chatMaximized ? " maximized" : "")}>
           <div
             className="chat-splitter"
             onMouseDown={startChatResize}
@@ -6104,6 +6409,13 @@ export function App() {
           </button>
           <button
             className="icon-btn"
+            title={chatMaximized ? "还原侧边栏宽度" : "最大化 AI 画布（专注深度分析）"}
+            onClick={() => setChatMaximized((v) => !v)}
+          >
+            {chatMaximized ? "⤡" : "⤢"}
+          </button>
+          <button
+            className="icon-btn"
             title="收起 Chat"
             onClick={() => {
               setChatOpen(false);
@@ -6194,6 +6506,7 @@ export function App() {
                         tools={(m as any).tools}
                         isRunning={streaming && i === chat.length - 1}
                         onImportSql={(sql) => handleImportToEditor(sql, undefined)}
+                        onOpenNewTab={(sql) => handleOpenInNewTab(sql, undefined)}
                       />
                     )}
                     <div className="msg-body">
@@ -6207,11 +6520,34 @@ export function App() {
                           onImportSql={(sql) =>
                             handleImportToEditor(sql, "dbBinding" in m ? m.dbBinding : undefined)
                           }
-                          onExecuteSql={
-                            m.role === "assistant" && "dbBinding" in m && m.dbBinding
-                              ? (sql) => execChatWriteSql(m.dbBinding!.conn_id, m.dbBinding!.db, sql)
-                              : undefined
+                          onOpenNewTab={(sql) =>
+                            handleOpenInNewTab(sql, "dbBinding" in m ? m.dbBinding : undefined)
                           }
+                          onExecuteSql={async (sql) => {
+                            const connId =
+                              ("dbBinding" in m && m.dbBinding?.conn_id) ||
+                              chatConnId ||
+                              active?.connId ||
+                              selId ||
+                              "";
+                            const db =
+                              "dbBinding" in m && m.dbBinding
+                                ? m.dbBinding.db
+                                : chatDb !== undefined
+                                ? chatDb
+                                : active?.db ?? selDb ?? null;
+                            if (!connId) {
+                              showToast("请先选择数据库连接");
+                              return;
+                            }
+                            const isWrite = /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql);
+                            if (isWrite) {
+                              await execChatWriteSql(connId, db, sql);
+                            } else {
+                              await runSqlExplicit(connId, sql, db);
+                              setResultCollapsed(false);
+                            }
+                          }}
                         />
                       )}
                     </div>
@@ -6497,6 +6833,35 @@ export function App() {
               </div>
             </div>
           )}
+          <div className="prompt-pills-bar">
+            {[
+              { icon: "⚡", label: "慢查询诊断", prompt: "请帮我分析这段 SQL 的执行计划与潜在性能瓶颈，并给出具体的索引与改写优化建议。" },
+              { icon: "📊", label: "数据统计总览", prompt: "请帮我统计当前数据库中核心业务表的记录行数、数据体量与重要字段分布。" },
+              { icon: "🔍", label: "缺失索引排查", prompt: "请检查当前业务表的索引覆盖情况，指出是否存在全表扫描隐患或需要补充的复合索引。" },
+              { icon: "📝", label: "生成字典文档", prompt: "请根据当前表结构、字段类型与注释，生成一份结构清晰规范的 Markdown 数据字典文档。" },
+            ].map((item, idx) => (
+              <button
+                key={idx}
+                type="button"
+                className="prompt-pill"
+                title={`点击填入提示词：${item.prompt}`}
+                onClick={() => {
+                  const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
+                  if (!input) return;
+                  const current = input.value.trim();
+                  const next = current ? `${current}\n${item.prompt}` : item.prompt;
+                  input.value = next;
+                  input.focus();
+                  input.setSelectionRange(next.length, next.length);
+                  input.style.height = "auto";
+                  input.style.height = Math.min(input.scrollHeight, 180) + "px";
+                }}
+              >
+                <span>{item.icon}</span>
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
           <div className="chat-composer-input">
             <textarea
               id="chat-input"
@@ -8263,7 +8628,7 @@ export function App() {
               setCtxMenu(null);
             }}
           />
-          <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
+          <TableContextMenuContainer x={ctxMenu.x} y={ctxMenu.y}>
             {ctxMenu.cell && result?.kind === "table" && (
               <>
                 <div className="ctx-title">
@@ -8412,7 +8777,7 @@ export function App() {
             </button>
               </>
             ) : null}
-          </div>
+          </TableContextMenuContainer>
         </>
       )}
 
@@ -8632,6 +8997,28 @@ export function App() {
 /// Serialize a table result to CSV with proper RFC-4180 quoting.
 function fmtCell(c: unknown): string {
   return c == null ? "" : typeof c === "object" ? JSON.stringify(c) : String(c);
+}
+
+/** Type-based semantic color class helper (inspired by DBX dataGridTypeColorScheme). */
+function getCellStyleClass(text: string, rawVal: unknown): string | undefined {
+  if (text === "NULL" || rawVal === null || rawVal === undefined) return "cell--null";
+  if (text === "true" || text === "false" || text === "TRUE" || text === "FALSE") return "cell--bool";
+  if (/^-?\d+(\.\d+)?$/.test(text)) return "cell--num";
+  if (
+    /^\d{4}[-/]\d{2}[-/]\d{2}(\s+\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?$/.test(text) ||
+    /^\d{2}:\d{2}:\d{2}$/.test(text)
+  ) {
+    return "cell--datetime";
+  }
+  if ((text.startsWith("{") && text.endsWith("}")) || (text.startsWith("[") && text.endsWith("]"))) {
+    try {
+      JSON.parse(text);
+      return "cell--json";
+    } catch {
+      // not valid json, normal text
+    }
+  }
+  return undefined;
 }
 
 function toCsv(columns: string[], rows: string[][]): string {
