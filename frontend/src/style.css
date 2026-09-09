@@ -5605,39 +5605,10 @@ select.field-input:disabled {
   opacity: 0.8;
 }
 
-/* 导出下拉微触发器 */
-.tb-caret-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  border-radius: var(--r-sm);
-  font-size: 9px;
-  transition: all 0.12s ease;
-}
-.tb-caret-btn:hover {
+.tb-ghost-btn.active {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
-.tb-caret-btn.open {
-  color: var(--brand);
-}
-
-.tb-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--r-full);
-  flex: none;
-  margin-left: 2px;
-}
-.tb-dot.ok { background: var(--success-500); }
-.tb-dot.warn { background: var(--warning-500); }
 
 /* 下拉菜单气泡 (极简纯平面) */
 .tb-menu {

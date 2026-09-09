@@ -437,24 +437,23 @@ export function Tree(props: TreeProps) {
 
   // --- Connection import / export / template (#1, #2) ----------------------
   const fileRef = useRef<HTMLInputElement>(null);
-  const cipherRef = useRef<HTMLDivElement>(null);
-  const [cipher, setCipher] = useState<"system-key" | "none">("system-key");
-  const [cipherOpen, setCipherOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [treeMsg, setTreeMsg] = useState<string>("");
   const [showImportModal, setShowImportModal] = useState(false);
   const [importInputText, setImportInputText] = useState("");
 
-  // Close the custom cipher dropdown when clicking anywhere outside it.
+  // Close the export dropdown when clicking anywhere outside it.
   useEffect(() => {
-    if (!cipherOpen) return;
+    if (!exportMenuOpen) return;
     const onDoc = (e: MouseEvent) => {
-      if (cipherRef.current && !cipherRef.current.contains(e.target as HTMLElement)) {
-        setCipherOpen(false);
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as HTMLElement)) {
+        setExportMenuOpen(false);
       }
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, [cipherOpen]);
+  }, [exportMenuOpen]);
 
   // Trigger a browser download of `text` as `filename`.
   // Tauri 2: 用官方 dialog plugin 弹系统保存对话框 + fs plugin 写文件。
@@ -468,19 +467,19 @@ export function Tree(props: TreeProps) {
     await writeTextFile(path, text);
   };
 
-  // Export all connections. `cipher` decides whether passwords are encrypted
-  // under K (system-key) or written in plaintext (none — high risk).
-  const handleExport = useCallback(async () => {
+  // Export all connections with chosen cipher mode (system-key or none).
+  const handleExportWith = useCallback(async (mode: "system-key" | "none") => {
+    setExportMenuOpen(false);
     setTreeMsg("导出中…");
     try {
-      const yaml = await api.exportConnections(cipher);
+      const yaml = await api.exportConnections(mode);
       const stamp = new Date().toISOString().slice(0, 10);
       download(`chatquery-connections-${stamp}.yaml`, yaml);
-      setTreeMsg(cipher === "none" ? "已导出（明文，含密码！）" : "已导出（已加密）");
+      setTreeMsg(mode === "none" ? "已导出（明文，含密码！）" : "已导出（已加密）");
     } catch (e) {
       setTreeMsg("导出失败: " + String(e));
     }
-  }, [cipher]);
+  }, []);
 
   // Import connections from text (YAML/JSON, Navicat .ncx/JSON, DataGrip XML, or JDBC/URI)
   const doImportText = useCallback(
@@ -913,47 +912,34 @@ export function Tree(props: TreeProps) {
       {/* Connection import / export / template — 极简单行纯平面工具栏 */}
       <div className="tree-toolbar">
         {/* 导出组合操作 (集成加密方式切换，单行不折行) */}
-        <div className="tb-group" ref={cipherRef}>
+        {/* 导出操作组：点击直接弹出下拉菜单选择 加密导出 或 明文导出 */}
+        <div className="tb-group" ref={exportMenuRef}>
           <button
             type="button"
-            className="tb-ghost-btn"
-            onClick={() => void handleExport()}
-            title={`导出连接为 YAML（当前: ${cipher === "system-key" ? "系统密钥加密" : "明文"}）`}
+            className={"tb-ghost-btn" + (exportMenuOpen ? " active" : "")}
+            onClick={() => setExportMenuOpen((v) => !v)}
+            title="选择加密或明文导出所有连接"
           >
             <span className="tb-btn-icon">⬇</span>
             <span>导出</span>
-            <span className={"tb-dot " + (cipher === "system-key" ? "ok" : "warn")} />
+            <span style={{ fontSize: "9px", color: "var(--text-tertiary)", marginLeft: 2 }}>▾</span>
           </button>
-          <button
-            type="button"
-            className={"tb-caret-btn" + (cipherOpen ? " open" : "")}
-            onClick={() => setCipherOpen((v) => !v)}
-            title="选择导出加密模式"
-          >
-            ▾
-          </button>
-          {cipherOpen && (
+          {exportMenuOpen && (
             <div className="tb-menu" onClick={(e) => e.stopPropagation()}>
               <button
                 type="button"
-                className={"tb-option" + (cipher === "system-key" ? " sel" : "")}
-                onClick={() => {
-                  setCipher("system-key");
-                  setCipherOpen(false);
-                }}
+                className="tb-option"
+                onClick={() => void handleExportWith("system-key")}
               >
-                <span className="tb-opt-main">🔒 加密导出 (system-key)</span>
-                <span className="tb-opt-sub">密码使用系统主密钥加密</span>
+                <span className="tb-opt-main">🔒 加密导出</span>
+                <span className="tb-opt-sub">使用系统主密钥加密密码（推荐）</span>
               </button>
               <button
                 type="button"
-                className={"tb-option" + (cipher === "none" ? " sel" : "")}
-                onClick={() => {
-                  setCipher("none");
-                  setCipherOpen(false);
-                }}
+                className="tb-option"
+                onClick={() => void handleExportWith("none")}
               >
-                <span className="tb-opt-main">⚠️ 明文导出</span>
+                <span className="tb-opt-main" style={{ color: "var(--danger-500)" }}>⚠️ 明文导出</span>
                 <span className="tb-opt-sub">密码明文写入文件（高风险）</span>
               </button>
             </div>
@@ -993,11 +979,6 @@ export function Tree(props: TreeProps) {
       {/* Scrollable tree content */}
       <ScrollArea>
         {roots.length === 0 && <div className="tree-empty">暂无连接，点右上角 ＋ 添加</div>}
-        {cipher === "none" && (
-          <div className="tree-warn">
-            ⚠️ 明文导出会把连接密码以明文写入文件，请勿分享或提交到仓库。
-          </div>
-        )}
         {treeMsg && <div className="tree-msg">{treeMsg}</div>}
 
         {roots.map((r) => (
