@@ -92,6 +92,18 @@
   /* Translucent vibrancy panel (overlays / popovers) — cool glass */
   --panel-bg: rgb(22 27 44 / 0.82);
 
+  /* Modal & Dialog System Tokens (Base / Dark) */
+  --modal-bg:            #141826;
+  --modal-mask-bg:       rgba(4, 6, 12, 0.75);
+  --modal-border:        rgba(255, 255, 255, 0.09);
+  --modal-shadow:        0 24px 70px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(99, 102, 241, 0.15);
+  --input-bg:            #0C101A;
+  --input-bg-focus:      #0E1320;
+  --input-border:        #232A3D;
+  --input-border-hover:  #38425F;
+  --settings-nav-bg:     #0D101A;
+  --settings-group-bg:   #181D2C;
+
   /* Text selection */
   --sel-bg: rgb(99 102 241 / 0.40);
 
@@ -231,6 +243,18 @@
   --segment-active: #ffffff;
   --panel-bg: rgb(255 255 255 / 0.80);
   --sel-bg: rgb(0 122 255 / 0.30);
+
+  /* Modal & Dialog System Tokens (Light Theme) */
+  --modal-bg:            #ffffff;
+  --modal-mask-bg:       rgba(0, 0, 0, 0.45);
+  --modal-border:        rgba(0, 0, 0, 0.10);
+  --modal-shadow:        0 20px 60px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  --input-bg:            #ffffff;
+  --input-bg-focus:      #ffffff;
+  --input-border:        #d1d1d6;
+  --input-border-hover:  #b0b0b5;
+  --settings-nav-bg:     #f4f4f8;
+  --settings-group-bg:   #f9f9fb;
 
   /* Opaque selection fills (light) */
   --sel-col-bg: #a9cdff;
@@ -4693,11 +4717,11 @@ select.field-input:disabled {
 }
 .rail-btn:hover { background: var(--bg-subtle); color: var(--text-primary); }
 
-/* =====================  MODALS (Modern Pro Dark 质感弹窗系统)  ===================== */
+/* =====================  MODALS (自适应双模质感弹窗系统)  ===================== */
 .modal-mask {
   position: fixed;
   inset: 0;
-  background: rgba(4, 6, 12, 0.78);
+  background: var(--modal-mask-bg);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   display: flex;
@@ -4707,8 +4731,8 @@ select.field-input:disabled {
   animation: overlay-in var(--t-base);
 }
 .modal {
-  background: #141826;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: var(--modal-bg);
+  border: 1px solid var(--modal-border);
   border-radius: 12px;
   padding: 20px 22px;
   width: 500px;
@@ -4718,16 +4742,14 @@ select.field-input:disabled {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  box-shadow:
-    0 24px 70px rgba(0, 0, 0, 0.8),
-    0 0 0 1px rgba(99, 102, 241, 0.18);
+  box-shadow: var(--modal-shadow);
   animation: modal-in var(--t-base);
 }
 .modal h2, .modal h3 {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: #F8FAFC;
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4737,7 +4759,7 @@ select.field-input:disabled {
   flex-direction: column;
   gap: 6px;
   font-size: 11px;
-  color: #94A3B8;
+  color: var(--text-secondary);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: .04em;
@@ -4745,9 +4767,9 @@ select.field-input:disabled {
 .modal input,
 .modal select,
 .modal textarea {
-  background: #0C101A;
-  color: #F8FAFC;
-  border: 1px solid #232A3D;
+  background: var(--input-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--input-border);
   border-radius: var(--r-md);
   padding: 8px 12px;
   font-family: inherit;
@@ -4757,15 +4779,15 @@ select.field-input:disabled {
 .modal input:hover,
 .modal select:hover,
 .modal textarea:hover {
-  border-color: #38425F;
+  border-color: var(--input-border-hover);
 }
 .modal input:focus,
 .modal select:focus,
 .modal textarea:focus {
   outline: none;
   border-color: var(--brand);
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
-  background: #0E1320;
+  box-shadow: 0 0 0 2px var(--brand-soft);
+  background: var(--input-bg-focus);
 }
 /* Segmented control for the "new environment" db_type picker (ADR-022). */
 /* macOS segmented control: one connected capsule, raised segment inside */
@@ -5365,7 +5387,7 @@ select.field-input:disabled {
 .form-section-title { font-size: var(--fs-xs); font-weight: 600; color: var(--text-secondary); margin-bottom: var(--sp-3); text-transform: uppercase; letter-spacing: .04em; display: flex; align-items: center; gap: 6px; }
 .form-section-title::before { content: ""; display: inline-block; width: 3px; height: 12px; background: var(--brand); border-radius: 2px; }
 
-/* =====================  连接表单 tab 页签 (Modern Pro Dark)  ===================== */
+/* =====================  连接表单 tab 页签 (自适应双模系统)  ===================== */
 .conn-modal {
   width: 560px;
   max-width: 94vw;
@@ -5376,27 +5398,27 @@ select.field-input:disabled {
   flex-direction: column;
   overflow: hidden;
   gap: 0;
-  background: #141826;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: var(--modal-bg);
+  border: 1px solid var(--modal-border);
   border-radius: 14px;
-  box-shadow: 0 24px 75px rgba(0, 0, 0, 0.85);
+  box-shadow: var(--modal-shadow);
 }
 .conn-modal > h3 {
   margin: 0;
   padding: 16px 20px;
   font-size: 15px;
   font-weight: 600;
-  color: #F8FAFC;
+  color: var(--text-primary);
   flex: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: #11141E;
+  border-bottom: 1px solid var(--border);
+  background: var(--settings-nav-bg);
 }
 .conn-tabs {
   display: flex;
   gap: 4px;
   padding: 10px 20px;
-  background: #0D101A;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--settings-nav-bg);
+  border-bottom: 1px solid var(--border);
   flex: none;
 }
 .conn-tab {
@@ -5404,7 +5426,7 @@ select.field-input:disabled {
   height: 32px;
   border: 1px solid transparent;
   background: transparent;
-  color: #94A3B8;
+  color: var(--text-secondary);
   font-family: inherit;
   font-size: 12px;
   font-weight: 500;
@@ -5417,8 +5439,8 @@ select.field-input:disabled {
   gap: 6px;
 }
 .conn-tab:hover {
-  color: #F8FAFC;
-  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 .conn-tab.active {
   background: var(--brand-grad);
@@ -5435,14 +5457,14 @@ select.field-input:disabled {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  background: #141826;
+  background: var(--modal-bg);
 }
 /* Inside a tab, the section header is the first (and only) block */
 .form-section.in-tab {
-  border-color: #232A3D;
+  border-color: var(--border);
   margin-top: 0;
   padding: 12px 14px;
-  background: #181D2C;
+  background: var(--settings-group-bg);
   border-radius: 8px;
 }
 
@@ -5708,7 +5730,7 @@ select.field-input:disabled {
 .scan-const { background: #16a34a; }
 .scan-other { background: #6b7280; }
 
-/* =====================  设置 · 左侧模块导航 (Modern Pro Dark)  ===================== */
+/* =====================  设置 · 左侧模块导航 (自适应双模系统)  ===================== */
 .settings-modal {
   position: relative;
   display: flex;
@@ -5720,10 +5742,10 @@ select.field-input:disabled {
   max-height: 88vh;
   padding: 0;
   overflow: hidden;
-  background: #141826;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: var(--modal-bg);
+  border: 1px solid var(--modal-border);
   border-radius: 14px;
-  box-shadow: 0 24px 75px rgba(0, 0, 0, 0.85);
+  box-shadow: var(--modal-shadow);
 }
 .settings-nav {
   flex: 0 0 180px;
@@ -5731,15 +5753,15 @@ select.field-input:disabled {
   flex-direction: column;
   gap: 3px;
   padding: 14px 10px;
-  background: #0D101A;
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--settings-nav-bg);
+  border-right: 1px solid var(--border);
   height: 100%;
   overflow-y: auto;
 }
 .settings-nav-title {
   font-size: 11px;
   font-weight: 700;
-  color: #64748B;
+  color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: .08em;
   padding: 4px 8px 10px;
@@ -5748,7 +5770,7 @@ select.field-input:disabled {
   text-align: left;
   border: 1px solid transparent;
   background: transparent;
-  color: #94A3B8;
+  color: var(--text-secondary);
   font-size: 12.5px;
   font-weight: 500;
   padding: 8px 12px;
@@ -5757,8 +5779,8 @@ select.field-input:disabled {
   transition: all .15s ease;
 }
 .nav-item:hover {
-  background: rgba(255, 255, 255, 0.04);
-  color: #F8FAFC;
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 .nav-item.active {
   background: var(--brand-grad);
@@ -5776,24 +5798,24 @@ select.field-input:disabled {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  background: #141826;
+  background: var(--modal-bg);
 }
 .settings-page { display: flex; flex-direction: column; gap: 14px; }
 .settings-page h3 {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: #F8FAFC;
+  color: var(--text-primary);
 }
 /* Modern grouped card */
 .settings-group {
-  background: #181D2C;
-  border: 1px solid #232A3D;
+  background: var(--settings-group-bg);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
 }
 .settings-group > * + * {
   border-top: 1px solid rgba(255, 255, 255, 0.05);
