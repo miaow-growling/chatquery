@@ -1858,26 +1858,43 @@ export function App() {
   });
 
   // --- Resizable chat panel -----------------------------------------------
+  const appContainerRef = useRef<HTMLDivElement>(null);
   const isResizingChat = useRef(false);
   const startChatX = useRef(0);
   const startChatW = useRef(360);
-  const stopChatResize = useCallback(() => {
-    if (!isResizingChat.current) return;
-    isResizingChat.current = false;
-    document.removeEventListener("mousemove", onChatResizeMove);
-    document.removeEventListener("mouseup", stopChatResize);
-  }, []);
+  const chatRafId = useRef<number | null>(null);
+  const latestChatW = useRef(chatWidth);
   const onChatResizeMove = useCallback((e: MouseEvent) => {
     if (!isResizingChat.current) return;
     const delta = startChatX.current - e.clientX; // dragging left expands chat
     const next = Math.min(600, Math.max(220, startChatW.current + delta));
-    setChatWidth(next);
+    latestChatW.current = next;
+    if (chatRafId.current === null) {
+      chatRafId.current = requestAnimationFrame(() => {
+        if (appContainerRef.current) {
+          appContainerRef.current.style.setProperty("--chat-width-val", `${latestChatW.current}px`);
+        }
+        chatRafId.current = null;
+      });
+    }
   }, []);
+  const stopChatResize = useCallback(() => {
+    if (isResizingChat.current) {
+      isResizingChat.current = false;
+      if (chatRafId.current !== null) cancelAnimationFrame(chatRafId.current);
+      document.body.classList.remove("dragging-h");
+      document.removeEventListener("mousemove", onChatResizeMove);
+      document.removeEventListener("mouseup", stopChatResize);
+      setChatWidth(latestChatW.current);
+    }
+  }, [onChatResizeMove]);
   const startChatResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     isResizingChat.current = true;
     startChatX.current = e.clientX;
     startChatW.current = chatWidth;
+    latestChatW.current = chatWidth;
+    document.body.classList.add("dragging-h");
     document.addEventListener("mousemove", onChatResizeMove);
     document.addEventListener("mouseup", stopChatResize);
   }, [chatWidth, onChatResizeMove, stopChatResize]);
@@ -1889,7 +1906,7 @@ export function App() {
     }
   }, [chatWidth]);
 
-  // --- Editor vertical height splitter (物理上下拖拽条与比例控制) ----------
+  // --- Editor vertical height splitter (高性能 rAF + CSS Variable 零延迟拖拽) ----------
   const [editorPercent, setEditorPercent] = useState<number>(() => {
     const saved = localStorage.getItem("cq_editor_percent");
     const parsed = saved ? parseFloat(saved) : 50;
@@ -1905,6 +1922,10 @@ export function App() {
     isResizingV.current = true;
     startY.current = e.clientY;
     startPercent.current = editorPercent;
+    let latestPercent = editorPercent;
+    let rafId: number | null = null;
+
+    document.body.classList.add("dragging-v");
 
     const onMove = (me: MouseEvent) => {
       if (!isResizingV.current || !appMainRef.current) return;
@@ -1913,15 +1934,26 @@ export function App() {
       if (totalH <= 0) return;
       const deltaY = me.clientY - startY.current;
       const deltaPercent = (deltaY / totalH) * 100;
-      const next = Math.min(85, Math.max(15, startPercent.current + deltaPercent));
-      setEditorPercent(next);
+      latestPercent = Math.min(85, Math.max(15, startPercent.current + deltaPercent));
+
+      if (rafId === null) {
+        rafId = requestAnimationFrame(() => {
+          if (appMainRef.current) {
+            appMainRef.current.style.setProperty("--editor-flex", `${latestPercent}%`);
+          }
+          rafId = null;
+        });
+      }
     };
 
     const onUp = () => {
       if (isResizingV.current) {
         isResizingV.current = false;
+        if (rafId !== null) cancelAnimationFrame(rafId);
+        document.body.classList.remove("dragging-v");
         document.removeEventListener("mousemove", onMove);
         document.removeEventListener("mouseup", onUp);
+        setEditorPercent(latestPercent);
       }
     };
 
@@ -5992,10 +6024,14 @@ export function App() {
             拖拽区，避免与原生标题叠加显示成两份文字。 */}
       </div>
       <div
+        ref={appContainerRef}
         className={"app" + (chatOpen ? "" : " chat-collapsed")}
         style={
           chatOpen
-            ? { gridTemplateColumns: `var(--sidebar-w) 1fr ${chatWidth}px` }
+            ? ({
+                "--chat-width-val": `${chatWidth}px`,
+                gridTemplateColumns: `var(--sidebar-w) 1fr var(--chat-width-val, ${chatWidth}px)`,
+              } as React.CSSProperties)
             : undefined
         }
       >
@@ -6111,7 +6147,7 @@ export function App() {
           <>
           <div
             className={"editor-pane" + (resultCollapsed ? " expanded" : "")}
-            style={resultCollapsed ? undefined : { flex: `0 0 ${editorPercent}%` }}
+            style={resultCollapsed ? undefined : { flex: "0 0 var(--editor-flex, 50%)" }}
           >
           <div className="pane-head">
             <span className="ctx-conn-wrap">
@@ -6378,7 +6414,7 @@ export function App() {
         {!resultCollapsed && (
         <div
           className="result-pane"
-          style={{ flex: `1 1 calc(100% - ${editorPercent}% - 8px)` }}
+          style={{ flex: "1 1 calc(100% - var(--editor-flex, 50%) - 5px)" }}
         >
           <div className="pane-head">
             <div className="result-tabs">

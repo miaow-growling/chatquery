@@ -824,6 +824,30 @@ button, input, select, textarea { font: inherit; color: inherit; }
   position: relative;
 }
 
+/* 拖拽期间全局性能保护：禁用文字选择与内部高开销 hover，保障 120fps 极速跟手 */
+body.dragging-v,
+body.dragging-v * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+body.dragging-v .editor-wrap,
+body.dragging-v .result-body,
+body.dragging-v .cm-editor,
+body.dragging-v .monaco-editor {
+  pointer-events: none !important;
+}
+
+body.dragging-h,
+body.dragging-h * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+body.dragging-h .app-main,
+body.dragging-h .chat-log,
+body.dragging-h .cm-editor {
+  pointer-events: none !important;
+}
+
 /* Floating Restore Pill (inspired by DBX) */
 .floating-restore-pill {
   position: absolute;
