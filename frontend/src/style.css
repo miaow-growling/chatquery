@@ -761,6 +761,41 @@ button, input, select, textarea { font: inherit; color: inherit; }
   flex: 1 1 100%;
   border-bottom: none;
 }
+
+/* 垂直物理拖拽分割条 (Editor 与 Result 之间的机械实体分层) */
+.pane-splitter-v {
+  height: 8px;
+  background: #0B0E17;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: row-resize;
+  z-index: 10;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+  user-select: none;
+}
+.pane-splitter-v:hover,
+.pane-splitter-v.active {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: var(--brand);
+}
+.pane-splitter-v .splitter-handle {
+  width: 42px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  transition: all 0.2s ease;
+}
+.pane-splitter-v:hover .splitter-handle,
+.pane-splitter-v.active .splitter-handle {
+  background: var(--brand);
+  width: 58px;
+  box-shadow: 0 0 8px var(--brand);
+}
+
 .result-pane {
   flex: 1 1 48%;
   display: flex;
@@ -4658,70 +4693,79 @@ select.field-input:disabled {
 }
 .rail-btn:hover { background: var(--bg-subtle); color: var(--text-primary); }
 
-/* =====================  MODALS (vibrancy sheets)  ===================== */
+/* =====================  MODALS (Modern Pro Dark 质感弹窗系统)  ===================== */
 .modal-mask {
   position: fixed;
   inset: 0;
-  background: rgb(0 0 0 / 0.35);
-  -webkit-backdrop-filter: blur(6px) saturate(120%);
-  backdrop-filter: blur(6px) saturate(120%);
+  background: rgba(4, 6, 12, 0.78);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 10;
+  z-index: 1000;
   animation: overlay-in var(--t-base);
 }
 .modal {
-  background: var(--panel-bg);
-  -webkit-backdrop-filter: blur(30px) saturate(180%);
-  backdrop-filter: blur(30px) saturate(180%);
-  border: 1px solid var(--border);
-  border-radius: var(--r-xl);
-  padding: var(--sp-5);
-  width: 480px;
+  background: #141826;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  padding: 20px 22px;
+  width: 500px;
   max-width: 94vw;
   max-height: 86vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
+  gap: 14px;
   box-shadow:
-    0 24px 80px rgb(0 0 0 / .22),
-    0 8px 24px rgb(0 0 0 / .12),
-    0 0 0 .5px rgb(0 0 0 / .05);
+    0 24px 70px rgba(0, 0, 0, 0.8),
+    0 0 0 1px rgba(99, 102, 241, 0.18);
   animation: modal-in var(--t-base);
+}
+.modal h2, .modal h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #F8FAFC;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 .modal label {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
-  font-weight: var(--fw-medium);
+  font-size: 11px;
+  color: #94A3B8;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: .03em;
+  letter-spacing: .04em;
 }
 .modal input,
-.modal select {
-  background: var(--bg-canvas);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
+.modal select,
+.modal textarea {
+  background: #0C101A;
+  color: #F8FAFC;
+  border: 1px solid #232A3D;
   border-radius: var(--r-md);
-  padding: 9px 12px;
+  padding: 8px 12px;
   font-family: inherit;
-  font-size: var(--fs-sm);
+  font-size: 12.5px;
   transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
 }
 .modal input:hover,
-.modal select:hover {
-  border-color: var(--border-strong);
+.modal select:hover,
+.modal textarea:hover {
+  border-color: #38425F;
 }
 .modal input:focus,
-.modal select:focus {
+.modal select:focus,
+.modal textarea:focus {
   outline: none;
   border-color: var(--brand);
-  box-shadow: 0 0 0 3px rgb(0 122 255 / .15);
-  background: var(--bg-surface);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+  background: #0E1320;
 }
 /* Segmented control for the "new environment" db_type picker (ADR-022). */
 /* macOS segmented control: one connected capsule, raised segment inside */
@@ -5321,74 +5365,86 @@ select.field-input:disabled {
 .form-section-title { font-size: var(--fs-xs); font-weight: 600; color: var(--text-secondary); margin-bottom: var(--sp-3); text-transform: uppercase; letter-spacing: .04em; display: flex; align-items: center; gap: 6px; }
 .form-section-title::before { content: ""; display: inline-block; width: 3px; height: 12px; background: var(--brand); border-radius: 2px; }
 
-/* =====================  连接表单 tab 页签  ===================== */
-/* The connection modal becomes a fixed-height flex column: title + tab bar
-   stay put, only `.conn-tab-body` scrolls. */
+/* =====================  连接表单 tab 页签 (Modern Pro Dark)  ===================== */
 .conn-modal {
-  width: 540px;
+  width: 560px;
   max-width: 94vw;
-  height: 620px;
+  height: 640px;
   max-height: 88vh;
   padding: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   gap: 0;
+  background: #141826;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 14px;
+  box-shadow: 0 24px 75px rgba(0, 0, 0, 0.85);
 }
 .conn-modal > h3 {
   margin: 0;
-  padding: var(--sp-4) var(--sp-5) var(--sp-3);
-  font-size: var(--fs-md);
-  font-weight: var(--fw-semibold);
-  letter-spacing: -.01em;
+  padding: 16px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #F8FAFC;
   flex: none;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: #11141E;
 }
 .conn-tabs {
   display: flex;
-  gap: 2px;
-  padding: var(--sp-2) var(--sp-5);
-  background: transparent;
-  border-bottom: 1px solid var(--border);
+  gap: 4px;
+  padding: 10px 20px;
+  background: #0D101A;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   flex: none;
 }
 .conn-tab {
   flex: 1;
   height: 32px;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--text-tertiary);
-  font-family: var(--font-ui);
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
+  color: #94A3B8;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
   border-radius: var(--r-md);
   cursor: pointer;
-  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+  transition: all .15s ease;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
 }
-.conn-tab:hover { color: var(--text-secondary); background: var(--bg-subtle); }
+.conn-tab:hover {
+  color: #F8FAFC;
+  background: rgba(255, 255, 255, 0.04);
+}
 .conn-tab.active {
   background: var(--brand-grad);
   color: #fff;
-  font-weight: var(--fw-semibold);
-  box-shadow: var(--glow-sm);
+  font-weight: 600;
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.4);
 }
 .conn-tab-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+  padding: 18px 22px;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
+  gap: 14px;
+  background: #141826;
 }
-/* Inside a tab, the section header is the first (and only) block, so drop the
-   dashed top border + top margin that were meant for inline stacking. */
-.form-section.in-tab { border-color: var(--border); margin-top: 0; padding: var(--sp-3); }
+/* Inside a tab, the section header is the first (and only) block */
+.form-section.in-tab {
+  border-color: #232A3D;
+  margin-top: 0;
+  padding: 12px 14px;
+  background: #181D2C;
+  border-radius: 8px;
+}
 
 /* Two-column field row inside connection form */
 .form-row {
@@ -5652,54 +5708,63 @@ select.field-input:disabled {
 .scan-const { background: #16a34a; }
 .scan-other { background: #6b7280; }
 
-/* =====================  设置 · 左侧模块导航  ===================== */
+/* =====================  设置 · 左侧模块导航 (Modern Pro Dark)  ===================== */
 .settings-modal {
   position: relative;
   display: flex;
   flex-direction: row;
   align-items: stretch;
-  width: 880px;
+  width: 900px;
   max-width: 95vw;
   height: 640px;
   max-height: 88vh;
   padding: 0;
   overflow: hidden;
+  background: #141826;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 14px;
+  box-shadow: 0 24px 75px rgba(0, 0, 0, 0.85);
 }
 .settings-nav {
-  flex: 0 0 168px;
+  flex: 0 0 180px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: var(--sp-3) var(--sp-2);
-  background: var(--bg-subtle);
-  border-right: 1px solid var(--border);
+  gap: 3px;
+  padding: 14px 10px;
+  background: #0D101A;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
   height: 100%;
   overflow-y: auto;
 }
 .settings-nav-title {
-  font-size: var(--fs-xs);
+  font-size: 11px;
   font-weight: 700;
-  color: var(--text-secondary);
+  color: #64748B;
   text-transform: uppercase;
-  letter-spacing: .06em;
-  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+  letter-spacing: .08em;
+  padding: 4px 8px 10px;
 }
 .nav-item {
   text-align: left;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--text-primary);
-  font-size: var(--fs-sm);
-  padding: var(--sp-2) var(--sp-3);
+  color: #94A3B8;
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 8px 12px;
   border-radius: var(--r-md);
   cursor: pointer;
+  transition: all .15s ease;
 }
-.nav-item:hover { background: rgba(127, 127, 127, .15); }
+.nav-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: #F8FAFC;
+}
 .nav-item.active {
   background: var(--brand-grad);
   color: #fff;
   font-weight: 600;
-  box-shadow: var(--glow-sm);
+  box-shadow: 0 0 14px rgba(99, 102, 241, 0.4);
 }
 .settings-content {
   flex: 1 1 auto;
@@ -5707,43 +5772,57 @@ select.field-input:disabled {
   min-height: 0;
   height: 100%;
   overflow-y: auto;
-  padding: var(--sp-5);
+  padding: 20px 24px;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
+  gap: 16px;
+  background: #141826;
 }
-.settings-page { display: flex; flex-direction: column; gap: var(--sp-3); }
-.settings-page h3 { margin: 0; font-size: var(--fs-md); }
-/* macOS grouped-card: fields grouped under a section title, hairline-separated */
+.settings-page { display: flex; flex-direction: column; gap: 14px; }
+.settings-page h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #F8FAFC;
+}
+/* Modern grouped card */
 .settings-group {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  padding: var(--sp-2) var(--sp-3);
+  background: #181D2C;
+  border: 1px solid #232A3D;
+  border-radius: 8px;
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
 }
 .settings-group > * + * {
-  border-top: 1px solid var(--border-soft);
-  margin-top: var(--sp-2);
-  padding-top: var(--sp-2);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  margin-top: 10px;
+  padding-top: 10px;
 }
 .settings-group .cfg-check { align-items: flex-start; }
 .settings-close {
   position: absolute;
-  top: var(--sp-2);
-  right: var(--sp-2);
+  top: 12px;
+  right: 14px;
   width: 28px;
   height: 28px;
   border: none;
   background: transparent;
-  color: var(--text-secondary);
-  font-size: 20px;
+  color: #64748B;
+  font-size: 18px;
   line-height: 1;
   border-radius: var(--r-sm);
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .15s ease;
 }
-.settings-close:hover { background: var(--bg-subtle); color: var(--text-primary); }
+.settings-close:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #F8FAFC;
+}
 
 /* --- Knowledge base (ADR-AI-6) & Model providers: unified into fixed-size container --- */
 .settings-modal.kb-wide,

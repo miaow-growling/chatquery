@@ -1889,6 +1889,50 @@ export function App() {
     }
   }, [chatWidth]);
 
+  // --- Editor vertical height splitter (物理上下拖拽条与比例控制) ----------
+  const [editorPercent, setEditorPercent] = useState<number>(() => {
+    const saved = localStorage.getItem("cq_editor_percent");
+    const parsed = saved ? parseFloat(saved) : 50;
+    return isNaN(parsed) || parsed < 15 || parsed > 85 ? 50 : parsed;
+  });
+  const isResizingV = useRef(false);
+  const startY = useRef(0);
+  const startPercent = useRef(50);
+  const appMainRef = useRef<HTMLElement>(null);
+
+  const startVResize = useCallback((e: ReactMouseEvent) => {
+    e.preventDefault();
+    isResizingV.current = true;
+    startY.current = e.clientY;
+    startPercent.current = editorPercent;
+
+    const onMove = (me: MouseEvent) => {
+      if (!isResizingV.current || !appMainRef.current) return;
+      const rect = appMainRef.current.getBoundingClientRect();
+      const totalH = rect.height;
+      if (totalH <= 0) return;
+      const deltaY = me.clientY - startY.current;
+      const deltaPercent = (deltaY / totalH) * 100;
+      const next = Math.min(85, Math.max(15, startPercent.current + deltaPercent));
+      setEditorPercent(next);
+    };
+
+    const onUp = () => {
+      if (isResizingV.current) {
+        isResizingV.current = false;
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      }
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [editorPercent]);
+
+  useEffect(() => {
+    localStorage.setItem("cq_editor_percent", String(editorPercent));
+  }, [editorPercent]);
+
   // --- LLM vendor/key/model settings (Phase 19) --------------------------
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Settings is a left-nav module switcher: each module opens its own config
@@ -6031,7 +6075,7 @@ export function App() {
         </div>
       </aside>
 
-      <main className="app-main">
+      <main className="app-main" ref={appMainRef}>
         <div className="tab-bar">
             {tabs.map((t) => (
               <div
@@ -6065,7 +6109,10 @@ export function App() {
             </Suspense>
           ) : (
           <>
-          <div className={"editor-pane" + (resultCollapsed ? " expanded" : "")}>
+          <div
+            className={"editor-pane" + (resultCollapsed ? " expanded" : "")}
+            style={resultCollapsed ? undefined : { flex: `0 0 ${editorPercent}%` }}
+          >
           <div className="pane-head">
             <span className="ctx-conn-wrap">
               查询编辑器
@@ -6320,7 +6367,19 @@ export function App() {
           )}
         </div>
         {!resultCollapsed && (
-        <div className="result-pane">
+          <div
+            className="pane-splitter-v"
+            onMouseDown={startVResize}
+            title="拖动调整编辑器与结果面板高度"
+          >
+            <div className="splitter-handle" />
+          </div>
+        )}
+        {!resultCollapsed && (
+        <div
+          className="result-pane"
+          style={{ flex: `1 1 calc(100% - ${editorPercent}% - 8px)` }}
+        >
           <div className="pane-head">
             <div className="result-tabs">
               <button
