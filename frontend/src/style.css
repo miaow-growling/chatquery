@@ -211,60 +211,60 @@
   --gray-400:#d1d1d6;
   --gray-500:#e5e5ea;
   --gray-600:#ececf0;
-  --gray-700:#f2f2f7;
-  --gray-800:#f5f5f7;
-  --gray-900:#fafafa;
+  --gray-700:#e2e6ea;
+  --gray-800:#eaedf1;
+  --gray-900:#f4f6f8;
 
-  --bg-base:    #ffffff;
-  --bg-canvas:  #ffffff;
-  --bg-surface: #f2f2f7;
-  --bg-elevated:#ffffff;
-  --bg-subtle:  #e8e8ed;
-  --bg-inset:   #f2f2f7;
-  --bg-hover:   #e0e0e5;
+  --bg-base:    #EEF0F4;
+  --bg-canvas:  #E8EBF1;
+  --bg-surface: #FFFFFF;
+  --bg-elevated:#FFFFFF;
+  --bg-subtle:  #F4F6F9;
+  --bg-inset:   #FAFBFC;
+  --bg-hover:   #EDF1F7;
 
-  --border:        #d1d1d6;
-  --border-soft:   #e5e5ea;
-  --border-strong: #c2c2c7;
+  --border:        #CBD2DC;
+  --border-soft:   #E2E6EC;
+  --border-strong: #94A3B8;
 
   /* Scrollbars: translucent neutral, macOS-style overlay */
-  --scrollbar-thumb:       rgba(60,60,67,0.28);
-  --scrollbar-thumb-hover: rgba(60,60,67,0.52);
+  --scrollbar-thumb:       rgba(100, 116, 139, 0.28);
+  --scrollbar-thumb-hover: rgba(100, 116, 139, 0.52);
   --scrollbar-track:       transparent;
 
-  --text-primary:   #1c1c1e;
-  --text-secondary: #48484a;
-  --text-tertiary:  #8e8e93;
-  --text-on-brand:  #ffffff;
-  --text-disabled:  #b0b0b5;
+  --text-primary:   #0F172A;
+  --text-secondary: #334155;
+  --text-tertiary:  #64748B;
+  --text-on-brand:  #FFFFFF;
+  --text-disabled:  #94A3B8;
 
-  --grid-line: #e5e5ea;
+  --grid-line: #E2E8F0;
 
-  --segment-active: #ffffff;
-  --panel-bg: rgb(255 255 255 / 0.80);
-  --sel-bg: rgb(0 122 255 / 0.30);
+  --segment-active: #FFFFFF;
+  --panel-bg: rgba(255, 255, 255, 0.90);
+  --sel-bg: rgba(79, 70, 229, 0.16);
 
   /* Modal & Dialog System Tokens (Light Theme) */
   --modal-bg:            #ffffff;
-  --modal-mask-bg:       rgba(0, 0, 0, 0.45);
-  --modal-border:        rgba(0, 0, 0, 0.10);
-  --modal-shadow:        0 20px 60px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  --modal-mask-bg:       rgba(15, 23, 42, 0.40);
+  --modal-border:        #cbd2dc;
+  --modal-shadow:        0 20px 60px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.05);
   --input-bg:            #ffffff;
   --input-bg-focus:      #ffffff;
-  --input-border:        #d1d1d6;
-  --input-border-hover:  #b0b0b5;
-  --settings-nav-bg:     #f4f4f8;
-  --settings-group-bg:   #f9f9fb;
+  --input-border:        #cbd2dc;
+  --input-border-hover:  #94a3b8;
+  --settings-nav-bg:     #f4f6f9;
+  --settings-group-bg:   #ffffff;
 
   /* Opaque selection fills (light) */
-  --sel-col-bg: #a9cdff;
-  --sel-row-bg: #cfe3ff;
-  --sel-row-del-bg: #f4d6d4;
+  --sel-col-bg: #cfe3ff;
+  --sel-row-bg: #e0edff;
+  --sel-row-del-bg: #fee2e2;
 
-  --shadow-sm:  0 1px 2px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.04);
-  --shadow-md:  0 4px 12px rgb(0 0 0 / 0.10), 0 2px 4px rgb(0 0 0 / 0.05);
-  --shadow-lg:  0 10px 28px rgb(0 0 0 / 0.14);
-  --shadow-pop: 0 18px 50px rgb(0 0 0 / 0.22);
+  --shadow-sm:  0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md:  0 4px 14px rgba(15, 23, 42, 0.08);
+  --shadow-lg:  0 10px 28px rgba(15, 23, 42, 0.12);
+  --shadow-pop: 0 18px 50px rgba(15, 23, 42, 0.16);
 
   --focus-ring: 0 0 0 3px rgb(0 122 255 / 0.35);
 
@@ -891,7 +891,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   align-items: center;
   gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-4);
-  background: var(--bg-surface);
+  background: var(--bg-subtle);
   border-bottom: 1px solid var(--border);
   font-weight: var(--fw-semibold);
   min-height: 38px;
@@ -1522,13 +1522,13 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 
 /* =====================  RUN BANNER  ===================== */
 .run-banner {
-  padding: var(--sp-2) var(--sp-4);
-  font-size: var(--fs-sm);
+  padding: 4px 14px;
+  font-size: var(--fs-xs);
   border-bottom: 1px solid var(--border-soft);
-  background: var(--bg-surface);
+  background: var(--bg-subtle);
   color: var(--text-secondary);
 }
-.run-banner.run-ok { color: var(--success-500); }
+.run-banner.run-ok { color: var(--success-500); background: var(--success-soft); }
 .run-banner.run-warn { color: var(--warning-500); background: var(--warning-soft); }
 .run-banner.run-err { color: var(--danger-500); background: var(--danger-soft); }
 
