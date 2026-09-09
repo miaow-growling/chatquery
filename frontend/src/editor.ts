@@ -498,8 +498,8 @@ function ensureCompletionProvider() {
           suggestions.push({
             label: t.name,
             kind: t.is_view ? monaco.languages.CompletionItemKind.Interface : monaco.languages.CompletionItemKind.Class,
-            detail: t.is_view ? "View 视图" : "Table 数据表",
-            documentation: `数据库 ${db} 中的${t.is_view ? "视图" : "数据表"}`,
+            detail: t.comment ? t.comment : t.is_view ? "View 视图" : "Table 数据表",
+            documentation: t.comment ? `【${t.name}】${t.comment}\n数据库: ${db}` : `数据库 ${db} 中的${t.is_view ? "视图" : "数据表"}`,
             insertText: t.name,
             range,
             sortText: `00_${t.name}`,

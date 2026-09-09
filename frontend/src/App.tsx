@@ -53,7 +53,7 @@ import type {
   TreeModel,
   VendorPreset,
 } from "./types";
-import { createEditor, splitStatements, type EditorHandle } from "./editor";
+import { createEditor, splitStatements, type EditorHandle } from "./editor-cm6";
 // Redis 面板只在连接 Redis 实例时才需要，懒加载避免 MySQL 用户为它付出解析/内存成本。
 const RedisBrowser = lazy(() =>
   import("./RedisBrowser").then((m) => ({ default: m.RedisBrowser }))
@@ -65,6 +65,7 @@ import { save, open } from "@tauri-apps/plugin-dialog";
 import { writeFile, writeTextFile, readTextFile } from "@tauri-apps/plugin-fs";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { InlineAiBar } from "./InlineAiBar";
 
 /** 表格右键菜单自适应容器（具有视口边缘碰撞检测，自动翻转防止菜单底部被遮挡截断） */
 function TableContextMenuContainer({
@@ -1799,6 +1800,21 @@ export function App() {
 
   // AI Chat Maximize Canvas state (fullscreen / focused reasoning mode)
   const [chatMaximized, setChatMaximized] = useState(false);
+
+  // --- Inline AI Composer (Cmd+K) -----------------------------------------
+  const [inlineAiOpen, setInlineAiOpen] = useState(false);
+  const [inlineAiGenerating, setInlineAiGenerating] = useState(false);
+  const [inlineAiThinking, setInlineAiThinking] = useState(false);
+  const [inlineAiGenerated, setInlineAiGenerated] = useState(false);
+  const [inlineAiSelectedSql, setInlineAiSelectedSql] = useState("");
+  const inlineAiSnapshotRef = useRef<{
+    from: number;
+    to: number;
+    currentEnd: number;
+    origText: string;
+    streamedText: string;
+  } | null>(null);
+  const handleOpenInlineAiRef = useRef<() => void>(() => {});
 
   // --- Bottom status bar / console (Phase 18) -----------------------------
   // Last operation feedback: timing, affected/returned rows, errors. Replaces
@@ -3886,7 +3902,17 @@ export function App() {
                 (result.lines.length === 0 ? " redis-error" : "")
               }
             >
-              {result.note}
+              <span>{result.note}</span>
+              {result.lines.length === 0 && (
+                <button
+                  type="button"
+                  className="btn-diagnose-fix"
+                  onClick={() => diagnoseSqlError(active?.sql, result.note)}
+                  title="让 AI 分析该报错原因并提供修复 SQL"
+                >
+                  💡 AI 诊断并修复
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -4669,16 +4695,20 @@ export function App() {
         editorRef.current?.replaceValue(newDoc);
         editorRef.current?.view.focus();
 
-        const ed = editorRef.current?.editor;
-        if (ed) {
-          const model = ed.getModel();
-          if (model) {
-            const lineCount = model.getLineCount();
-            ed.revealLine(lineCount);
-            ed.setPosition({
-              lineNumber: lineCount,
-              column: model.getLineMaxColumn(lineCount),
-            });
+        if (editorRef.current?.scrollToBottom) {
+          editorRef.current.scrollToBottom();
+        } else {
+          const ed = editorRef.current?.editor;
+          if (ed && typeof ed.getModel === "function") {
+            const model = ed.getModel();
+            if (model) {
+              const lineCount = model.getLineCount();
+              ed.revealLine(lineCount);
+              ed.setPosition({
+                lineNumber: lineCount,
+                column: model.getLineMaxColumn(lineCount),
+              });
+            }
           }
         }
 
@@ -4762,6 +4792,152 @@ export function App() {
     },
     [chatConnId, chatDb, active, selId, selDb, tabs, showToast, clearEditState]
   );
+
+  // --- Inline AI Composer (Cmd+K) handlers --------------------------------
+  const handleOpenInlineAi = useCallback(() => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const sel = ed.getSelection();
+    const range = ed.getSelectionRange ? ed.getSelectionRange() : { from: 0, to: 0 };
+    const cursor = ed.getCursorPosition ? ed.getCursorPosition() : 0;
+    const from = range.from !== range.to ? range.from : cursor;
+    const to = range.from !== range.to ? range.to : cursor;
+
+    inlineAiSnapshotRef.current = {
+      from,
+      to,
+      currentEnd: to,
+      origText: sel,
+      streamedText: "",
+    };
+    setInlineAiSelectedSql(sel);
+    setInlineAiGenerated(false);
+    setInlineAiGenerating(false);
+    setInlineAiOpen(true);
+  }, []);
+
+  handleOpenInlineAiRef.current = handleOpenInlineAi;
+
+  const handleInlineAiSubmit = async (promptText: string) => {
+    const ed = editorRef.current;
+    const snap = inlineAiSnapshotRef.current;
+    if (!ed || !snap) return;
+
+    setInlineAiGenerating(true);
+    setInlineAiThinking(false);
+    snap.streamedText = "";
+    let rawBuffer = "";
+    let curLen = 0;
+
+    const targetConnId = active?.connId || chatConnId;
+    const targetDb = active?.db ?? chatDb ?? null;
+
+    try {
+      await api.inlineGenerateSql(
+        promptText,
+        snap.origText,
+        targetConnId,
+        targetDb,
+        (delta) => {
+          rawBuffer += delta;
+          const parsed = splitThinkContent(rawBuffer);
+          setInlineAiThinking(parsed.isThinking);
+
+          // 纯净 SQL 处理：彻底剥离可能存在的 ```sql 或 ``` 代码围栏
+          let cleanSql = parsed.content.trimStart();
+          if (cleanSql.startsWith("```")) {
+            cleanSql = cleanSql.replace(/^```[a-zA-Z]*\r?\n?/, "");
+          }
+          if (cleanSql.endsWith("```")) {
+            cleanSql = cleanSql.replace(/\r?\n?```$/, "");
+          }
+
+          // 只有真正产生 SQL 正文时，才往编辑器中写入（思考过程绝对不写入编辑器）
+          if (cleanSql !== snap.streamedText) {
+            snap.streamedText = cleanSql;
+            ed.replaceRange(snap.from, snap.from + curLen, cleanSql);
+            curLen = cleanSql.length;
+            snap.currentEnd = snap.from + curLen;
+          }
+        }
+      );
+      setInlineAiGenerated(true);
+    } catch (e) {
+      showToast("生成失败: " + String(e));
+    } finally {
+      setInlineAiGenerating(false);
+      setInlineAiThinking(false);
+    }
+  };
+
+  const handleInlineAiAccept = () => {
+    setInlineAiOpen(false);
+    setInlineAiGenerated(false);
+    inlineAiSnapshotRef.current = null;
+    editorRef.current?.view.focus();
+    showToast("✓ 已采纳生成的 SQL");
+  };
+
+  const handleInlineAiReject = () => {
+    const ed = editorRef.current;
+    const snap = inlineAiSnapshotRef.current;
+    if (ed && snap) {
+      ed.replaceRange(snap.from, snap.currentEnd, snap.origText);
+    }
+    setInlineAiOpen(false);
+    setInlineAiGenerated(false);
+    inlineAiSnapshotRef.current = null;
+    editorRef.current?.view.focus();
+    showToast("已撤销并恢复原始代码");
+  };
+
+  // --- SQL Error AI Quick Fix ---------------------------------------------
+  const diagnoseSqlError = (failedSql?: string, errMsg?: string) => {
+    const sql =
+      failedSql ||
+      editorRef.current?.getSelection().trim() ||
+      editorRef.current?.getStatement().trim() ||
+      active?.sql ||
+      "";
+    const err =
+      errMsg ||
+      (runInfo?.kind === "err" ? runInfo.text : "") ||
+      (active?.result?.kind === "redis" ? active.result.note : "") ||
+      "执行失败";
+
+    if (!active?.connId) {
+      showToast("请先选择数据库连接");
+      return;
+    }
+
+    const ref: SqlReference = {
+      conn_id: active.connId,
+      tab_id: active.id,
+      db: active.db ?? null,
+      scope: "statement",
+      sql: sql.trim(),
+    };
+
+    setChatConnId(active.connId);
+    setChatDb(active.db ?? null);
+    setPendingRefs([ref]);
+    setChatOpen(true);
+    localStorage.setItem("cq_chat_open", "1");
+
+    const promptMsg = `执行这段 SQL 报错：\n\`\`\`\n${err}\n\`\`\`\n请帮我排查具体原因（比如列名拼写错误、表不存在、字段约束或语法问题），并直接给出修复后的完整 SQL。`;
+
+    setTimeout(() => {
+      const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
+      if (input) {
+        input.value = promptMsg;
+        input.focus();
+        input.style.height = "auto";
+        input.style.height = Math.min(input.scrollHeight, 180) + "px";
+      }
+    }, 50);
+
+    showToast("已将报错与 SQL 装配至 AI 诊断");
+  };
 
   // --- Query history / saved snippets --------------------------------------
   const openHistory = async () => {
@@ -5267,11 +5443,20 @@ export function App() {
       // request. The model already saw the real tool results inside its own
       // turn, so only user/assistant text is replayed. Empty assistant
       // placeholders (the streaming bubble) are dropped too.
-      const history = next.filter(
-        (m): m is ChatMessage =>
-          m.role === "user" ||
-          (m.role === "assistant" && m.content.trim() !== ""),
-      );
+      const history: ChatMessage[] = [];
+      for (const m of next) {
+        if (m.role === "user") {
+          history.push({ role: "user", content: m.content });
+        } else if (m.role === "assistant") {
+          const content = m.content.trim();
+          if (content !== "") {
+            history.push({ role: "assistant", content: m.content });
+          } else if ((m.plan && m.plan.length > 0) || (m.tools && m.tools.length > 0)) {
+            // 被取消或仅有执行步骤的 assistant 消息补充占位，保持严格交替并告知模型前置动作被中止
+            history.push({ role: "assistant", content: "[该任务在执行步骤期间被用户中止或取消]" });
+          }
+        }
+      }
       // The chat's conn context lives in `chatConnId` (independent of
       // the SQL tab). Fall back to `selId` if the user hasn't picked
       // anything via the + menu yet. `selId` still binds the *agent*
@@ -5500,12 +5685,25 @@ export function App() {
         const id = activeTabIdRef.current;
         setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, sql: doc } : t)));
       },
-      () => runQueryRef.current()
+      () => runQueryRef.current(),
+      () => handleOpenInlineAiRef.current()
     );
     editorRef.current = editor;
     const init = tabs.find((t) => t.id === activeTabId);
     if (init) editor.replaceValue(init.sql);
-    return () => editor.view.destroy();
+
+    const onGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        handleOpenInlineAiRef.current();
+      }
+    };
+    window.addEventListener("keydown", onGlobalKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", onGlobalKeyDown);
+      editor.view.destroy();
+    };
   }, []);
 
   // Streaming chat event listeners.
@@ -6011,6 +6209,14 @@ export function App() {
                   </ul>
                 )}
               </div>
+              <button
+                type="button"
+                className="btn-open-inline-ai"
+                onClick={handleOpenInlineAi}
+                title="呼出 AI 原地编写 / 改写 (Cmd+K)"
+              >
+                ✨ AI 编写
+              </button>
               <button className="primary" onClick={() => void runQuery()} title="执行查询 (Ctrl/Cmd+Enter)">
                 执行
               </button>
@@ -6090,6 +6296,18 @@ export function App() {
                 hasSel: sel.length > 0,
               });
             }}
+          />
+          <InlineAiBar
+            visible={inlineAiOpen}
+            selectedSql={inlineAiSelectedSql}
+            dbName={active?.db ?? chatDb ?? null}
+            isGenerating={inlineAiGenerating}
+            isThinking={inlineAiThinking}
+            hasGenerated={inlineAiGenerated}
+            onClose={() => setInlineAiOpen(false)}
+            onSubmit={handleInlineAiSubmit}
+            onAccept={handleInlineAiAccept}
+            onReject={handleInlineAiReject}
           />
           {resultCollapsed && (
             <button
@@ -6246,7 +6464,19 @@ export function App() {
             </div>
           </div>
           {runInfo && (
-            <div className={"run-banner run-" + runInfo.kind}>{runInfo.text}</div>
+            <div className={"run-banner run-" + runInfo.kind}>
+              <span className="run-banner-text">{runInfo.text}</span>
+              {runInfo.kind === "err" && (
+                <button
+                  type="button"
+                  className="btn-diagnose-fix"
+                  onClick={() => diagnoseSqlError()}
+                  title="让 AI 分析该报错原因并提供修复 SQL"
+                >
+                  💡 AI 诊断并修复
+                </button>
+              )}
+            </div>
           )}
           {multiResults && multiResults.length > 1 && resultTab === "data" && (
             <div className="multi-result-tabs">

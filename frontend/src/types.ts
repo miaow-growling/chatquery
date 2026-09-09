@@ -155,6 +155,8 @@ export interface ColumnInfo {
 export interface TableMeta {
   name: string;
   is_view: boolean;
+  /// Table comment from INFORMATION_SCHEMA (e.g. Chinese description)
+  comment?: string;
 }
 
 export interface TableInfo {

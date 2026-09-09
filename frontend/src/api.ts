@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AuditRow,
@@ -302,6 +302,13 @@ export const api = {
     }),
   appendChatMessages: (convId: string, messages: NewChatMessage[]) =>
     invoke("append_chat_messages", { convId, messages }),
+  inlineGenerateSql: (
+    prompt: string,
+    selectedSql: string | undefined,
+    connId: string | null | undefined,
+    db: string | null | undefined,
+    onToken: (delta: string) => void
+  ) => inlineGenerateSql(prompt, selectedSql, connId, db, onToken),
 };
 
 export function onChatToken(cb: (t: string) => void): Promise<UnlistenFn> {
@@ -365,4 +372,28 @@ export function resolveConfirm(
   approved: boolean,
 ): Promise<void> {
   return invoke("resolve_confirm", { turnId, id, approved });
+}
+
+/**
+ * 轻量内联 SQL 流式生成通道（专用于 Cmd+K 原地生成与改写）。
+ * 走点对点 Channel，不抢占会话锁，没有 Agent 规划开销，毫秒级首字打字。
+ */
+export async function inlineGenerateSql(
+  prompt: string,
+  selectedSql: string | undefined,
+  connId: string | null | undefined,
+  db: string | null | undefined,
+  onToken: (delta: string) => void
+): Promise<void> {
+  const channel = new Channel<string>();
+  channel.onmessage = (delta) => {
+    onToken(delta);
+  };
+  return invoke("inline_generate_sql", {
+    prompt,
+    selectedSql: selectedSql || null,
+    connId: connId || null,
+    db: db || null,
+    onToken: channel,
+  });
 }

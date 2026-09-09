@@ -43,6 +43,7 @@ type Node =
       db: string;
       name: string;
       isView: boolean;
+      comment?: string;
       count?: number;
     }
   | {
@@ -188,6 +189,7 @@ async function loader(node: Node): Promise<LoadResult | null> {
           db: node.db,
           name: t.name,
           isView: false,
+          comment: t.comment,
         }));
       const viewNodes = tables
         .filter((t) => t.is_view)
@@ -198,6 +200,7 @@ async function loader(node: Node): Promise<LoadResult | null> {
           db: node.db,
           name: t.name,
           isView: true,
+          comment: t.comment,
         }));
       return {
         nodes: [
@@ -240,6 +243,7 @@ async function loader(node: Node): Promise<LoadResult | null> {
           db: node.db,
           name: t.name,
           isView: t.is_view,
+          comment: t.comment,
         })),
         count: filtered.length,
       };
@@ -437,6 +441,8 @@ export function Tree(props: TreeProps) {
   const [cipher, setCipher] = useState<"system-key" | "none">("system-key");
   const [cipherOpen, setCipherOpen] = useState(false);
   const [treeMsg, setTreeMsg] = useState<string>("");
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importInputText, setImportInputText] = useState("");
 
   // Close the custom cipher dropdown when clicking anywhere outside it.
   useEffect(() => {
@@ -476,28 +482,44 @@ export function Tree(props: TreeProps) {
     }
   }, [cipher]);
 
-  // Import connections from a user-picked YAML file. After a successful import
-  // we refresh the tree so the new nodes appear.
-  const handleImportFile = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const f = e.target.files?.[0];
-      e.target.value = "";
-      if (!f) return;
+  // Import connections from text (YAML/JSON, Navicat .ncx/JSON, DataGrip XML, or JDBC/URI)
+  const doImportText = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
       setTreeMsg("导入中…");
       try {
-        const text = await f.text();
-        const res = await api.importConnections(text);
+        const res = await api.importConnections(trimmed);
         let msg = `导入完成：新增 ${res.connections_added} 个连接、${res.containers_added} 个容器`;
         if (res.passwords_needed.length)
           msg += `；需补密码：${res.passwords_needed.join(", ")}`;
         if (res.skipped.length) msg += `；跳过 ${res.skipped.length} 个`;
         setTreeMsg(msg);
         props.onRefreshConns();
+        setShowImportModal(false);
+        setImportInputText("");
       } catch (err) {
         setTreeMsg("导入失败: " + String(err));
       }
     },
     [props]
+  );
+
+  // Import connections from a user-picked file. After a successful import
+  // we refresh the tree so the new nodes appear.
+  const handleImportFile = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const f = e.target.files?.[0];
+      e.target.value = "";
+      if (!f) return;
+      try {
+        const text = await f.text();
+        await doImportText(text);
+      } catch (err) {
+        setTreeMsg("读取文件失败: " + String(err));
+      }
+    },
+    [doImportText]
   );
 
   // Download a blank, ready-to-edit template (plaintext cipher).
@@ -766,9 +788,13 @@ export function Tree(props: TreeProps) {
 
     const title =
       node.kind === "column"
-        ? "双击插入到编辑器"
+        ? node.col.comment
+          ? `${node.col.name} (${node.col.comment}) · 双击插入到编辑器`
+          : "双击插入到编辑器"
         : node.kind === "table"
-        ? "双击浏览数据（点 ▸ 可展开字段，右键更多操作）"
+        ? node.comment
+          ? `${node.name} (${node.comment}) · 双击浏览数据（点 ▸ 展开字段）`
+          : "双击浏览数据（点 ▸ 可展开字段，右键更多操作）"
         : node.kind === "redisdb"
         ? "单击选中，双击打开查询"
         : node.kind === "env" || node.kind === "group"
@@ -809,11 +835,17 @@ export function Tree(props: TreeProps) {
           </span>
           <span className="tree-label">
             {nodeLabel(node)}
+            {node.kind === "table" && node.comment && (
+              <span className="tree-comment" title={node.comment}> {node.comment}</span>
+            )}
             {node.kind === "column" && node.col.key === "PRI" && (
               <span className="pk">PK</span>
             )}
             {node.kind === "column" && node.col.data_type && (
               <span className="col-type">{node.col.data_type}</span>
+            )}
+            {node.kind === "column" && node.col.comment && (
+              <span className="tree-comment" title={node.col.comment}> {node.col.comment}</span>
             )}
           </span>
           {cnt !== undefined && <span className="tree-count">{cnt}</span>}
@@ -929,7 +961,12 @@ export function Tree(props: TreeProps) {
           <button type="button" className="tb-btn" onClick={() => void handleExport()} title="导出连接为 YAML">
             <span aria-hidden>⬇</span> 导出
           </button>
-          <button type="button" className="tb-btn" onClick={() => fileRef.current?.click()} title="从 YAML 文件导入连接">
+          <button
+            type="button"
+            className="tb-btn"
+            onClick={() => setShowImportModal(true)}
+            title="导入连接（支持 ChatQuery YAML/JSON、Navicat、DataGrip、JDBC/URI）"
+          >
             <span aria-hidden>⬆</span> 导入
           </button>
           <button type="button" className="tb-btn" onClick={() => void handleTemplate()} title="下载空白模板">
@@ -938,7 +975,7 @@ export function Tree(props: TreeProps) {
           <input
             ref={fileRef}
             type="file"
-            accept=".yaml,.yml"
+            accept=".yaml,.yml,.json,.ncx,.xml,.txt"
             style={{ display: "none" }}
             onChange={(e) => void handleImportFile(e)}
           />
@@ -967,6 +1004,82 @@ export function Tree(props: TreeProps) {
           items={menu.items}
           onClose={() => setMenu(null)}
         />
+      )}
+
+      {showImportModal && (
+        <div className="modal-mask" onClick={() => setShowImportModal(false)}>
+          <div className="modal" style={{ width: 540 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ margin: 0, fontSize: "var(--fs-md)", fontWeight: "var(--fw-semibold)" }}>
+              导入数据库连接
+            </h3>
+            <p className="modal-msg" style={{ fontSize: "var(--fs-xs)", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+              支持 <strong>ChatQuery (YAML/JSON)</strong>、<strong>Navicat (.ncx/XML/JSON)</strong>、<strong>DataGrip (dataSources.xml 或剪贴板数据源)</strong> 以及 <strong>MySQL/Redis 连接串</strong>。
+            </p>
+
+            <div style={{ display: "flex", gap: "var(--sp-2)", alignItems: "center", margin: "4px 0" }}>
+              <button
+                type="button"
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: "var(--r-md)",
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-subtle)",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  fontSize: "var(--fs-xs)",
+                  fontWeight: "var(--fw-medium)",
+                }}
+                onClick={() => fileRef.current?.click()}
+              >
+                <span>📂</span> 选择文件导入…
+              </button>
+              <span style={{ fontSize: "var(--fs-xs)", color: "var(--text-tertiary)" }}>
+                (.yaml, .yml, .json, .ncx, .xml, .txt)
+              </span>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "var(--sp-1)" }}>
+              <label style={{ fontSize: "var(--fs-xs)", fontWeight: "var(--fw-medium)", color: "var(--text-secondary)" }}>
+                或在此直接粘贴配置内容 / XML / 连接串：
+              </label>
+              <textarea
+                value={importInputText}
+                onChange={(e) => setImportInputText(e.target.value)}
+                placeholder={"例如直接粘贴：\n- DataGrip 复制的 <data-source> XML\n- Navicat 导出的 Connections XML / JSON\n- jdbc:mysql://127.0.0.1:3306/mydb\n- mysql://root:pass@127.0.0.1:3306/mydb"}
+                style={{
+                  width: "100%",
+                  height: 150,
+                  padding: "8px 10px",
+                  fontFamily: "var(--font-mono, monospace)",
+                  fontSize: "var(--fs-xs)",
+                  lineHeight: 1.45,
+                  borderRadius: "var(--r-md)",
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-canvas)",
+                  color: "var(--text-primary)",
+                  resize: "vertical",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+
+            <div className="modal-actions" style={{ marginTop: "var(--sp-2)" }}>
+              <button type="button" onClick={() => setShowImportModal(false)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={!importInputText.trim()}
+                onClick={() => void doImportText(importInputText)}
+              >
+                解析并导入
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
