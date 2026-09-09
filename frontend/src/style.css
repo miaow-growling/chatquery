@@ -4888,9 +4888,19 @@ select.field-input:disabled {
   justify-content: flex-end;
   gap: 10px;
   align-items: center;
-  padding: 14px 0 0 0;
+  padding: 14px 22px 18px 22px;
   border-top: 1px solid var(--border-soft);
   flex: none;
+  box-sizing: border-box;
+}
+.modal > .modal-actions {
+  margin: 4px -22px -20px -22px;
+  padding: 14px 22px 18px 22px;
+}
+.conn-modal > .modal-actions,
+.import-modal > .modal-actions {
+  margin: 0;
+  padding: 14px 22px 18px 22px;
 }
 .modal-actions .spacer { flex: 1; }
 .modal-actions button {
