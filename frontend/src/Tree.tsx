@@ -910,22 +910,27 @@ export function Tree(props: TreeProps) {
         if (!(e.target as HTMLElement).closest(".tree-row")) setMenu(null);
       }}
     >
-      {/* Connection import / export / template — pinned above scroll */}
+      {/* Connection import / export / template — 极简单行纯平面工具栏 */}
       <div className="tree-toolbar">
-        {/* Encryption mode — custom dropdown (replaces raw <select>) */}
+        {/* 导出组合操作 (集成加密方式切换，单行不折行) */}
         <div className="tb-group" ref={cipherRef}>
-          <span className="tb-label">加密</span>
           <button
             type="button"
-            className={"tb-select" + (cipherOpen ? " open" : "")}
-            onClick={() => setCipherOpen((v) => !v)}
-            title="选择导出加密方式"
+            className="tb-ghost-btn"
+            onClick={() => void handleExport()}
+            title={`导出连接为 YAML（当前: ${cipher === "system-key" ? "系统密钥加密" : "明文"}）`}
           >
+            <span className="tb-btn-icon">⬇</span>
+            <span>导出</span>
             <span className={"tb-dot " + (cipher === "system-key" ? "ok" : "warn")} />
-            <span className="tb-select-text">
-              {cipher === "system-key" ? "system-key" : "明文(含密码)"}
-            </span>
-            <span className="tb-caret">▾</span>
+          </button>
+          <button
+            type="button"
+            className={"tb-caret-btn" + (cipherOpen ? " open" : "")}
+            onClick={() => setCipherOpen((v) => !v)}
+            title="选择导出加密模式"
+          >
+            ▾
           </button>
           {cipherOpen && (
             <div className="tb-menu" onClick={(e) => e.stopPropagation()}>
@@ -937,8 +942,8 @@ export function Tree(props: TreeProps) {
                   setCipherOpen(false);
                 }}
               >
-                <span className="tb-opt-main">🔒 system-key</span>
-                <span className="tb-opt-sub">密码加密后导出</span>
+                <span className="tb-opt-main">🔒 加密导出 (system-key)</span>
+                <span className="tb-opt-sub">密码使用系统主密钥加密</span>
               </button>
               <button
                 type="button"
@@ -948,8 +953,8 @@ export function Tree(props: TreeProps) {
                   setCipherOpen(false);
                 }}
               >
-                <span className="tb-opt-main">⚠ 明文</span>
-                <span className="tb-opt-sub">密码以明文写入文件</span>
+                <span className="tb-opt-main">⚠️ 明文导出</span>
+                <span className="tb-opt-sub">密码明文写入文件（高风险）</span>
               </button>
             </div>
           )}
@@ -957,29 +962,32 @@ export function Tree(props: TreeProps) {
 
         <span className="tb-sep" />
 
-        <div className="tb-group tb-actions">
-          <button type="button" className="tb-btn" onClick={() => void handleExport()} title="导出连接为 YAML">
-            <span aria-hidden>⬇</span> 导出
-          </button>
-          <button
-            type="button"
-            className="tb-btn"
-            onClick={() => setShowImportModal(true)}
-            title="导入连接（支持 ChatQuery YAML/JSON、Navicat、DataGrip、JDBC/URI）"
-          >
-            <span aria-hidden>⬆</span> 导入
-          </button>
-          <button type="button" className="tb-btn" onClick={() => void handleTemplate()} title="下载空白模板">
-            <span aria-hidden>📄</span> 模板
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".yaml,.yml,.json,.ncx,.xml,.txt"
-            style={{ display: "none" }}
-            onChange={(e) => void handleImportFile(e)}
-          />
-        </div>
+        <button
+          type="button"
+          className="tb-ghost-btn"
+          onClick={() => setShowImportModal(true)}
+          title="导入连接（支持 ChatQuery YAML/JSON、Navicat、DataGrip 等）"
+        >
+          <span className="tb-btn-icon">⬆</span>
+          <span>导入</span>
+        </button>
+
+        <button
+          type="button"
+          className="tb-ghost-btn"
+          onClick={() => void handleTemplate()}
+          title="下载空白模板"
+        >
+          <span className="tb-btn-icon">📄</span>
+          <span>模板</span>
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".yaml,.yml,.json,.ncx,.xml,.txt"
+          style={{ display: "none" }}
+          onChange={(e) => void handleImportFile(e)}
+        />
       </div>
 
       {/* Scrollable tree content */}

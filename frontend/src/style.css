@@ -5555,64 +5555,105 @@ select.field-input:disabled {
 .key-status.off { color: #b35900; background: rgba(179,89,0,.12); }
 .key-warn { font-size: var(--fs-sm); color: #b35900; background: rgba(179,89,0,.10); border: 1px solid rgba(179,89,0,.3); padding: var(--sp-2); border-radius: var(--r-sm); margin-bottom: var(--sp-2); line-height: 1.5; }
 
-/* =====================  #1/#2 树工具栏 · 导入导出  ===================== */
+/* =====================  侧边栏工具栏 · 导入导出 (单行极简 Flat 纯平面版)  ===================== */
 .tree-toolbar {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  flex-wrap: wrap;
-  padding: var(--sp-2) var(--sp-3);
-  background: var(--bg-inset);
-  border-bottom: 1px solid var(--border);
-  flex: 0 0 auto; /* pinned above scroll, never shrinks */
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-soft);
+  flex: 0 0 auto;
+  white-space: nowrap;
+  flex-wrap: nowrap;
+  user-select: none;
 }
-.tree-toolbar .tb-group { position: relative; display: inline-flex; align-items: center; gap: var(--sp-1); }
-
-/* small section label ("加密") */
-.tb-label { font-size: var(--fs-2xs); font-weight: var(--fw-medium); color: var(--text-tertiary); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
-
-/* --- custom dropdown (replaces raw <select>) --- */
-.tb-select {
+.tree-toolbar .tb-group {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
-  min-width: 116px;
-  padding: 3px var(--sp-2);
-  font-size: var(--fs-xs);
-  font-family: var(--font-ui);
-  color: var(--text-primary);
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
+  gap: 0;
+}
+
+/* Flat Ghost 微按钮 */
+.tb-ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 7px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--r-sm);
   cursor: pointer;
-  transition: background .12s ease, border-color .12s ease;
+  transition: all 0.12s ease;
+  white-space: nowrap;
 }
-.tb-select:hover { background: var(--bg-hover); border-color: var(--border-strong); }
-.tb-select.open { border-color: var(--brand-border); background: var(--bg-elevated); }
-.tb-dot { width: 7px; height: 7px; border-radius: var(--r-full); flex: none; }
-.tb-dot.ok { background: var(--success-500); box-shadow: 0 0 0 2px var(--success-soft); }
-.tb-dot.warn { background: var(--warning-500); box-shadow: 0 0 0 2px var(--warning-soft); }
-.tb-select-text { flex: 1; text-align: left; line-height: 1.2; }
-.tb-caret { font-size: 9px; color: var(--text-tertiary); transition: transform .15s ease; }
-.tb-select.open .tb-caret { transform: rotate(180deg); }
+.tb-ghost-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.tb-ghost-btn:active {
+  background: var(--bg-subtle);
+}
+.tb-btn-icon {
+  font-size: 10px;
+  opacity: 0.8;
+}
 
-/* dropdown popover */
+/* 导出下拉微触发器 */
+.tb-caret-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  font-size: 9px;
+  transition: all 0.12s ease;
+}
+.tb-caret-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.tb-caret-btn.open {
+  color: var(--brand);
+}
+
+.tb-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  flex: none;
+  margin-left: 2px;
+}
+.tb-dot.ok { background: var(--success-500); }
+.tb-dot.warn { background: var(--warning-500); }
+
+/* 下拉菜单气泡 (极简纯平面) */
 .tb-menu {
   position: absolute;
-  top: calc(100% + 5px);
+  top: calc(100% + 4px);
   left: 0;
-  min-width: 100%;
+  min-width: 175px;
   z-index: 60;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: var(--sp-1);
-  background: var(--panel-bg);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
-  backdrop-filter: blur(20px) saturate(160%);
+  padding: 4px;
+  background: var(--modal-bg);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
-  box-shadow: var(--shadow-pop);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 .tb-option {
   display: flex;
@@ -5620,41 +5661,33 @@ select.field-input:disabled {
   gap: 1px;
   width: 100%;
   text-align: left;
-  padding: 6px var(--sp-2);
-  font-size: var(--fs-xs);
-  font-family: var(--font-ui);
+  padding: 6px 8px;
+  font-size: 11px;
+  font-family: inherit;
   color: var(--text-primary);
   background: transparent;
   border: none;
   border-radius: var(--r-sm);
   cursor: pointer;
 }
-.tb-option:hover { background: var(--bg-hover); }
-.tb-option.sel { background: var(--brand-soft); box-shadow: inset 2px 0 0 var(--brand); }
-.tb-opt-main { font-weight: var(--fw-medium); line-height: 1.3; }
-.tb-opt-sub { font-size: var(--fs-2xs); color: var(--text-tertiary); }
-
-/* vertical separator between toolbar groups */
-.tb-sep { width: 1px; height: 18px; background: var(--border); margin: 0 var(--sp-1); }
-
-/* action buttons (导出/导入/模板) */
-.tb-actions { gap: var(--sp-1); }
-.tb-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px var(--sp-2);
-  font-size: var(--fs-xs);
-  font-family: var(--font-ui);
-  color: var(--text-primary);
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  transition: background .12s ease, border-color .12s ease, transform .05s ease;
+.tb-option:hover {
+  background: var(--bg-hover);
 }
-.tb-btn:hover { background: var(--bg-hover); border-color: var(--border-strong); }
-.tb-btn:active { transform: translateY(0.5px); }
+.tb-option.sel {
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-weight: 600;
+}
+.tb-opt-main { line-height: 1.3; font-size: 11.5px; }
+.tb-opt-sub { font-size: 10px; color: var(--text-tertiary); }
+
+.tb-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border-soft);
+  margin: 0 3px;
+  flex: none;
+}
 
 .tree-warn { font-size: var(--fs-xs); color: #b35900; background: var(--warning-soft); padding: var(--sp-1) var(--sp-3); border-bottom: 1px solid var(--border); line-height: 1.4; }
 .tree-msg { font-size: var(--fs-xs); color: var(--text-secondary); padding: var(--sp-1) var(--sp-3); }
