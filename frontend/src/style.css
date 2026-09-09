@@ -5421,6 +5421,12 @@ select.field-input:disabled {
 .form-section-title { font-size: var(--fs-xs); font-weight: 600; color: var(--text-secondary); margin-bottom: var(--sp-3); text-transform: uppercase; letter-spacing: .04em; display: flex; align-items: center; gap: 6px; }
 .form-section-title::before { content: ""; display: inline-block; width: 3px; height: 12px; background: var(--brand); border-radius: 2px; }
 
+/* =====================  导入连接弹窗  ===================== */
+.import-modal {
+  width: 560px;
+  max-width: 94vw;
+}
+
 /* =====================  连接表单 tab 页签 (自适应双模系统)  ===================== */
 .conn-modal {
   width: 560px;

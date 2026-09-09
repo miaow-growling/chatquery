@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "./api";
 import type { ColumnInfo, ConnSummary, TreeModel } from "./types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -995,81 +996,82 @@ export function Tree(props: TreeProps) {
         />
       )}
 
-      {showImportModal && (
-        <div className="modal-mask" onClick={() => setShowImportModal(false)}>
-          <div className="modal" style={{ width: 540 }} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ margin: 0, fontSize: "var(--fs-md)", fontWeight: "var(--fw-semibold)" }}>
-              导入数据库连接
-            </h3>
-            <p className="modal-msg" style={{ fontSize: "var(--fs-xs)", color: "var(--text-secondary)", lineHeight: 1.5 }}>
-              支持 <strong>ChatQuery (YAML/JSON)</strong>、<strong>Navicat (.ncx/XML/JSON)</strong>、<strong>DataGrip (dataSources.xml 或剪贴板数据源)</strong> 以及 <strong>MySQL/Redis 连接串</strong>。
-            </p>
+      {showImportModal &&
+        createPortal(
+          <div className="modal-mask" onClick={() => setShowImportModal(false)}>
+            <div className="modal import-modal" onClick={(e) => e.stopPropagation()}>
+              <h3>导入数据库连接</h3>
+              <p className="modal-msg">
+                支持 <strong>ChatQuery (YAML/JSON)</strong>、<strong>Navicat (.ncx/XML/JSON)</strong>、<strong>DataGrip (dataSources.xml 或剪贴板数据源)</strong> 以及 <strong>MySQL/Redis 连接串</strong>。
+              </p>
 
-            <div style={{ display: "flex", gap: "var(--sp-2)", alignItems: "center", margin: "4px 0" }}>
-              <button
-                type="button"
-                style={{
-                  padding: "6px 14px",
-                  borderRadius: "var(--r-md)",
-                  border: "1px solid var(--border)",
-                  background: "var(--bg-subtle)",
-                  cursor: "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  fontSize: "var(--fs-xs)",
-                  fontWeight: "var(--fw-medium)",
-                }}
-                onClick={() => fileRef.current?.click()}
-              >
-                <span>📂</span> 选择文件导入…
-              </button>
-              <span style={{ fontSize: "var(--fs-xs)", color: "var(--text-tertiary)" }}>
-                (.yaml, .yml, .json, .ncx, .xml, .txt)
-              </span>
-            </div>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center", margin: "4px 0" }}>
+                <button
+                  type="button"
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: "var(--r-md)",
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-subtle)",
+                    color: "var(--text-primary)",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    fontSize: "12px",
+                    fontWeight: 500,
+                  }}
+                  onClick={() => fileRef.current?.click()}
+                >
+                  <span>📂</span> 选择文件导入…
+                </button>
+                <span style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
+                  (.yaml, .yml, .json, .ncx, .xml, .txt)
+                </span>
+              </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "var(--sp-1)" }}>
-              <label style={{ fontSize: "var(--fs-xs)", fontWeight: "var(--fw-medium)", color: "var(--text-secondary)" }}>
-                或在此直接粘贴配置内容 / XML / 连接串：
-              </label>
-              <textarea
-                value={importInputText}
-                onChange={(e) => setImportInputText(e.target.value)}
-                placeholder={"例如直接粘贴：\n- DataGrip 复制的 <data-source> XML\n- Navicat 导出的 Connections XML / JSON\n- jdbc:mysql://127.0.0.1:3306/mydb\n- mysql://root:pass@127.0.0.1:3306/mydb"}
-                style={{
-                  width: "100%",
-                  height: 150,
-                  padding: "8px 10px",
-                  fontFamily: "var(--font-mono, monospace)",
-                  fontSize: "var(--fs-xs)",
-                  lineHeight: 1.45,
-                  borderRadius: "var(--r-md)",
-                  border: "1px solid var(--border)",
-                  background: "var(--bg-canvas)",
-                  color: "var(--text-primary)",
-                  resize: "vertical",
-                  boxSizing: "border-box",
-                }}
-              />
-            </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "4px" }}>
+                <label style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-secondary)" }}>
+                  或在此直接粘贴配置内容 / XML / 连接串：
+                </label>
+                <textarea
+                  value={importInputText}
+                  onChange={(e) => setImportInputText(e.target.value)}
+                  placeholder={"例如直接粘贴：\n- DataGrip 复制的 <data-source> XML\n- Navicat 导出的 Connections XML / JSON\n- jdbc:mysql://127.0.0.1:3306/mydb\n- mysql://root:pass@127.0.0.1:3306/mydb"}
+                  style={{
+                    width: "100%",
+                    height: 140,
+                    padding: "8px 12px",
+                    fontFamily: "var(--font-mono, monospace)",
+                    fontSize: "12px",
+                    lineHeight: 1.45,
+                    borderRadius: "var(--r-md)",
+                    border: "1px solid var(--input-border)",
+                    background: "var(--input-bg)",
+                    color: "var(--text-primary)",
+                    resize: "vertical",
+                    boxSizing: "border-box",
+                  }}
+                />
+              </div>
 
-            <div className="modal-actions" style={{ marginTop: "var(--sp-2)" }}>
-              <button type="button" onClick={() => setShowImportModal(false)}>
-                取消
-              </button>
-              <button
-                type="button"
-                className="primary"
-                disabled={!importInputText.trim()}
-                onClick={() => void doImportText(importInputText)}
-              >
-                解析并导入
-              </button>
+              <div className="modal-actions" style={{ marginTop: "6px" }}>
+                <button type="button" onClick={() => setShowImportModal(false)}>
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={!importInputText.trim()}
+                  onClick={() => void doImportText(importInputText)}
+                >
+                  解析并导入
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
