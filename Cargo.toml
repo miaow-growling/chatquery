@@ -31,6 +31,7 @@ base64 = "0.22"
 regex = "1"
 url = "2"
 percent-encoding = "2"
+quick-xml = { version = "0.37", features = ["serialize"] }
 
 [features]
 default = ["tui"]

@@ -71,12 +71,13 @@ pub fn needs_planning(user_query: &str, _history_len: usize) -> bool {
 pub async fn plan_task(
     cfg: &LlmConfig,
     user_query: &str,
+    history: &[ChatMessage],
     conns: &[ConnectionConfig],
     memory: &SessionMemory,
     kb: &KbLoader,
 ) -> Result<Vec<PlanStep>> {
     let ctx = build_plan_context(conns, memory, kb).await;
-    let sys = format!(
+    let base_sys = format!(
         "你是一个数据库任务的规划者（planner）。你从不执行任何操作，只产出清晰、高效的执行步骤计划。\n\
          {}\n\
          规则：\n\
@@ -84,6 +85,7 @@ pub async fn plan_task(
            * 无依赖、可同时进行的探索操作（如同时查多个表的结构/信息、同时检索不同数据源）归入同一个 Stage（并行执行）；\n\
            * 必须依赖前面步骤产出结果的操作（如基于查到的表结构编写/执行关联 SQL）归入后续的 Stage（串行执行）。\n\
          - 目标库范围硬性约束：如果上下文已指定当前连接与数据库，所有步骤必须严格在当前指定的连接和库内完成。严禁擅自到其他无关连接中进行地毯式扫描或探测，除非用户在提问中明确要求了跨库/跨连接对比或迁移！\n\
+         - 历史已知事实复用约束：如果在已知对话或上下文中已经确认了表名、字段名、主外键关联或业务事实（例如前几轮已定位到具体数据表），必须直接复用，严禁为已经明确知道的表重新规划全库搜索、SHOW TABLES 或探测步骤！直接基于已知表与字段规划操作步骤。\n\
          - 格式规范（每行必须带 [Stage N] 前缀）：\n\
            [Stage 1] 1. 并行步骤 A（说明目标连接与探索意图）\n\
            [Stage 1] 2. 并行步骤 B\n\
@@ -94,6 +96,7 @@ pub async fn plan_task(
          - 如果用户只是在问用法、介绍、帮助或闲聊，没有需要执行的数据库操作步骤，只输出一行「无需步骤」。\n",
         ctx
     );
+    let sys = crate::llm::session::inject_prior_assistant(&base_sys, history);
     let messages = vec![
         ChatMessage {
             role: ChatRole::System,
@@ -512,5 +515,22 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn planner_prompt_carries_prior_context_and_reuse_rule() {
+        let memory = SessionMemory::new(None, None);
+        let no_kb: KbLoader = std::sync::Arc::new(|_conn: &str, _db: Option<&str>| vec![]);
+        let ctx = build_plan_context(&[], &memory, &no_kb).await;
+        let base_sys = format!("planner context: {}\n- 历史已知事实复用约束", ctx);
+        let history = vec![
+            ChatMessage::user("查一下工单Auto202673"),
+            ChatMessage::assistant("已定位工单表为 k_task，扩展表为 k_task_extension。"),
+        ];
+        let sys = crate::llm::session::inject_prior_assistant(&base_sys, &history);
+        assert!(sys.contains("历史已知事实复用约束"));
+        assert!(sys.contains("已知对话"));
+        assert!(sys.contains("k_task"));
+        assert!(sys.contains("k_task_extension"));
     }
 }

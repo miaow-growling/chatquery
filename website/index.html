@@ -1,0 +1,2616 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>智询 ChatQuery · 下一代 AI 原生数据库客户端 (MySQL & Redis)</title>
+  <meta name="description" content="专为工程师打造的现代数据库工作台。Rust 驱动毫秒冷启，桌面端约 60-120MB、终端仅约 20MB；内置多模型 AI Agent，支持多环境管理、跨会话@引用、C3宪法级防全表扫描；支持桌面 GUI、极客终端 TUI 与 MCP 协议。" />
+  <link rel="icon" type="image/svg+xml" href="assets/logo.svg" />
+  <link rel="apple-touch-icon" href="assets/icon.png" />
+  <style>
+    /* =========================================================================
+       ChatQuery — 官方宣传网站样式表
+       100% 严格对齐客户端真实前端设计规范 (Apple Pro Tool / Dark Base)
+       ========================================================================= */
+
+    :root {
+      --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+      /* 核心品牌色：严格对齐 style.css */
+      --brand: #6366F1;
+      --brand-hover: #818CF8;
+      --brand-soft: rgba(99, 102, 241, 0.20);
+      --brand-border: rgba(129, 140, 248, 0.55);
+      --brand-grad: linear-gradient(135deg, #6366F1 0%, #8B5CF6 55%, #A855F7 100%);
+      --brand-grad-soft: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(168, 85, 247, 0.15));
+
+      --glow-sm: 0 0 0 1px rgba(99, 102, 241, 0.35), 0 4px 14px rgba(99, 102, 241, 0.28);
+      --glow-md: 0 0 0 1px rgba(99, 102, 241, 0.30), 0 6px 20px rgba(99, 102, 241, 0.34);
+      --glow-lg: 0 0 0 1px rgba(168, 85, 247, 0.40), 0 10px 28px rgba(99, 102, 241, 0.45);
+
+      /* 语义状态色 */
+      --success-500: #34D399; --success-soft: rgba(52, 211, 153, 0.16);
+      --warning-500: #FBBF24; --warning-soft: rgba(251, 191, 36, 0.16);
+      --danger-500:  #F87171; --danger-soft:  rgba(248, 113, 113, 0.18);
+      --info-500:    #38BDF8; --info-soft:    rgba(56, 189, 248, 0.16);
+      --mauve:       #A78BFA;
+
+      /* 引擎徽标色 */
+      --mysql-500: #38BDF8; --mysql-soft: rgba(56, 189, 248, 0.16);
+      --redis-500: #F87171; --redis-soft: rgba(248, 113, 113, 0.16);
+
+      /* 深色基底 (Dark Base) */
+      --bg-base:     #0B0D16;
+      --bg-canvas:   #0B0D16;
+      --bg-surface:  #141826;
+      --bg-elevated: #1B2030;
+      --bg-subtle:   #1E2436;
+      --bg-inset:    #080A12;
+      --bg-hover:    #232A40;
+
+      --border:        #262D44;
+      --border-soft:   #1A2034;
+      --border-strong: #353E5C;
+
+      --text-primary:   #EDEFFB;
+      --text-secondary: #A7AFC9;
+      --text-tertiary:  #6B7390;
+      --text-disabled:  #565E7E;
+
+      --segment-active: #2A3150;
+      --panel-bg: rgba(20, 24, 38, 0.85);
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --radius-xl: 20px;
+      --radius-full: 9999px;
+    }
+
+    /* 亮色模式支持 */
+    [data-theme="light"] {
+      --bg-base:     #F4F6FB;
+      --bg-canvas:   #FFFFFF;
+      --bg-surface:  #FFFFFF;
+      --bg-elevated: #F8FAFC;
+      --bg-subtle:   #EDF2F7;
+      --bg-inset:    #F1F5F9;
+      --bg-hover:    #E2E8F0;
+
+      --border:        #CBD5E1;
+      --border-soft:   #E2E8F0;
+      --border-strong: #94A3B8;
+
+      --text-primary:   #0F172A;
+      --text-secondary: #475569;
+      --text-tertiary:  #64748B;
+      --text-disabled:  #94A3B8;
+
+      --segment-active: #FFFFFF;
+      --panel-bg: rgba(255, 255, 255, 0.9);
+      --glow-sm: 0 2px 10px rgba(99, 102, 241, 0.15);
+      --glow-md: 0 4px 16px rgba(99, 102, 241, 0.2);
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      font-size: 16px;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      line-height: 1.6;
+      overflow-x: hidden;
+      min-height: 100vh;
+      transition: background-color 0.3s ease, color 0.3s ease;
+      position: relative;
+    }
+
+    /* 背景氛围光网格 */
+    .bg-ambience {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 980px;
+      background:
+        radial-gradient(circle at 50% -10%, rgba(99, 102, 241, 0.22), transparent 55%),
+        radial-gradient(circle at 15% 20%, rgba(139, 92, 246, 0.14), transparent 45%),
+        radial-gradient(circle at 85% 15%, rgba(56, 189, 248, 0.12), transparent 40%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 0 24px;
+      position: relative;
+      z-index: 1;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    button { font-family: inherit; cursor: pointer; border: none; outline: none; background: none; }
+
+    /* =========================================================================
+       1. 顶部导航 (Navbar)
+       ========================================================================= */
+    .navbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--panel-bg);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border-soft);
+      transition: all 0.25s ease;
+    }
+
+    .navbar-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 68px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 1.25rem;
+    }
+
+    .brand-logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 9px;
+      box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+    }
+
+    .brand-text {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-pill {
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: var(--radius-full);
+      background: var(--brand-soft);
+      color: var(--brand-hover);
+      border: 1px solid var(--brand-border);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 32px;
+      list-style: none;
+    }
+
+    .nav-link {
+      font-size: 0.925rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      transition: color 0.2s ease;
+    }
+
+    .nav-link:hover {
+      color: var(--text-primary);
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .theme-toggle-btn {
+      width: 38px;
+      height: 38px;
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      transition: all 0.2s;
+    }
+
+    .theme-toggle-btn:hover {
+      color: var(--text-primary);
+      background: var(--bg-hover);
+      border-color: var(--border-strong);
+    }
+
+    .btn-nav-download {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 20px;
+      border-radius: var(--radius-full);
+      background: var(--brand-grad);
+      color: #ffffff;
+      font-weight: 600;
+      font-size: 0.9rem;
+      box-shadow: var(--glow-sm);
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .btn-nav-download:hover {
+      transform: translateY(-1px);
+      box-shadow: var(--glow-md);
+    }
+
+    /* =========================================================================
+       2. 首屏英雄区与下载行动 (Hero & Download Hub)
+       ========================================================================= */
+    .hero-section {
+      padding: 72px 0 40px;
+      text-align: center;
+      position: relative;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      border-radius: var(--radius-full);
+      background: var(--brand-grad-soft);
+      border: 1px solid var(--brand-border);
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--mauve);
+      margin-bottom: 24px;
+    }
+
+    .hero-title {
+      font-size: 3.6rem;
+      font-weight: 800;
+      letter-spacing: -0.035em;
+      line-height: 1.18;
+      margin-bottom: 20px;
+    }
+
+    .gradient-text {
+      background: linear-gradient(135deg, #FFFFFF 10%, #A5B4FC 50%, #C084FC 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    [data-theme="light"] .gradient-text {
+      background: linear-gradient(135deg, #0F172A 10%, #4F46E5 50%, #7C3AED 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-subtitle {
+      font-size: 1.25rem;
+      color: var(--text-secondary);
+      max-width: 800px;
+      margin: 0 auto 36px;
+      line-height: 1.7;
+    }
+
+    .hero-subtitle b {
+      color: var(--text-primary);
+    }
+
+    /* 核心下载行动卡片 */
+    .hero-download-card {
+      max-width: 660px;
+      margin: 0 auto 40px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-xl);
+      padding: 24px 28px;
+      box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(20px);
+    }
+
+    .btn-hero-download {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      width: 100%;
+      padding: 16px 28px;
+      border-radius: var(--radius-lg);
+      background: var(--brand-grad);
+      color: #ffffff;
+      font-size: 1.15rem;
+      font-weight: 700;
+      box-shadow: var(--glow-md);
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .btn-hero-download:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--glow-lg);
+    }
+
+    .btn-hero-sub {
+      font-size: 0.8rem;
+      font-weight: 400;
+      opacity: 0.85;
+      display: block;
+    }
+
+    .quick-platforms {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 16px;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+
+    .quick-chip {
+      padding: 5px 12px;
+      border-radius: var(--radius-full);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-size: 0.8rem;
+      transition: all 0.2s;
+    }
+
+    .quick-chip:hover {
+      color: var(--text-primary);
+      border-color: var(--border-strong);
+      background: var(--bg-hover);
+    }
+
+    .hero-cli-bar {
+      margin-top: 18px;
+      padding: 10px 16px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .hero-cli-code {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--brand-hover);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn-copy-chip {
+      padding: 5px 12px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-size: 0.75rem;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.2s;
+    }
+
+    .btn-copy-chip:hover {
+      color: var(--text-primary);
+      background: var(--bg-hover);
+    }
+
+    .btn-copy-chip.copied {
+      background: var(--success-500);
+      color: #ffffff;
+      border-color: transparent;
+    }
+
+    .hero-trust-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 28px;
+      font-size: 0.85rem;
+      color: var(--text-tertiary);
+      margin-bottom: 56px;
+    }
+
+    .trust-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* =========================================================================
+       3. 真实软件界面交互还原 (Realistic Workbench Showcase)
+       ========================================================================= */
+    .showcase-wrapper {
+      margin: 0 auto 96px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-xl);
+      box-shadow: 0 32px 80px -20px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* 模拟窗口标题栏与 Tab 控制 */
+    .window-titlebar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 44px;
+      background: var(--bg-inset);
+      border-bottom: 1px solid var(--border);
+      padding: 0 16px;
+    }
+
+    .window-traffic-lights {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .tl-dot { width: 12px; height: 12px; border-radius: 50%; }
+    .tl-red { background: #FF5F56; }
+    .tl-yellow { background: #FFBD2E; }
+    .tl-green { background: #27C93F; }
+
+    .window-center-tabs {
+      display: flex;
+      gap: 6px;
+      background: rgba(0, 0, 0, 0.2);
+      padding: 3px;
+      border-radius: var(--radius-sm);
+    }
+
+    .win-switch-tab {
+      padding: 5px 14px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      transition: all 0.2s;
+    }
+
+    .win-switch-tab.active {
+      background: var(--segment-active);
+      color: var(--text-primary);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+    }
+
+    .window-right-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
+    }
+
+    /* 真实三栏主体：Sidebar + Main + Chat */
+    .app-viewport {
+      display: grid;
+      grid-template-columns: 240px 1fr 340px;
+      height: 580px;
+      background: var(--bg-base);
+    }
+
+    /* 左侧 Sidebar (树形连接) */
+    .app-sidebar {
+      background: var(--bg-canvas);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .sidebar-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border-soft);
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: var(--text-secondary);
+    }
+
+    .head-icons {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .icon-small {
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-soft);
+      cursor: pointer;
+    }
+
+    .sidebar-tree-content {
+      padding: 12px 8px;
+      overflow-y: auto;
+      flex: 1;
+      font-size: 0.8rem;
+    }
+
+    .tree-env-node {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 6px;
+      font-weight: 700;
+      color: var(--text-tertiary);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .tree-group-node {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      margin-left: 8px;
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-size: 0.78rem;
+    }
+
+    .tree-conn-node {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      margin-left: 18px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      color: var(--text-primary);
+      transition: background 0.15s;
+    }
+
+    .tree-conn-node.active {
+      background: var(--brand-soft);
+      color: var(--brand-hover);
+      font-weight: 600;
+    }
+
+    .tree-leaf-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      margin-left: 32px;
+      color: var(--text-secondary);
+      font-size: 0.75rem;
+      border-radius: 4px;
+    }
+
+    .tree-leaf-item.active-table {
+      background: rgba(255, 255, 255, 0.05);
+      color: #ffffff;
+    }
+
+    .engine-tag {
+      font-size: 0.65rem;
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-weight: 600;
+    }
+    .tag-mysql { background: var(--mysql-soft); color: var(--mysql-500); }
+    .tag-redis { background: var(--redis-soft); color: var(--redis-500); }
+
+    .sidebar-actions {
+      padding: 10px 14px;
+      border-top: 1px solid var(--border-soft);
+      display: flex;
+      gap: 8px;
+    }
+
+    .sidebar-actions button {
+      flex: 1;
+      padding: 5px 0;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      color: var(--text-tertiary);
+      font-size: 0.72rem;
+    }
+
+    /* 中间主工作区 (Main) */
+    .app-main-pane {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      background: var(--bg-base);
+    }
+
+    /* 真实标签栏 Tab Bar */
+    .main-tab-bar {
+      display: flex;
+      align-items: center;
+      height: 38px;
+      background: var(--bg-canvas);
+      border-bottom: 1px solid var(--border);
+      padding: 0 8px;
+      gap: 4px;
+    }
+
+    .work-tab {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 6px 6px 0 0;
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .work-tab.active {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-bottom-color: var(--bg-base);
+      font-weight: 600;
+    }
+
+    .tab-close {
+      font-size: 0.8rem;
+      opacity: 0.6;
+    }
+
+    .work-tab-new {
+      padding: 4px 8px;
+      color: var(--text-tertiary);
+      font-size: 0.85rem;
+    }
+
+    /* 查询编辑器头部 */
+    .editor-pane-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-soft);
+      font-size: 0.78rem;
+    }
+
+    .ctx-conn-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .editor-action-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn-run-query {
+      background: var(--brand-grad);
+      color: #ffffff;
+      padding: 5px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 0.75rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      box-shadow: var(--glow-sm);
+    }
+
+    .btn-ref-chat {
+      background: var(--brand-soft);
+      border: 1px solid var(--brand-border);
+      color: var(--brand-hover);
+      padding: 5px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    /* SQL 代码编辑区 */
+    .monaco-mock-editor {
+      height: 160px;
+      background: var(--bg-inset);
+      padding: 14px 16px;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.6;
+      color: #E2E8F0;
+      border-bottom: 1px solid var(--border);
+      overflow-y: auto;
+    }
+
+    .code-line-no { color: #4B5563; margin-right: 14px; user-select: none; }
+    .kw { color: #F472B6; font-weight: 600; }
+    .fn { color: #38BDF8; }
+    .str { color: #34D399; }
+    .num { color: #FBBF24; }
+
+    /* 下方四重结果分析面板 */
+    .result-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-base);
+    }
+
+    .result-segmented-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 14px;
+      background: var(--bg-canvas);
+      border-bottom: 1px solid var(--border-soft);
+    }
+
+    .segmented-controls {
+      display: flex;
+      gap: 4px;
+      background: var(--bg-inset);
+      padding: 2px;
+      border-radius: 6px;
+      border: 1px solid var(--border-soft);
+    }
+
+    .seg-btn {
+      padding: 4px 12px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .seg-btn.active {
+      background: var(--segment-active);
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    .result-meta-tools {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
+    }
+
+    .real-data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.77rem;
+      font-family: var(--font-mono);
+      text-align: left;
+    }
+
+    .real-data-table th {
+      background: var(--bg-canvas);
+      color: var(--text-secondary);
+      padding: 7px 12px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+    }
+
+    .real-data-table td {
+      padding: 7px 12px;
+      border-bottom: 1px solid var(--border-soft);
+      color: var(--text-primary);
+    }
+
+    .real-data-table tr:hover td {
+      background: var(--bg-hover);
+    }
+
+    .table-footer-status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 14px;
+      background: var(--bg-canvas);
+      border-top: 1px solid var(--border-soft);
+      font-size: 0.72rem;
+      color: var(--text-tertiary);
+    }
+
+    /* Redis 浏览器实景 (当切换到 Redis Tab 时) */
+    .redis-real-view {
+      display: none;
+      grid-template-columns: 260px 1fr;
+      height: 100%;
+      background: var(--bg-base);
+    }
+
+    .redis-key-column {
+      background: var(--bg-canvas);
+      border-right: 1px solid var(--border);
+      padding: 12px;
+      overflow-y: auto;
+    }
+
+    .redis-db-selector {
+      width: 100%;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 0.75rem;
+      margin-bottom: 10px;
+    }
+
+    .redis-item-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 8px;
+      border-radius: 4px;
+      font-size: 0.76rem;
+      font-family: var(--font-mono);
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+
+    .redis-item-row.active {
+      background: var(--brand-soft);
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    .redis-detail-area {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .redis-key-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* 右侧 AI Chat 侧边栏 */
+    .app-chat-sidebar {
+      background: var(--bg-surface);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .chat-pane-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .conv-dropdown-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      background: var(--bg-elevated);
+      padding: 4px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+
+    .chat-head-status {
+      font-size: 0.7rem;
+      color: var(--success-500);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .chat-log-body {
+      flex: 1;
+      padding: 12px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .bubble-user {
+      align-self: flex-end;
+      background: var(--brand-grad);
+      color: #ffffff;
+      padding: 8px 12px;
+      border-radius: 12px 12px 2px 12px;
+      font-size: 0.78rem;
+      max-width: 90%;
+    }
+
+    .bubble-ai {
+      align-self: flex-start;
+      background: var(--bg-canvas);
+      border: 1px solid var(--border);
+      border-radius: 12px 12px 12px 2px;
+      padding: 12px;
+      width: 100%;
+      font-size: 0.76rem;
+    }
+
+    /* 真实 ExecutionBlock 折叠步骤 */
+    .real-exec-block {
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+    }
+
+    .exec-step {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-tertiary);
+      margin-bottom: 4px;
+    }
+    .exec-step.done { color: var(--success-500); font-weight: 500; }
+
+    /* 工具调用与 SQL 前置卡片 */
+    .tool-sql-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+    }
+
+    .tool-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--brand-hover);
+      font-size: 0.72rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .tool-card-sql {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: #CBD5E1;
+      background: var(--bg-inset);
+      padding: 6px;
+      border-radius: 4px;
+      margin-bottom: 8px;
+    }
+
+    .tool-btn-row {
+      display: flex;
+      gap: 6px;
+    }
+
+    .btn-import-editor {
+      background: var(--brand-soft);
+      border: 1px solid var(--brand-border);
+      color: var(--brand-hover);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+
+    .ai-summary-text {
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin-top: 6px;
+    }
+
+    .ai-summary-text b {
+      color: var(--success-500);
+    }
+
+    .chat-bottom-input {
+      padding: 10px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-canvas);
+    }
+
+    .chat-input-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+    }
+
+    .chat-input-wrap input {
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #ffffff;
+      font-size: 0.76rem;
+      flex: 1;
+    }
+
+    /* =========================================================================
+       4. 核心特性矩阵 (Features)
+       ========================================================================= */
+    .section {
+      padding: 88px 0;
+      position: relative;
+    }
+
+    .section-header {
+      text-align: center;
+      max-width: 760px;
+      margin: 0 auto 56px;
+    }
+
+    .section-subtitle {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: var(--brand-hover);
+      margin-bottom: 12px;
+      display: block;
+    }
+
+    .section-title {
+      font-size: 2.5rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      margin-bottom: 16px;
+      line-height: 1.25;
+    }
+
+    .section-desc {
+      color: var(--text-secondary);
+      font-size: 1.1rem;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+    }
+
+    .feature-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      padding: 36px;
+      box-shadow: 0 16px 36px -10px rgba(0, 0, 0, 0.4);
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .feature-card:hover {
+      transform: translateY(-4px);
+      border-color: var(--border-strong);
+      box-shadow: 0 24px 50px -12px rgba(0, 0, 0, 0.6);
+    }
+
+    .feature-icon-box {
+      width: 52px;
+      height: 52px;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 24px;
+      font-size: 1.5rem;
+    }
+
+    .icon-rust { background: rgba(99, 102, 241, 0.15); color: #818CF8; border: 1px solid rgba(99, 102, 241, 0.3); }
+    .icon-ai { background: rgba(168, 85, 247, 0.15); color: #C084FC; border: 1px solid rgba(168, 85, 247, 0.3); }
+    .icon-db { background: rgba(56, 189, 248, 0.15); color: #38BDF8; border: 1px solid rgba(56, 189, 248, 0.3); }
+    .icon-sec { background: rgba(52, 211, 153, 0.15); color: #34D399; border: 1px solid rgba(52, 211, 153, 0.3); }
+
+    .feature-title {
+      font-size: 1.35rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: var(--text-primary);
+    }
+
+    .feature-desc {
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+      line-height: 1.7;
+      margin-bottom: 20px;
+    }
+
+    .feature-tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .feature-tag {
+      font-size: 0.78rem;
+      font-weight: 500;
+      padding: 3px 10px;
+      border-radius: 6px;
+      background: var(--bg-elevated);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-soft);
+    }
+
+    /* =========================================================================
+       5. 真实对比表格 (Benchmarks)
+       ========================================================================= */
+    .compare-container {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      padding: 32px;
+      box-shadow: 0 20px 48px -10px rgba(0, 0, 0, 0.5);
+      overflow-x: auto;
+    }
+
+    .compare-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.95rem;
+    }
+
+    .compare-table th {
+      padding: 16px 20px;
+      border-bottom: 2px solid var(--border);
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+
+    .compare-table th.col-highlight {
+      color: var(--brand-hover);
+      background: var(--brand-soft);
+      border-radius: 10px 10px 0 0;
+    }
+
+    .compare-table td {
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--border-soft);
+      color: var(--text-secondary);
+    }
+
+    .compare-table td.col-highlight {
+      background: rgba(99, 102, 241, 0.04);
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    .badge-win { color: var(--success-500); font-weight: 700; display: inline-flex; align-items: center; gap: 6px; }
+    .badge-lose { color: var(--text-disabled); }
+
+    /* =========================================================================
+       6. 官方全平台下载专区 (Download Center)
+       ========================================================================= */
+    .download-section-wrap {
+      background: radial-gradient(circle at 50% 15%, rgba(99, 102, 241, 0.14), transparent 60%);
+      padding: 96px 0;
+    }
+
+    .download-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      margin-bottom: 32px;
+    }
+
+    .dl-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      padding: 32px;
+      box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.4);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      transition: all 0.3s ease;
+    }
+
+    .dl-card.recommended {
+      border-color: var(--brand-border);
+      box-shadow: var(--glow-md);
+    }
+
+    .rec-tag {
+      position: absolute;
+      top: -12px;
+      right: 24px;
+      background: var(--brand-grad);
+      color: #ffffff;
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 3px 12px;
+      border-radius: var(--radius-full);
+      box-shadow: var(--glow-sm);
+    }
+
+    .dl-platform-head {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+
+    .dl-logo-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+    }
+
+    .dl-btn-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .btn-download-file {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 18px;
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      font-weight: 600;
+      font-size: 0.9rem;
+      transition: all 0.2s;
+    }
+
+    .btn-download-file:hover {
+      background: var(--brand-grad);
+      border-color: transparent;
+      color: #ffffff;
+      transform: translateY(-1px);
+    }
+
+    .dl-card.recommended .btn-download-file.primary-file-btn {
+      background: var(--brand-grad);
+      border-color: transparent;
+      color: #ffffff;
+      box-shadow: var(--glow-sm);
+    }
+
+    .file-meta-tag {
+      font-size: 0.75rem;
+      opacity: 0.8;
+      font-weight: 400;
+    }
+
+    .dl-card-footer {
+      border-top: 1px solid var(--border-soft);
+      padding-top: 14px;
+      font-size: 0.8rem;
+      color: var(--text-tertiary);
+    }
+
+    /* 极客终端卡片 */
+    .cli-banner-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-xl);
+      padding: 28px 36px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 32px;
+      box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.4);
+    }
+
+    .cli-meta-left {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+
+    .cli-icon-box {
+      width: 50px;
+      height: 50px;
+      border-radius: 12px;
+      background: var(--brand-soft);
+      border: 1px solid var(--brand-border);
+      color: var(--brand-hover);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+    }
+
+    /* =========================================================================
+       7. 常见问答 (FAQ)
+       ========================================================================= */
+    .faq-wrapper {
+      max-width: 820px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .faq-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px 24px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .faq-card:hover {
+      border-color: var(--border-strong);
+    }
+
+    .faq-q {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 600;
+      font-size: 1.05rem;
+      color: var(--text-primary);
+    }
+
+    .faq-toggle {
+      font-size: 1.2rem;
+      color: var(--text-tertiary);
+      transition: transform 0.25s;
+    }
+
+    .faq-a {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.3s ease, margin-top 0.3s ease;
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+      line-height: 1.65;
+    }
+
+    .faq-card.open .faq-toggle {
+      transform: rotate(45deg);
+      color: var(--brand-hover);
+    }
+
+    .faq-card.open .faq-a {
+      max-height: 300px;
+      margin-top: 14px;
+    }
+
+    /* 底部 CTA 与页脚 */
+    .cta-banner {
+      margin: 40px auto 96px;
+      background: linear-gradient(135deg, rgba(30, 27, 75, 0.7) 0%, rgba(15, 23, 42, 0.9) 100%);
+      border: 1px solid var(--brand-border);
+      border-radius: var(--radius-xl);
+      padding: 60px 40px;
+      text-align: center;
+      box-shadow: var(--glow-lg);
+    }
+
+    .cta-banner h3 {
+      font-size: 2.25rem;
+      font-weight: 800;
+      margin-bottom: 16px;
+    }
+
+    .footer {
+      border-top: 1px solid var(--border-soft);
+      padding: 48px 0 36px;
+      color: var(--text-tertiary);
+      font-size: 0.875rem;
+    }
+
+    .footer-content {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 20px;
+    }
+
+    /* 下载触发弹窗 */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(10px);
+      z-index: 999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .modal-overlay.active {
+      display: flex;
+      animation: fadeIn 0.2s ease;
+    }
+
+    .modal-box {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-xl);
+      padding: 36px;
+      max-width: 500px;
+      width: 100%;
+      text-align: center;
+      position: relative;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7);
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 18px;
+      right: 20px;
+      font-size: 1.5rem;
+      color: var(--text-tertiary);
+      cursor: pointer;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* 移动端适配 */
+    @media (max-width: 992px) {
+      .hero-title { font-size: 2.6rem; }
+      .app-viewport { grid-template-columns: 1fr; height: auto; }
+      .app-sidebar { display: none; }
+      .app-chat-sidebar { border-top: 1px solid var(--border); height: 420px; }
+      .features-grid { grid-template-columns: 1fr; }
+      .download-grid { grid-template-columns: 1fr; }
+      .cli-banner-card { flex-direction: column; align-items: flex-start; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 背景流光氛围 -->
+  <div class="bg-ambience"></div>
+
+  <!-- 1. 顶部导航栏 -->
+  <header class="navbar">
+    <div class="container navbar-inner">
+      <a href="#" class="brand">
+        <img src="assets/logo.svg" alt="ChatQuery Logo" class="brand-logo" />
+        <div class="brand-text">
+          <span>智询 ChatQuery</span>
+          <span class="brand-pill">v0.1.0</span>
+        </div>
+      </a>
+
+      <ul class="nav-links">
+        <li><a href="#workbench" class="nav-link">工作台界面</a></li>
+        <li><a href="#features" class="nav-link">功能特性</a></li>
+        <li><a href="#benchmarks" class="nav-link">对比评测</a></li>
+        <li><a href="#download" class="nav-link">客户端下载</a></li>
+        <li><a href="#faq" class="nav-link">常见问题</a></li>
+      </ul>
+
+      <div class="nav-actions">
+        <!-- 主题切换 -->
+        <button class="theme-toggle-btn" id="themeToggleBtn" title="切换深色/浅色模式">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="5"></circle>
+            <line x1="12" y1="1" x2="12" y2="3"></line>
+            <line x1="12" y1="21" x2="12" y2="23"></line>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+            <line x1="1" y1="12" x2="3" y2="12"></line>
+            <line x1="21" y1="12" x2="23" y2="12"></line>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+          </svg>
+        </button>
+
+        <!-- 顶部主下载按钮 -->
+        <a href="#download" class="btn-nav-download">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          下载客户端
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- 2. Hero 区域与首屏下载行动 -->
+  <section class="hero-section">
+    <div class="container">
+      <div class="hero-badge">
+        <span>⚡</span> 纯 Rust 原生单二进制 · 毫秒级冷启动 · 桌面端约 60~120MB (终端 ~20MB)
+      </div>
+
+      <h1 class="hero-title">
+        告别笨重，<span class="gradient-text">对话即查询</span>
+      </h1>
+
+      <p class="hero-subtitle">
+        专为工程师打造的 <b>下一代 AI 原生数据库客户端</b>。<br />
+        原生融合 <b>MySQL</b> 与 <b>Redis</b> 双引擎，基于有界内存架构，连接数再多也保持平稳。集成多会话 AI Agent、跨会话 <code>@</code> 引用与 C3 宪法级防全表扫描。
+      </p>
+
+      <!-- 首屏下载行动中心 -->
+      <div class="hero-download-card">
+        <button class="btn-hero-download" id="smartHeroDownloadBtn" onclick="triggerSmartDownload()">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          <div style="text-align: left;">
+            <div id="smartDownloadTitle">下载 macOS 版 (Apple Silicon)</div>
+            <span class="btn-hero-sub">v0.1.0 · 原生安装包 (.dmg) · 开源免费</span>
+          </div>
+        </button>
+
+        <!-- 快速平台入口 -->
+        <div class="quick-platforms">
+          <span>支持多平台架构：</span>
+          <a href="#download" class="quick-chip" onclick="openDownloadModal('macOS (Intel)', 'ChatQuery-v0.1.0-x64.dmg')">🍎 macOS (Intel)</a>
+          <a href="#download" class="quick-chip" onclick="openDownloadModal('Windows 64位', 'ChatQuery-v0.1.0-win-x64.msi')">🪟 Windows (x64)</a>
+          <a href="#download" class="quick-chip" onclick="openDownloadModal('Linux', 'ChatQuery-v0.1.0.AppImage')">🐧 Linux (AppImage)</a>
+          <a href="#download" class="quick-chip">💻 极客终端 TUI</a>
+        </div>
+
+        <!-- 极客终端一键命令 -->
+        <div class="hero-cli-bar">
+          <div class="hero-cli-code">
+            <span style="color:var(--text-tertiary);">$</span>
+            <span id="heroCurlCmd">curl -fsSL https://get.chatquery.app | sh</span>
+          </div>
+          <button class="btn-copy-chip" onclick="copyCliText('heroCurlCmd', this)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <span>复制命令</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 安全与架构承诺 -->
+      <div class="hero-trust-bar">
+        <div class="trust-item">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+          本地 AES-GCM 凭证加密
+        </div>
+        <div class="trust-item">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          C3 宪法级防全表扫描与回查
+        </div>
+        <div class="trust-item">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line></svg>
+          零业务数据云端留存
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. 真实软件界面 1:1 交互还原 (Showcase) -->
+  <section class="container" id="workbench">
+    <div class="showcase-wrapper">
+      <!-- 窗口标题栏 -->
+      <div class="window-titlebar">
+        <div class="window-traffic-lights">
+          <div class="tl-dot tl-red"></div>
+          <div class="tl-dot tl-yellow"></div>
+          <div class="tl-dot tl-green"></div>
+          <span style="font-size:0.75rem; color:var(--text-tertiary); margin-left:12px; font-weight:600;">智询 ChatQuery — 工作台实景</span>
+        </div>
+
+        <!-- 场景切换 -->
+        <div class="window-center-tabs">
+          <button class="win-switch-tab active" onclick="switchWorkbenchView('mysql', this)">
+            🐬 MySQL 智能查询与结果分析
+          </button>
+          <button class="win-switch-tab" onclick="switchWorkbenchView('redis', this)">
+            🔴 Redis 键空间与多模式浏览
+          </button>
+          <button class="win-switch-tab" onclick="switchWorkbenchView('tui', this)">
+            ⌨️ 极客终端 TUI 模式
+          </button>
+        </div>
+
+        <div class="window-right-actions">
+          <span>● 本地连接就绪</span>
+        </div>
+      </div>
+
+      <!-- 视口：三栏布局 (Sidebar + Main + Chat) -->
+      <div class="app-viewport">
+        <!-- 1. 左侧 Sidebar 树形结构 -->
+        <aside class="app-sidebar">
+          <div>
+            <div class="sidebar-head">
+              <span>连接</span>
+              <div class="head-icons">
+                <span class="icon-small" title="LLM 模型设置">⚙</span>
+                <span class="icon-small" title="主题">☀</span>
+                <span class="icon-small" title="新建连接/组/环境">＋</span>
+              </div>
+            </div>
+
+            <div class="sidebar-tree-content">
+              <!-- 环境 1: 生产环境 -->
+              <div class="tree-env-node">🌐 生产环境 (PRODUCTION)</div>
+              
+              <!-- 分组 1: 订单交易 -->
+              <div class="tree-group-node">📁 订单与结算服务</div>
+              <div class="tree-conn-node active" id="treeConnMysql">
+                <span class="engine-tag tag-mysql">MySQL</span>
+                <span>prod-order-db</span>
+              </div>
+              <div style="padding-left:10px;">
+                <div class="tree-leaf-item active-table">
+                  <span>📋</span> <span>t_orders (订单主表)</span>
+                </div>
+                <div class="tree-leaf-item">
+                  <span>📋</span> <span>t_order_items (订单明细)</span>
+                </div>
+                <div class="tree-leaf-item">
+                  <span>📋</span> <span>t_user_profiles (用户画像)</span>
+                </div>
+              </div>
+
+              <!-- 分组 2: 缓存服务 -->
+              <div class="tree-group-node" style="margin-top:12px;">📁 缓存与会话服务</div>
+              <div class="tree-conn-node" id="treeConnRedis">
+                <span class="engine-tag tag-redis">Redis</span>
+                <span>cache-cluster-01</span>
+              </div>
+              <div style="padding-left:10px;">
+                <div class="tree-leaf-item">
+                  <span>▦</span> <span>db0 (1,482 keys)</span>
+                </div>
+                <div class="tree-leaf-item">
+                  <span>▦</span> <span>db1 (320 keys)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="sidebar-actions">
+            <button>编辑连接</button>
+            <button>删除连接</button>
+          </div>
+        </aside>
+
+        <!-- 2. 中间 Main 工作区 -->
+        <main class="app-main-pane">
+          <!-- 标签栏 -->
+          <div class="main-tab-bar">
+            <div class="work-tab active" id="tabLabelMysql">
+              <span class="engine-tag tag-mysql" style="font-size:0.6rem;">SQL</span>
+              <span>t_orders 查询</span>
+              <span class="tab-close">×</span>
+            </div>
+            <div class="work-tab" id="tabLabelRedis" onclick="switchWorkbenchView('redis', document.querySelectorAll('.win-switch-tab')[1])">
+              <span class="engine-tag tag-redis" style="font-size:0.6rem;">REDIS</span>
+              <span>cache-cluster-01:db0</span>
+              <span class="tab-close">×</span>
+            </div>
+            <span class="work-tab-new" title="新建查询">＋</span>
+          </div>
+
+          <!-- 模式 A: MySQL 工作台 -->
+          <div id="mysqlWorkArea" style="display:flex; flex-direction:column; flex:1;">
+            <!-- 查询编辑器头部 -->
+            <div class="editor-pane-head">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-weight:600; color:var(--text-secondary);">查询编辑器</span>
+                <span class="ctx-conn-pill">
+                  <span>🐬</span> <b>prod-order-db</b> · 10.0.4.12:3306 · app_user · 库: mall_orders
+                </span>
+                <span style="color:var(--text-tertiary); font-size:0.7rem;">(⌘+Enter 执行)</span>
+              </div>
+
+              <div class="editor-action-group">
+                <button class="btn-ref-chat" onclick="alert('已将当前 SQL 注入 Chat 引用上下文！可在对话中直接讨论。')">
+                  @ 引用至 Chat
+                </button>
+                <button class="btn-run-query" onclick="handleRunSqlClick()">
+                  ▶ 运行 (⌘+Enter)
+                </button>
+              </div>
+            </div>
+
+            <!-- Monaco 代码编辑器区域 -->
+            <div class="monaco-mock-editor" id="monacoEditorMock">
+              <div><span class="code-line-no">1</span><span class="kw">SELECT</span> </div>
+              <div><span class="code-line-no">2</span>    o.user_id, </div>
+              <div><span class="code-line-no">3</span>    <span class="fn">COUNT</span>(o.id) <span class="kw">AS</span> total_orders, </div>
+              <div><span class="code-line-no">4</span>    <span class="fn">ROUND</span>(<span class="fn">SUM</span>(o.pay_amount), <span class="num">2</span>) <span class="kw">AS</span> total_spent</div>
+              <div><span class="code-line-no">5</span><span class="kw">FROM</span> t_orders o</div>
+              <div><span class="code-line-no">6</span><span class="kw">WHERE</span> o.created_at >= <span class="fn">NOW</span>() - <span class="kw">INTERVAL</span> <span class="num">3</span> <span class="kw">DAY</span></div>
+              <div><span class="code-line-no">7</span><span class="kw">GROUP BY</span> o.user_id</div>
+              <div><span class="code-line-no">8</span><span class="kw">HAVING</span> total_orders >= <span class="num">2</span></div>
+              <div><span class="code-line-no">9</span><span class="kw">ORDER BY</span> total_spent <span class="kw">DESC</span></div>
+              <div><span class="code-line-no">10</span><span class="kw">LIMIT</span> <span class="num">5</span>;</div>
+            </div>
+
+            <!-- 下方结果面板：四维切换 -->
+            <div class="result-pane">
+              <div class="result-segmented-bar">
+                <div class="segmented-controls">
+                  <button class="seg-btn active">数据</button>
+                  <button class="seg-btn">表结构</button>
+                  <button class="seg-btn">表关系</button>
+                  <button class="seg-btn">执行计划 (EXPLAIN)</button>
+                </div>
+
+                <div class="result-meta-tools">
+                  <span>双击单元格可编辑</span>
+                  <span>搜索当前页…</span>
+                  <span>导出 ▾</span>
+                </div>
+              </div>
+
+              <!-- 结果网格表格 -->
+              <div style="flex:1; overflow:auto;">
+                <table class="real-data-table">
+                  <thead>
+                    <tr>
+                      <th style="width:40px;">#</th>
+                      <th>user_id (BIGINT)</th>
+                      <th>total_orders (BIGINT)</th>
+                      <th>total_spent (DECIMAL)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>1</td><td>90214810</td><td>5</td><td>¥ 12,840.00</td></tr>
+                    <tr><td>2</td><td>90184291</td><td>4</td><td>¥ 9,450.50</td></tr>
+                    <tr><td>3</td><td>90431205</td><td>3</td><td>¥ 7,120.00</td></tr>
+                    <tr><td>4</td><td>90382194</td><td>3</td><td>¥ 5,890.00</td></tr>
+                    <tr><td>5</td><td>90119283</td><td>2</td><td>¥ 4,320.00</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- 底部状态条 -->
+              <div class="table-footer-status">
+                <span>就绪 · 5 行记录 (耗时: 12ms) · 结果已验证安全 (零全表扫描)</span>
+                <span>● prod-order-db · ▦ mall_orders</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 模式 B: Redis 原生浏览器 (真实还原 RedisBrowser) -->
+          <div id="redisWorkArea" class="redis-real-view">
+            <!-- Key 列表列 -->
+            <div class="redis-key-column">
+              <select class="redis-db-selector">
+                <option>db0 (1,482 keys)</option>
+                <option>db1 (320 keys)</option>
+                <option>db2 (0 keys)</option>
+              </select>
+
+              <div style="margin-bottom:8px; display:flex; gap:6px;">
+                <input style="background:var(--bg-inset); border:1px solid var(--border); color:#fff; font-size:0.75rem; padding:4px 8px; border-radius:4px; flex:1;" value="session:*" />
+                <button style="padding:4px 8px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:4px; font-size:0.75rem;">刷新</button>
+              </div>
+
+              <div style="display:flex; flex-direction:column; gap:2px;">
+                <div class="redis-item-row active">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    <span style="color:#60A5FA;">●</span>
+                    <span>session:auth:token_881</span>
+                  </div>
+                  <span style="font-size:0.68rem; color:var(--text-tertiary);">7120s</span>
+                </div>
+                <div class="redis-item-row">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    <span style="color:#34D399;">●</span>
+                    <span>user:cart:items:1092</span>
+                  </div>
+                  <span style="font-size:0.68rem; color:var(--text-tertiary);">持久</span>
+                </div>
+                <div class="redis-item-row">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    <span style="color:#FBBF24;">●</span>
+                    <span>queue:order_dispatch</span>
+                  </div>
+                  <span style="font-size:0.68rem; color:var(--text-tertiary);">持久</span>
+                </div>
+                <div class="redis-item-row">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    <span style="color:#C084FC;">●</span>
+                    <span>rank:leaderboard:daily</span>
+                  </div>
+                  <span style="font-size:0.68rem; color:var(--text-tertiary);">86400s</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Key 详情区 -->
+            <div class="redis-detail-area">
+              <div class="redis-key-card">
+                <div>
+                  <span style="font-size:0.72rem; color:var(--text-tertiary); display:block;">KEY 名称</span>
+                  <span style="font-family:var(--font-mono); font-weight:700; color:var(--text-primary);">session:auth:token_881</span>
+                </div>
+                <div style="display:flex; gap:16px; align-items:center;">
+                  <div>
+                    <span style="font-size:0.72rem; color:var(--text-tertiary); display:block;">类型</span>
+                    <span class="engine-tag" style="background:#3b82f633; color:#60a5fa;">STRING</span>
+                  </div>
+                  <div>
+                    <span style="font-size:0.72rem; color:var(--text-tertiary); display:block;">TTL (生命周期)</span>
+                    <span style="color:var(--success-500); font-size:0.8rem; font-weight:600;">7120 秒 (2小时)</span>
+                  </div>
+                  <div>
+                    <span style="font-size:0.72rem; color:var(--text-tertiary); display:block;">内存占用</span>
+                    <span style="font-size:0.8rem; color:var(--text-secondary);">1.4 KB</span>
+                  </div>
+                  <button style="padding:4px 10px; background:var(--bg-inset); border:1px solid var(--border); border-radius:4px; font-size:0.75rem;">控制台 (Console)</button>
+                </div>
+              </div>
+
+              <!-- 三模视图分段切换 -->
+              <div style="display:flex; align-items:center; justify-content:space-between;">
+                <div class="segmented-controls">
+                  <button class="seg-btn">Raw 原始</button>
+                  <button class="seg-btn active">Formatted (JSON 格式化)</button>
+                  <button class="seg-btn">Hex (十六进制)</button>
+                </div>
+                <span style="font-size:0.75rem; color:var(--text-tertiary);">可直接编辑并保存</span>
+              </div>
+
+              <div style="background:var(--bg-inset); border:1px solid var(--border); border-radius:6px; padding:16px; font-family:var(--font-mono); font-size:0.8rem; color:#A5B4FC; flex:1; overflow:auto;">
+<pre>{
+  <span style="color:#F472B6;">"user_id"</span>: <span style="color:#FBBF24;">90214810</span>,
+  <span style="color:#F472B6;">"role"</span>: <span style="color:#34D399;">"merchant_admin"</span>,
+  <span style="color:#F472B6;">"permissions"</span>: [
+    <span style="color:#34D399;">"order.read"</span>,
+    <span style="color:#34D399;">"settlement.export"</span>
+  ],
+  <span style="color:#F472B6;">"session_state"</span>: {
+    <span style="color:#F472B6;">"authenticated_at"</span>: <span style="color:#FBBF24;">1789420800</span>,
+    <span style="color:#F472B6;">"ip"</span>: <span style="color:#34D399;">"192.168.1.108"</span>
+  }
+}</pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- 模式 C: 极客终端 TUI 实景 -->
+          <div id="tuiWorkArea" style="display:none; height:100%; background:#05070C; color:#38BDF8; font-family:var(--font-mono); padding:18px; font-size:0.82rem; line-height:1.45; overflow:auto;">
+┌ ChatQuery TUI v0.1.0 (ratatui + crossterm) ────────────────────────────────────────────────────────┐
+│ [1] Connections   │ [2] Query Editor          │ [3] Results Table      │ [4] Chat Agent (LLM)    │
+├───────────────────┴───────────────────────────┴────────────────────────┴─────────────────────────┤
+│ 1. [MySQL] prod-order-db (connected: 12ms)                                                      │
+│ 2. [Redis] cache-cluster-01 (connected: 2ms)                                                    │
+│                                                                                                 │
+│ > SELECT status, count(*) as cnt FROM t_orders WHERE created_at > NOW() - INTERVAL 1 DAY        │
+│   GROUP BY status;                                                                              │
+│                                                                                                 │
+│ ┌── status ──────────────┬── cnt ────────┐                                                      │
+│ │ pending_pay            │ 142           │                                                      │
+│ │ paid                   │ 3,842         │                                                      │
+│ │ refunded               │ 18            │                                                      │
+│ └────────────────────────┴───────────────┘                                                      │
+│ 3 rows in set (0.014 sec)                                                                       │
+│                                                                                                 │
+│ [AI]: 已根据当前工作区状态自动识别 3,842 笔已支付订单，退款率处于 0.46% 正常安全区间。         │
+├─────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ [F1] Help  [F2] Connect  [F5] Execute Query  [^C] Chat Prompt  [^Q] Exit                        │
+└─────────────────────────────────────────────────────────────────────────────────────────────────┘
+          </div>
+        </main>
+
+        <!-- 3. 右侧 AI 助手面板 (Chat) -->
+        <aside class="app-chat-sidebar">
+          <div>
+            <div class="chat-pane-head">
+              <button class="conv-dropdown-btn">
+                <span>电商订单复购分析</span>
+                <span>▾</span>
+              </button>
+              <div class="chat-head-status">
+                <span>●</span>
+                <span>LLM 已配置 · 脱敏: 开</span>
+              </div>
+              <span class="icon-small" title="写操作审计日志">🛡</span>
+            </div>
+
+            <div class="chat-log-body">
+              <!-- 用户提问 -->
+              <div class="bubble-user">
+                @t_orders 查出最近3天复购率最高的用户，统计他们的总支付金额
+              </div>
+
+              <!-- AI 回复 -->
+              <div class="bubble-ai">
+                <!-- 真实的 ExecutionBlock 独立折叠步骤模块 -->
+                <div class="real-exec-block">
+                  <div class="exec-step done">✓ 步骤 1: 校验 t_orders 索引定义</div>
+                  <div class="exec-step done">✓ 步骤 2: 注入 C3 宪法级防全表扫描护栏</div>
+                  <div class="exec-step done">✓ 步骤 3: 运行聚合查询并验证受影响行数</div>
+                </div>
+
+                <!-- 工具调用与 SQL 前置气泡 -->
+                <div class="tool-sql-card">
+                  <div class="tool-card-head">
+                    <span>⚡ execute_query (mall_orders)</span>
+                    <span>12ms</span>
+                  </div>
+                  <div class="tool-card-sql">
+                    SELECT user_id, COUNT(id), SUM(pay_amount) ... LIMIT 5;
+                  </div>
+                  <div class="tool-btn-row">
+                    <button class="btn-import-editor" onclick="handleImportToMonaco()">
+                      📋 导入到编辑器
+                    </button>
+                    <button class="btn-import-editor" style="background:transparent;" onclick="alert('已重新执行该段 SQL。')">
+                      ▶ 立即运行
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 综合结论 -->
+                <div class="ai-summary-text">
+                  💡 <b>分析结论：</b>近3天最高复购用户 <b>90214810</b> 共下单 5 次，总支付 ¥12,840.00；前 5 名复购用户贡献了 28.5% 的活跃营业额。
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 输入栏 -->
+          <div class="chat-bottom-input">
+            <div class="chat-input-wrap">
+              <input type="text" placeholder="输入 @ 可引用当前 Tab 或 SQL 片段..." value="对比上周同一时段的复购变化" />
+              <span style="color:var(--brand-hover); font-size:0.75rem; cursor:pointer; font-weight:700;">发送 ↵</span>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. 真实技术支柱 (Why ChatQuery) -->
+  <section class="section" id="features">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-subtitle">Real Architecture</span>
+        <h2 class="section-title">为现代研发打造的数据库利器</h2>
+        <p class="section-desc">抛弃传统客户端几十年前陈旧的代码包袱，重构速度、安全与智能体验。</p>
+      </div>
+
+      <div class="features-grid">
+        <!-- 1. 性能 -->
+        <div class="feature-card">
+          <div class="feature-icon-box icon-rust">🦀</div>
+          <h3 class="feature-title">Rust 驱动 · 毫秒级冷启 · 内存平稳有界</h3>
+          <p class="feature-desc">
+            采用 Rust 编写的无 GC 单二进制内核与 Tauri 架构，启动耗时仅需约 50ms。通过 ADR-006 惰性加载与 LRU 有界缓存，桌面端常驻约 60~120MB（终端仅 ~20MB），连接数增加时内存依然平稳，告别 Java/Electron 动辄 GB 级的内存膨胀。
+          </p>
+          <div class="feature-tag-list">
+            <span class="feature-tag">单二进制发行</span>
+            <span class="feature-tag">50ms 冷启动</span>
+            <span class="feature-tag">桌面约 60~120MB</span>
+            <span class="feature-tag">终端仅 ~20MB</span>
+            <span class="feature-tag">多连接不膨胀</span>
+          </div>
+        </div>
+
+        <!-- 2. AI 原生智能 -->
+        <div class="feature-card">
+          <div class="feature-icon-box icon-ai">🤖</div>
+          <h3 class="feature-title">AI 原生智能体 · 跨会话 @ 深度引用</h3>
+          <p class="feature-desc">
+            会话持久化与上下文感知，词首输入 <code>@</code> 即可把正在编辑的 SQL、查询结果或历史对话注入 Prompt。内置 ExecutionBlock 步骤折叠与 SQL 前置可审计机制。
+          </p>
+          <div class="feature-tag-list">
+            <span class="feature-tag">跨会话 @ 引用</span>
+            <span class="feature-tag">ExecutionBlock 折叠</span>
+            <span class="feature-tag">SQL 前置一键导入</span>
+            <span class="feature-tag">多模型自主配置</span>
+          </div>
+        </div>
+
+        <!-- 3. 双引擎兼备 -->
+        <div class="feature-card">
+          <div class="feature-icon-box icon-db">🐬</div>
+          <h3 class="feature-title">MySQL & Redis 双引擎 · 多环境拓扑</h3>
+          <p class="feature-desc">
+            支持生产、测试等「环境 / 组 / 连接」树形拓扑结构。MySQL 提供 Monaco 语法高亮、表结构设计与大容量结果集虚拟滚动；Redis 提供直观的 Key 树、TTL 管理与 Hex/Raw/JSON 三模视图。
+          </p>
+          <div class="feature-tag-list">
+            <span class="feature-tag">环境与分组管理</span>
+            <span class="feature-tag">Monaco SQL 编辑器</span>
+            <span class="feature-tag">Redis 树形键空间</span>
+            <span class="feature-tag">虚拟滚动表格</span>
+          </div>
+        </div>
+
+        <!-- 4. 安全防护 -->
+        <div class="feature-card">
+          <div class="feature-icon-box icon-sec">🛡️</div>
+          <h3 class="feature-title">C3 宪法级防全表扫描 · 敏感信息脱敏</h3>
+          <p class="feature-desc">
+            内置防灾护栏机制：对于生产环境无索引的大表扫描与无 WHERE 的修改强制拦截确认。写操作提供完整审计日志（🛡），密码与连接串采用本地 AES-GCM 高强度加密，绝不上云。
+          </p>
+          <div class="feature-tag-list">
+            <span class="feature-tag">C3 宪法防护</span>
+            <span class="feature-tag">AES-GCM 本地加密</span>
+            <span class="feature-tag">写操作审计日志</span>
+            <span class="feature-tag">全端 TUI/MCP 生态</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. 真实竞品与性能评测对比 (Benchmarks) -->
+  <section class="section" id="benchmarks">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-subtitle">Benchmarks</span>
+        <h2 class="section-title">指标对比：为什么从传统工具迁移？</h2>
+        <p class="section-desc">不堆砌无用功能，用严谨的真实数据见证新一代工具的轻盈体验。</p>
+      </div>
+
+      <div class="compare-container">
+        <table class="compare-table">
+          <thead>
+            <tr>
+              <th>核心维度</th>
+              <th class="col-highlight">✨ 智询 ChatQuery</th>
+              <th>Navicat Premium</th>
+              <th>DBeaver (Community)</th>
+              <th>DataGrip (JetBrains)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>底层架构</td>
+              <td class="col-highlight"><span class="badge-win">Rust 原生编译 (Tauri / Ratatui)</span></td>
+              <td class="badge-lose">C++ / 专有闭源</td>
+              <td class="badge-lose">Java / Eclipse RCP</td>
+              <td class="badge-lose">Java / IntelliJ 平台</td>
+            </tr>
+            <tr>
+              <td>冷启动耗时</td>
+              <td class="col-highlight"><span class="badge-win">~0.05 秒 (开机即点即用)</span></td>
+              <td class="badge-lose">~3.5 秒</td>
+              <td class="badge-lose">~8.2 秒</td>
+              <td class="badge-lose">~12 秒 (建立索引)</td>
+            </tr>
+            <tr>
+              <td>日常常驻内存 (RSS)</td>
+              <td class="col-highlight"><span class="badge-win">桌面约 60~120 MB (TUI 仅 ~20MB)</span></td>
+              <td class="badge-lose">~400 MB - 800 MB (多连接暴涨)</td>
+              <td class="badge-lose">~800 MB - 1.5 GB</td>
+              <td class="badge-lose">~1.2 GB - 2.5 GB</td>
+            </tr>
+            <tr>
+              <td>AI 深度融合能力</td>
+              <td class="col-highlight"><span class="badge-win">原生多轮 Agent + 跨会话 @ 引用</span></td>
+              <td class="badge-lose">无</td>
+              <td class="badge-lose">仅简单 SQL 提示插件</td>
+              <td class="badge-lose">外挂付费订阅</td>
+            </tr>
+            <tr>
+              <td>生产安全护栏</td>
+              <td class="col-highlight"><span class="badge-win">C3 宪法级防全表扫描 + 审计日志</span></td>
+              <td class="badge-lose">仅有简单只读限制</td>
+              <td class="badge-lose">基础确认弹窗</td>
+              <td class="badge-lose">基础警告</td>
+            </tr>
+            <tr>
+              <td>极客终端 TUI 模式</td>
+              <td class="col-highlight"><span class="badge-win">提供原生 Ratatui 终端模式</span></td>
+              <td class="badge-lose">无 (必须 GUI 桌面)</td>
+              <td class="badge-lose">无 (必须 GUI 桌面)</td>
+              <td class="badge-lose">无 (必须 GUI 桌面)</td>
+            </tr>
+            <tr>
+              <td>商业模式与授权</td>
+              <td class="col-highlight"><span class="badge-win">免费开源 · 本地安全加密</span></td>
+              <td class="badge-lose">高昂商业年费授权</td>
+              <td class="badge-lose">高级功能需商业版</td>
+              <td class="badge-lose">高昂商业年费授权</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. 全平台多版本下载专区 (Download Center) -->
+  <section class="section download-section-wrap" id="download">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-subtitle">Downloads</span>
+        <h2 class="section-title">下载 ChatQuery 客户端</h2>
+        <p class="section-desc">单二进制绿色原生构建，无外部运行库依赖。选择适合您系统架构的版本即可开始使用。</p>
+      </div>
+
+      <div class="download-grid">
+        <!-- 平台 1: macOS -->
+        <div class="dl-card" id="macDlCard">
+          <div class="rec-tag" id="macRecTag">推荐</div>
+          <div>
+            <div class="dl-platform-head">
+              <div class="dl-logo-icon">🍎</div>
+              <div>
+                <h3 style="font-size:1.25rem; font-weight:700;">macOS</h3>
+                <span style="font-size:0.8rem; color:var(--text-tertiary);">macOS 11.0 Big Sur 或更高</span>
+              </div>
+            </div>
+
+            <div class="dl-btn-stack">
+              <!-- Apple Silicon -->
+              <button class="btn-download-file primary-file-btn" onclick="openDownloadModal('macOS Apple Silicon (M系列)', 'ChatQuery-v0.1.0-aarch64.dmg')">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                  <span>Apple Silicon (M1/M2/M3/M4)</span>
+                </div>
+                <span class="file-meta-tag">.dmg · 18MB</span>
+              </button>
+
+              <!-- Intel -->
+              <button class="btn-download-file" onclick="openDownloadModal('macOS Intel x64', 'ChatQuery-v0.1.0-x64.dmg')">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                  <span>Intel x64 架构</span>
+                </div>
+                <span class="file-meta-tag">.dmg · 20MB</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="dl-card-footer">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <code style="font-family:var(--font-mono); color:var(--brand-hover); font-size:0.75rem;" id="brewInstallCmd">brew install chatquery</code>
+              <button style="color:var(--brand-hover); font-size:0.75rem; font-weight:600;" onclick="copyCliText('brewInstallCmd', this)">复制</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 平台 2: Windows -->
+        <div class="dl-card" id="winDlCard">
+          <div class="rec-tag" id="winRecTag" style="display:none;">推荐</div>
+          <div>
+            <div class="dl-platform-head">
+              <div class="dl-logo-icon">🪟</div>
+              <div>
+                <h3 style="font-size:1.25rem; font-weight:700;">Windows</h3>
+                <span style="font-size:0.8rem; color:var(--text-tertiary);">Windows 10 / 11 64位</span>
+              </div>
+            </div>
+
+            <div class="dl-btn-stack">
+              <!-- 安装包 -->
+              <button class="btn-download-file" onclick="openDownloadModal('Windows 安装包', 'ChatQuery-v0.1.0-x64-setup.exe')">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                  <span>Windows 快速安装包</span>
+                </div>
+                <span class="file-meta-tag">.exe · 16MB</span>
+              </button>
+
+              <!-- 便携版 -->
+              <button class="btn-download-file" onclick="openDownloadModal('Windows 免安装便携版', 'ChatQuery-v0.1.0-portable.zip')">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                  <span>免安装便携版 (ZIP)</span>
+                </div>
+                <span class="file-meta-tag">.zip · 15MB</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="dl-card-footer">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <code style="font-family:var(--font-mono); color:var(--brand-hover); font-size:0.75rem;" id="wingetInstallCmd">winget install chatquery</code>
+              <button style="color:var(--brand-hover); font-size:0.75rem; font-weight:600;" onclick="copyCliText('wingetInstallCmd', this)">复制</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 平台 3: Linux -->
+        <div class="dl-card" id="linuxDlCard">
+          <div class="rec-tag" id="linuxRecTag" style="display:none;">推荐</div>
+          <div>
+            <div class="dl-platform-head">
+              <div class="dl-logo-icon">🐧</div>
+              <div>
+                <h3 style="font-size:1.25rem; font-weight:700;">Linux</h3>
+                <span style="font-size:0.8rem; color:var(--text-tertiary);">Ubuntu, Debian, Fedora, Arch</span>
+              </div>
+            </div>
+
+            <div class="dl-btn-stack">
+              <!-- AppImage -->
+              <button class="btn-download-file" onclick="openDownloadModal('Linux 通用版', 'ChatQuery-v0.1.0.AppImage')">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                  <span>AppImage (单文件即开)</span>
+                </div>
+                <span class="file-meta-tag">.AppImage · 19MB</span>
+              </button>
+
+              <!-- DEB -->
+              <button class="btn-download-file" onclick="openDownloadModal('Debian / Ubuntu 软件包', 'chatquery_0.1.0_amd64.deb')">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                  <span>Debian / Ubuntu 安装包</span>
+                </div>
+                <span class="file-meta-tag">.deb · 17MB</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="dl-card-footer">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span>SHA256 签名完整校验</span>
+              <a href="https://github.com" target="_blank" style="color:var(--brand-hover); font-size:0.75rem;">GitHub Releases</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 极客终端与 Cargo 安装 -->
+      <div class="cli-banner-card">
+        <div class="cli-meta-left">
+          <div class="cli-icon-box">⌨️</div>
+          <div>
+            <h4 style="font-size:1.15rem; margin-bottom:4px; font-weight:700;">终端模式 (TUI) 与 Rust 编译构建</h4>
+            <p style="font-size:0.85rem; color:var(--text-secondary);">适用于无图形桌面的生产云服务器、堡垒机或极简 Linux 开发者环境。</p>
+          </div>
+        </div>
+
+        <div style="flex:1; max-width:580px; display:flex; flex-direction:column; gap:8px;">
+          <div class="hero-cli-bar" style="margin:0;">
+            <div class="hero-cli-code">
+              <span style="color:var(--text-tertiary);"># 一键脚本安装</span>
+              <span id="tuiScriptCmd">curl -fsSL https://get.chatquery.app | sh</span>
+            </div>
+            <button class="btn-copy-chip" onclick="copyCliText('tuiScriptCmd', this)">复制</button>
+          </div>
+
+          <div class="hero-cli-bar" style="margin:0;">
+            <div class="hero-cli-code">
+              <span style="color:var(--text-tertiary);"># 通过 Cargo 编译安装</span>
+              <span id="cargoCmd">cargo install chatquery</span>
+            </div>
+            <button class="btn-copy-chip" onclick="copyCliText('cargoCmd', this)">复制</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7. 常见问题解答 (FAQ) -->
+  <section class="section" id="faq">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-subtitle">FAQ</span>
+        <h2 class="section-title">常见问题解答</h2>
+        <p class="section-desc">关于安全性、环境支持与大模型接入的疑问解答。</p>
+      </div>
+
+      <div class="faq-wrapper">
+        <div class="faq-card" onclick="toggleFaqCard(this)">
+          <div class="faq-q">
+            <span>ChatQuery 支持哪些数据库和版本？</span>
+            <span class="faq-toggle">+</span>
+          </div>
+          <div class="faq-a">
+            ChatQuery 原生支持 MySQL 5.7、8.0、8.4 以及兼容协议的 MariaDB、Tidb 等；Redis 全面支持 4.x 到 7.2+ 及最新 8.0，覆盖 String、Hash、List、Set、ZSet 等所有原生数据结构，提供 TTL 可视化调整与 Raw / Formatted JSON / Hex 视图。
+          </div>
+        </div>
+
+        <div class="faq-card" onclick="toggleFaqCard(this)">
+          <div class="faq-q">
+            <span>使用 AI 对话查询时，我的业务敏感数据安全吗？</span>
+            <span class="faq-toggle">+</span>
+          </div>
+          <div class="faq-a">
+            非常安全。ChatQuery 秉持本地优先（Local-First）原则：所有连接配置与密码均通过本地 AES-256-GCM 高强度加密，网络连接直接直连数据库。在向大模型发起对话时，仅将必要的 Schema 表结构（可开启脱敏）或用户明确 @ 引用的上下文发送给您配置的 API 端点，绝不会在任何外部云端持久化您的真实数据。
+          </div>
+        </div>
+
+        <div class="faq-card" onclick="toggleFaqCard(this)">
+          <div class="faq-q">
+            <span>什么是 C3 宪法级防全表扫描？</span>
+            <span class="faq-toggle">+</span>
+          </div>
+          <div class="faq-a">
+            这是 ChatQuery 内置的生产防灾护栏机制：对于缺少主键或索引过滤的大表扫描、无 WHERE 条件的 UPDATE/DELETE，客户端会主动预警并拦截。AI Agent 在写后验证时也严格禁止全表扫描拉取，强制通过执行返回状态或主键单条精确回查，避免大表性能灾难。
+          </div>
+        </div>
+
+        <div class="faq-card" onclick="toggleFaqCard(this)">
+          <div class="faq-q">
+            <span>可以在无桌面的 Linux 服务器或 SSH 跳板机上运行吗？</span>
+            <span class="faq-toggle">+</span>
+          </div>
+          <div class="faq-a">
+            完全可以。ChatQuery 基于模块化架构构建，除桌面 GUI 之外，同一个二进制程序支持 <code>chatquery --tui</code> 极客交互模式，在 SSH 会话中即开即用，无需任何 X11 或图形界面支持。
+          </div>
+        </div>
+
+        <div class="faq-card" onclick="toggleFaqCard(this)">
+          <div class="faq-q">
+            <span>如何配置我自己的大模型 API Key？</span>
+            <span class="faq-toggle">+</span>
+          </div>
+          <div class="faq-a">
+            点击界面左上角的设置图标（⚙），进入 LLM 模型设置页面。您可以填入任意支持 OpenAI 兼容格式的 API 基础地址（Base URL）和您的专属 Key（如 DeepSeek-V3、GPT-4o、Claude 3.5 Sonnet、Qwen 或本地部署的 Ollama），完全由您自主掌控。
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8. 底部召唤卡与页脚 -->
+  <section class="container">
+    <div class="cta-banner">
+      <h3>让数据库探查回归轻盈与敏捷</h3>
+      <p style="color:#CBD5E1; font-size:1.05rem; margin-bottom:28px;">立即下载 ChatQuery 客户端，告别传统重型工具的假死与风扇狂转。</p>
+      <a href="#download" class="btn-hero-download" style="max-width:300px; margin:0 auto;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        免费下载 ChatQuery
+      </a>
+    </div>
+  </section>
+
+  <!-- 页脚 -->
+  <footer class="footer">
+    <div class="container footer-content">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <img src="assets/logo.svg" alt="ChatQuery" style="width:26px; height:26px; border-radius:6px;" />
+        <span>© 2026 ChatQuery 智询 · 下一代 AI 原生数据库客户端</span>
+      </div>
+
+      <div style="display:flex; gap:20px;">
+        <a href="#workbench">工作台实景</a>
+        <a href="#features">功能架构</a>
+        <a href="#download">下载中心</a>
+        <a href="https://github.com" target="_blank">GitHub 仓库</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- 9. 下载触发交互弹窗 (Modal) -->
+  <div class="modal-overlay" id="downloadModal" onclick="handleOverlayClick(event)">
+    <div class="modal-box">
+      <span class="modal-close" onclick="closeDownloadModal()">&times;</span>
+      <div style="width:60px; height:60px; border-radius:14px; background:var(--brand-soft); color:var(--brand-hover); display:flex; align-items:center; justify-content:center; font-size:1.8rem; margin:0 auto 16px;">
+        ⬇️
+      </div>
+      <h3 style="font-size:1.35rem; font-weight:700; margin-bottom:8px;" id="modalTitle">开始下载 ChatQuery</h3>
+      <p style="font-size:0.9rem; color:var(--text-secondary); margin-bottom:20px;" id="modalSub">
+        正在为你准备安装包：<b id="modalFileText" style="color:var(--brand-hover);">ChatQuery-v0.1.0.dmg</b>
+      </p>
+
+      <div style="background:var(--bg-inset); border:1px solid var(--border); border-radius:6px; padding:10px 14px; font-family:var(--font-mono); font-size:0.75rem; color:var(--text-tertiary); text-align:left; word-break:break-all; margin-bottom:24px;">
+        <div style="color:var(--text-secondary); font-weight:600; margin-bottom:4px;">SHA-256 完整性校验和：</div>
+        <div>9b28fa5261df0924cbb38e21a418de0291e0a9d8213b185497210986518a213e</div>
+      </div>
+
+      <div style="display:flex; gap:12px; justify-content:center;">
+        <button class="btn-hero-download" style="padding:10px 22px; font-size:0.9rem;" onclick="simulateDownloadSuccess()">
+          确认下载安装包
+        </button>
+        <button class="btn-download-file" style="padding:10px 18px;" onclick="closeDownloadModal()">
+          关闭
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JavaScript 交互 -->
+  <script>
+    // 1. 系统智能检测
+    let userOS = "macOS";
+    let defaultFile = "ChatQuery-v0.1.0-aarch64.dmg";
+
+    function autoDetectOS() {
+      const ua = navigator.userAgent.toLowerCase();
+      const plat = navigator.platform ? navigator.platform.toLowerCase() : "";
+
+      const smartTitle = document.getElementById("smartDownloadTitle");
+      const macRec = document.getElementById("macRecTag");
+      const winRec = document.getElementById("winRecTag");
+      const linuxRec = document.getElementById("linuxRecTag");
+      const macCard = document.getElementById("macDlCard");
+      const winCard = document.getElementById("winDlCard");
+      const linuxCard = document.getElementById("linuxDlCard");
+
+      if (ua.indexOf("win") !== -1 || plat.indexOf("win") !== -1) {
+        userOS = "Windows";
+        defaultFile = "ChatQuery-v0.1.0-x64-setup.exe";
+        smartTitle.innerText = "下载 Windows 版 (64-bit)";
+        
+        macRec.style.display = "none";
+        macCard.classList.remove("recommended");
+        winRec.style.display = "block";
+        winCard.classList.add("recommended");
+      } else if (ua.indexOf("linux") !== -1 || plat.indexOf("linux") !== -1) {
+        userOS = "Linux";
+        defaultFile = "ChatQuery-v0.1.0.AppImage";
+        smartTitle.innerText = "下载 Linux 版 (AppImage)";
+
+        macRec.style.display = "none";
+        macCard.classList.remove("recommended");
+        linuxRec.style.display = "block";
+        linuxCard.classList.add("recommended");
+      } else {
+        userOS = "macOS";
+        defaultFile = "ChatQuery-v0.1.0-aarch64.dmg";
+        smartTitle.innerText = "下载 macOS 版 (Apple Silicon / Intel)";
+        macRec.style.display = "block";
+        macCard.classList.add("recommended");
+      }
+    }
+
+    function triggerSmartDownload() {
+      openDownloadModal(userOS, defaultFile);
+    }
+
+    // 2. 弹窗控制
+    function openDownloadModal(platformName, fileName) {
+      document.getElementById("modalTitle").innerText = `下载 ChatQuery · ${platformName}`;
+      document.getElementById("modalFileText").innerText = fileName;
+      document.getElementById("downloadModal").classList.add("active");
+    }
+
+    function closeDownloadModal() {
+      document.getElementById("downloadModal").classList.remove("active");
+    }
+
+    function handleOverlayClick(e) {
+      if (e.target.id === "downloadModal") {
+        closeDownloadModal();
+      }
+    }
+
+    function simulateDownloadSuccess() {
+      alert("✅ 已为您拉起安装包下载！\n（在生产发布部署中，该链接将直接请求 GitHub Releases 或 CDN 镜像资源）");
+      closeDownloadModal();
+    }
+
+    // 3. 复制代码
+    function copyCliText(id, btn) {
+      const text = document.getElementById(id).innerText.trim();
+      navigator.clipboard.writeText(text).then(() => {
+        const orig = btn.innerHTML;
+        btn.classList.add("copied");
+        btn.innerHTML = "<span>✓ 已复制</span>";
+        setTimeout(() => {
+          btn.classList.remove("copied");
+          btn.innerHTML = orig;
+        }, 2000);
+      });
+    }
+
+    // 4. 工作台三模切换 (MySQL / Redis / TUI)
+    function switchWorkbenchView(view, btn) {
+      document.querySelectorAll(".win-switch-tab").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+
+      const mysqlArea = document.getElementById("mysqlWorkArea");
+      const redisArea = document.getElementById("redisWorkArea");
+      const tuiArea = document.getElementById("tuiWorkArea");
+
+      const treeMysql = document.getElementById("treeConnMysql");
+      const treeRedis = document.getElementById("treeConnRedis");
+      const tabMysql = document.getElementById("tabLabelMysql");
+      const tabRedis = document.getElementById("tabLabelRedis");
+
+      if (view === "mysql") {
+        mysqlArea.style.display = "flex";
+        redisArea.style.display = "none";
+        tuiArea.style.display = "none";
+        treeMysql.classList.add("active");
+        treeRedis.classList.remove("active");
+        tabMysql.classList.add("active");
+        tabRedis.classList.remove("active");
+      } else if (view === "redis") {
+        mysqlArea.style.display = "none";
+        redisArea.style.display = "grid";
+        tuiArea.style.display = "none";
+        treeMysql.classList.remove("active");
+        treeRedis.classList.add("active");
+        tabMysql.classList.remove("active");
+        tabRedis.classList.add("active");
+      } else if (view === "tui") {
+        mysqlArea.style.display = "none";
+        redisArea.style.display = "none";
+        tuiArea.style.display = "block";
+      }
+    }
+
+    // 5. 交互：导入到 Monaco 编辑器
+    function handleImportToMonaco() {
+      const editor = document.getElementById("monacoEditorMock");
+      editor.style.transition = "background 0.3s";
+      editor.style.background = "rgba(99, 102, 241, 0.25)";
+      setTimeout(() => {
+        editor.style.background = "var(--bg-inset)";
+        alert("✨ 已将 AI 生成的优化 SQL 成功导入主查询编辑器！按 ⌘+Enter 即可执行。");
+      }, 300);
+    }
+
+    function handleRunSqlClick() {
+      alert("▶ 查询执行完毕：耗时 12ms，受影响行数 5 行，已应用 C3 宪法级防全表扫描校验。");
+    }
+
+    // 6. FAQ 展开
+    function toggleFaqCard(card) {
+      const isOpen = card.classList.contains("open");
+      document.querySelectorAll(".faq-card").forEach(c => c.classList.remove("open"));
+      if (!isOpen) {
+        card.classList.add("open");
+      }
+    }
+
+    // 7. 主题切换
+    document.getElementById("themeToggleBtn").addEventListener("click", () => {
+      const curr = document.documentElement.getAttribute("data-theme");
+      document.documentElement.setAttribute("data-theme", curr === "light" ? "dark" : "light");
+    });
+
+    window.addEventListener("DOMContentLoaded", () => {
+      autoDetectOS();
+    });
+  </script>
+</body>
+</html>

@@ -182,11 +182,12 @@ impl Agent {
         }
 
         // 复杂任务：先规划（失败则安全降级为直接 ReAct）。规划输入带上引用的
-        // SQL——否则「优化这段 SQL」只能规划出空泛步骤。
-        let plan: Vec<PlanStep> = match plan_task(&self.cfg, &last_user, &self.conns, &self.memory, &self.kb).await {
+        // SQL 与对话历史——否则规划器脱离上下文只能规划出盲目探测步骤。
+        let plan: Vec<PlanStep> = match plan_task(&self.cfg, &last_user, history, &self.conns, &self.memory, &self.kb).await {
             Ok(steps) if !steps.is_empty() => steps,
             _ => {
                 let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb).await;
+                let system = inject_prior_assistant(&system, history);
                 let mut messages = Vec::new();
                 if !system.is_empty() {
                     messages.push(ChatMessage::system(system));
@@ -254,6 +255,7 @@ impl Agent {
                     &step.description,
                     &shared_context,
                     &self.kb,
+                    history,
                 ).await;
                 let mut wmsg = Vec::new();
                 if !wsys.is_empty() {
@@ -284,6 +286,7 @@ impl Agent {
                 )));
                 let sem = Arc::new(tokio::sync::Semaphore::new(3));
                 let mut join_set = tokio::task::JoinSet::new();
+                let history_vec = history.to_vec();
 
                 for step in steps {
                     let sem = Arc::clone(&sem);
@@ -300,6 +303,7 @@ impl Agent {
                     let last_user_clone = last_user.clone();
                     let memory_clone = self.memory.clone();
                     let tx_clone = tx.clone();
+                    let history_clone = history_vec.clone();
 
                     join_set.spawn(async move {
                         let _permit = sem.acquire().await.ok();
@@ -331,6 +335,7 @@ impl Agent {
                             &step.description,
                             &shared_ctx,
                             &kb,
+                            &history_clone,
                         ).await;
                         let mut wmsg = Vec::new();
                         if !wsys.is_empty() {
@@ -642,7 +647,7 @@ const PRIOR_SNIPPET_CHARS: usize = 400;
 /// or running a fresh lookup. Without this hint, a multi-turn conversation
 /// drifts: turn N+1 re-derives turn N's conclusion, picks a different
 /// library, and produces a self-contradicting answer.
-fn inject_prior_assistant(system: &str, history: &[ChatMessage]) -> String {
+pub(crate) fn inject_prior_assistant(system: &str, history: &[ChatMessage]) -> String {
     // Take the tail (most recent first), then reverse so the block reads
     // chronologically — same order the model would have produced them.
     let priors: Vec<&str> = history
@@ -1022,6 +1027,7 @@ async fn build_worker_system(
     step: &str,
     shared_context: &str,
     kb: &KbLoader,
+    history: &[ChatMessage],
 ) -> String {
     let mut p = String::new();
     p.push_str(role.system_prefix());
@@ -1034,6 +1040,7 @@ async fn build_worker_system(
         p.push('\n');
         p.push_str(&constitution);
     }
+    p = inject_prior_assistant(&p, history);
     p.push_str("\n## 本次任务计划（全局目标）：\n");
     for (i, s) in plan.iter().enumerate() {
         let mark = if i + 1 == step_idx { " ← 你负责这一步" } else { "" };
@@ -1049,6 +1056,7 @@ async fn build_worker_system(
     p.push_str(
         "\n规则：只使用 execute_query 工具；优先只读查询；不要臆造表名或列名；\
          当前库若绑定了知识库，相关内容已包含在上下文里，需要更具体的片段可用 search_knowledge 检索；\
+         历史已知事实复用：如果已知对话中已明确了表名、列名或对应字段（例如已有工单表或扩展表），直接使用，严禁重复扫描、猜测或探测已明确的表；\
          写操作会先请用户确认（写前先查清影响范围并带精确 WHERE，写后核验严禁无条件全表扫描）；\
          DDL 与破坏性语句会被护栏拦截，请告知用户手动执行。\n\
          输出要求（降噪 2026-08-12）：你的产出只被 Orchestrator 综合，不直接展示给用户——\
@@ -1195,11 +1203,36 @@ mod tests {
                 "查 user 表结构",
                 "",
                 &no_kb(),
+                &[],
             )
             .await;
             assert!(prompt.contains("宪法"), "{:?} missing constitution", role);
             assert!(prompt.contains("[C1]"), "{:?} missing C1", role);
         }
+    }
+
+    #[tokio::test]
+    async fn worker_prompt_carries_prior_context() {
+        let memory = SessionMemory::new(None, None);
+        let history = vec![
+            ChatMessage::user("工单Auto202673是什么表"),
+            ChatMessage::assistant("已找到工单主表为 k_task，扩展表为 k_task_extension。"),
+        ];
+        let prompt = build_worker_system(
+            WorkerKind::Explorer,
+            &[],
+            &memory,
+            &["根据工单名称查询ID".to_string()],
+            1,
+            "根据工单名称查询ID",
+            "",
+            &no_kb(),
+            &history,
+        )
+        .await;
+        assert!(prompt.contains("已知对话"));
+        assert!(prompt.contains("k_task"));
+        assert!(prompt.contains("k_task_extension"));
     }
 
     fn r(scope: &str, sql: &str) -> SqlReference {

@@ -54,9 +54,10 @@ pub struct ConnectionConfig {
     pub group_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DbType {
+    #[default]
     Mysql,
     Redis,
 }

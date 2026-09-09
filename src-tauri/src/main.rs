@@ -175,6 +175,7 @@ fn main() {
             get_schema,
             list_remote_models,
             chat_turn,
+            inline_generate_sql,
             cancel_turn,
             resolve_confirm,
             get_status,

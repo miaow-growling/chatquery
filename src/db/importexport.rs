@@ -252,16 +252,87 @@ fn to_conn_export(c: &ConnectionConfig, cipher: &str, k: Option<&[u8; 32]>) -> C
 // Import
 // ---------------------------------------------------------------------------
 
-/// Parse and merge YAML (with a JSON fallback) into the store. Connection ids
-/// are regenerated to avoid clashes; passwords are decrypted per `cipher` then
+/// Import connections from external tools (Navicat, DataGrip, JDBC/URIs) into the store.
+pub fn import_external(store: &mut ConnectionStore, text: &str) -> Result<ImportResult> {
+    let ext_conns = crate::db::external_import::parse_external_connections(text)?;
+    let containers_before = store.list_containers().len();
+    let mut result = ImportResult::default();
+
+    for ce in ext_conns {
+        // Required-field validation
+        if ce.name.trim().is_empty() || ce.host.trim().is_empty() || ce.user.trim().is_empty() {
+            result.skipped.push(ce.name.clone());
+            continue;
+        }
+
+        let env_name = ce.env.as_deref().unwrap_or("外部导入");
+        let group_name = ce.group.as_deref().unwrap_or("外部导入");
+
+        let env_id = store.ensure_env(env_name, Some(ce.db_type))?;
+        let group_id = Some(store.ensure_group(&env_id, group_name)?);
+
+        let need_pw = ce.password.trim().is_empty();
+        let name = ce.name.trim().to_string();
+
+        let cfg = ConnectionConfig {
+            id: gen_id("c"),
+            name: name.clone(),
+            db_type: ce.db_type,
+            host: ce.host.trim().to_string(),
+            port: ce.port,
+            user: ce.user.trim().to_string(),
+            password: ce.password.clone(),
+            database: ce.database.trim().to_string(),
+            ssl_mode: ce.ssl_mode.trim().to_string(),
+            ssl_ca: ce.ssl_ca.trim().to_string(),
+            client_cert: ce.client_cert.trim().to_string(),
+            client_key: ce.client_key.trim().to_string(),
+            ssh_host: ce.ssh_host.trim().to_string(),
+            ssh_port: ce.ssh_port,
+            ssh_user: ce.ssh_user.trim().to_string(),
+            ssh_auth_kind: ce.ssh_auth_kind.trim().to_string(),
+            ssh_password: ce.ssh_password.clone(),
+            ssh_private_key: ce.ssh_private_key.clone(),
+            group_id,
+        };
+
+        store.add(cfg)?;
+        result.connections_added += 1;
+        if need_pw {
+            result.passwords_needed.push(name);
+        }
+    }
+
+    result.containers_added = store.list_containers().len() - containers_before;
+    Ok(result)
+}
+
+/// Parse and merge YAML (with a JSON fallback or external Navicat/DataGrip/URI formats) into the store.
+/// Connection ids are regenerated to avoid clashes; passwords are decrypted per `cipher` then
 /// immediately re-encrypted at rest with the local K (so an imported plaintext
 /// file still lands encrypted on disk). Returns a summary for the UI.
 pub fn import_yaml(store: &mut ConnectionStore, text: &str) -> Result<ImportResult> {
+    // Check if the input matches any external formats (Navicat XML/JSON, DataGrip XML, JDBC/URI)
+    if crate::db::external_import::detect_external_format(text).is_some() {
+        return import_external(store, text);
+    }
+
     // Prefer YAML; fall back to JSON for old exports.
     let root: ExportRoot = match serde_yaml::from_str::<ExportRoot>(text) {
         Ok(r) => r,
-        Err(_) => serde_json::from_str::<ExportRoot>(text)
-            .map_err(|e| AppError::Msg(format!("无法解析文件（YAML/JSON 均失败）: {}", e)))?,
+        Err(yaml_err) => match serde_json::from_str::<ExportRoot>(text) {
+            Ok(r) => r,
+            Err(_) => {
+                // If native YAML/JSON failed, try external parsing as a fallback
+                if let Ok(res) = import_external(store, text) {
+                    return Ok(res);
+                }
+                return Err(AppError::Msg(format!(
+                    "无法解析文件（YAML/JSON/外部格式均失败）: {}",
+                    yaml_err
+                )));
+            }
+        },
     };
 
     let cipher = if root.cipher.is_empty() { "none" } else { root.cipher.as_str() };
@@ -584,5 +655,43 @@ mod tests {
         store.add(cfg).unwrap();
         let yaml = export_yaml(&store, "system-key").unwrap();
         assert!(!yaml.contains("topsecret"), "system-key 导出不应含明文密码");
+    }
+
+    #[test]
+    fn import_external_navicat_and_datagrip() {
+        let _env = env_lock();
+        let mut store = temp_store();
+
+        // 1. Test Navicat import
+        let navicat_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Connections>
+  <Connection ConnectionName="navicat_prod" ConnType="MYSQL" Host="1.2.3.4" Port="3306" UserName="root" Password="" Database="db_nv" />
+</Connections>"#;
+        let res_nv = import_yaml(&mut store, navicat_xml).expect("import navicat xml");
+        assert_eq!(res_nv.connections_added, 1);
+        assert_eq!(res_nv.passwords_needed, vec!["navicat_prod"]);
+
+        // Verify stored connection
+        let conns = store.list();
+        let nv = conns.iter().find(|c| c.name == "navicat_prod").expect("found nv conn");
+        assert_eq!(nv.host, "1.2.3.4");
+        assert_eq!(nv.database, "db_nv");
+
+        // 2. Test DataGrip import
+        let datagrip_xml = r#"<component name="DataSourceManagerImpl">
+  <data-source name="dg_mysql">
+    <jdbc-url>jdbc:mysql://5.6.7.8:3306/db_dg</jdbc-url>
+    <user-name>app_user</user-name>
+  </data-source>
+</component>"#;
+        let res_dg = import_yaml(&mut store, datagrip_xml).expect("import datagrip xml");
+        assert_eq!(res_dg.connections_added, 1);
+        assert_eq!(res_dg.passwords_needed, vec!["dg_mysql"]);
+
+        let conns = store.list();
+        let dg = conns.iter().find(|c| c.name == "dg_mysql").expect("found dg conn");
+        assert_eq!(dg.host, "5.6.7.8");
+        assert_eq!(dg.user, "app_user");
+        assert_eq!(dg.database, "db_dg");
     }
 }

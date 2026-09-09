@@ -1,0 +1,35 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="0.32" y2="1">
+      <stop offset="0" stop-color="#3EA0FF"/>
+      <stop offset="0.5" stop-color="#0A84FF"/>
+      <stop offset="1" stop-color="#0048B8"/>
+    </linearGradient>
+    <linearGradient id="gl1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.32"/>
+      <stop offset="0.42" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Squircle background -->
+  <rect x="62" y="62" width="900" height="900" rx="212" fill="url(#g1)"/>
+  <rect x="62" y="62" width="900" height="900" rx="212" fill="url(#gl1)"/>
+
+  <!-- Chat bubble tail -->
+  <path d="M392 632 L320 756 L470 632 Z" fill="#ffffff"/>
+
+  <!-- White chat bubble -->
+  <rect x="272" y="252" width="480" height="404" rx="86" fill="#ffffff"/>
+
+  <!-- Blue database cylinder -->
+  <g>
+    <!-- Cylinder body -->
+    <path d="M394 396 V512 A118 34 0 0 0 630 512 V396 Z" fill="#0A84FF"/>
+    <!-- Top ellipse -->
+    <ellipse cx="512" cy="396" rx="118" ry="34" fill="#0A84FF"/>
+    <!-- Middle ring (semi-transparent for depth) -->
+    <ellipse cx="512" cy="454" rx="118" ry="34" fill="#0A84FF" opacity="0.5"/>
+    <!-- Top highlight -->
+    <ellipse cx="512" cy="392" rx="92" ry="24" fill="#ffffff" opacity="0.22"/>
+  </g>
+</svg>

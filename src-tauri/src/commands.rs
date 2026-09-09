@@ -1976,3 +1976,88 @@ pub async fn explain_visual(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Lightweight streaming channel for Cmd+K inline SQL generation & rewriting.
+/// Bypasses heavy multi-step planning and tool execution for instant TTFT.
+#[tauri::command]
+pub async fn inline_generate_sql(
+    state: State<'_, AppState>,
+    prompt: String,
+    selected_sql: Option<String>,
+    conn_id: Option<String>,
+    db: Option<String>,
+    on_token: tauri::ipc::Channel<String>,
+) -> Result<(), String> {
+    let llm = state.llm.lock().unwrap().clone();
+    if !llm.enabled() {
+        return Err("AI 服务未配置或未启用，请先在设置中配置 API Key".into());
+    }
+
+    let mut system_prompt = String::from(
+        "你是一个极其专业的 SQL 编写专家。\n\
+         硬性要求：\n\
+         1. 根据用户的需求，直接输出纯 SQL 语句，严禁输出任何 markdown 格式代码围栏（绝对不要使用 ``` 或 ```sql 开头结尾）、严禁输出任何多余解释说明或客套话。\n\
+         2. 必须优先且严格使用给定的目标数据库真实表名，严禁凭空盲猜或捏造不存在的表名！\n\
+         3. 只输出可直接在数据库中执行的标准 SQL 语句代码本身。\n"
+    );
+
+    if let (Some(ref cid), Some(ref db_name)) = (&conn_id, &db) {
+        if !db_name.trim().is_empty() {
+            system_prompt.push_str(&format!("当前目标数据库：`{}`\n", db_name.trim()));
+            if let Some(cfg) = resolve_cfg(&state, cid) {
+                if let Ok(tables) = chatquery::db::mysql::search_tables(&cfg, db_name, None, 80).await {
+                    if !tables.is_empty() {
+                        system_prompt.push_str("【当前数据库已存在的真实数据表及注释】（请务必根据用户需求从中选用正确表名）：\n");
+                        for t in tables.iter().take(60) {
+                            if let Some(ref c) = t.comment {
+                                system_prompt.push_str(&format!("- `{}`: {}\n", t.name, c));
+                            } else {
+                                system_prompt.push_str(&format!("- `{}`\n", t.name));
+                            }
+                        }
+                        system_prompt.push_str("\n");
+                    }
+                }
+            }
+
+            // 自动加载并注入当前数据库绑定的业务知识库（口径、业务规则、外键关系等）
+            let kb_docs = {
+                let store = state.store.lock().unwrap();
+                store.get_injected_kb_docs(cid, Some(db_name.as_str())).unwrap_or_default()
+            };
+            if !kb_docs.is_empty() {
+                system_prompt.push_str("【当前数据库绑定的业务知识库（业务口径、表关联规则与枚举定义）】（请务必遵循）：\n");
+                for doc in kb_docs {
+                    system_prompt.push_str(&format!("### {}\n{}\n\n", doc.name, doc.content));
+                }
+            }
+        }
+    } else if let Some(ref db_name) = db {
+        if !db_name.trim().is_empty() {
+            system_prompt.push_str(&format!("当前目标数据库：`{}`\n", db_name.trim()));
+        }
+    }
+
+    let mut user_prompt = String::new();
+    if let Some(ref sel) = selected_sql {
+        if !sel.trim().is_empty() {
+            user_prompt.push_str(&format!("【当前选中的待改写 SQL】:\n{}\n\n", sel.trim()));
+        }
+    }
+    user_prompt.push_str(&format!("【修改指令 / 需求描述】:\n{}", prompt.trim()));
+
+    let messages = vec![
+        ChatMessage::system(system_prompt),
+        ChatMessage::user(user_prompt),
+    ];
+
+    let mut sink = |delta: &str| {
+        let _ = on_token.send(delta.to_string());
+    };
+
+    chatquery::llm::client::stream_chat(&llm, &messages, &[], &mut sink)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}

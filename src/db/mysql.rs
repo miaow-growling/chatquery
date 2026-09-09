@@ -1155,6 +1155,20 @@ pub struct TableMeta {
     pub name: String,
     /// true when this is a VIEW rather than a base TABLE.
     pub is_view: bool,
+    /// Table comment from INFORMATION_SCHEMA.TABLES (e.g. Chinese description)
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+fn extract_table_comment(row: &sqlx::mysql::MySqlRow) -> Option<String> {
+    row.try_get::<String, _>("TABLE_COMMENT").ok().and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() || trimmed.starts_with("InnoDB free:") {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 /// List non-system databases on the server (Navicat's "database" level).
@@ -1195,7 +1209,8 @@ pub async fn list_tables(cfg: &ConnectionConfig, database: &str) -> Result<Vec<T
         // so sqlx reports them as SQL type BINARY and refuses to map them to String.
         // CAST to CHAR so they come back as VARCHAR (see list_tables/schema/describe_table).
         let rows = sqlx::query(
-            "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE \
+            "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE, \
+             CAST(TABLE_COMMENT AS CHAR) AS TABLE_COMMENT \
              FROM INFORMATION_SCHEMA.TABLES \
              WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME",
         )
@@ -1207,9 +1222,11 @@ pub async fn list_tables(cfg: &ConnectionConfig, database: &str) -> Result<Vec<T
         for row in rows {
             let name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
             let ttype: String = row.try_get("TABLE_TYPE").map_err(AppError::Sqlx)?;
+            let comment = extract_table_comment(&row);
             out.push(TableMeta {
                 name,
                 is_view: ttype.eq_ignore_ascii_case("VIEW"),
+                comment,
             });
         }
         Ok(out)
@@ -1265,7 +1282,8 @@ pub async fn search_tables(
             if like.starts_with('~') && like.ends_with('~') && like.len() > 2 {
                 let needle = like.trim_matches('~');
                 let rows = sqlx::query(
-                    "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE \
+                    "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE, \
+                     CAST(TABLE_COMMENT AS CHAR) AS TABLE_COMMENT \
                      FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ?",
                 )
                 .bind(database)
@@ -1283,9 +1301,11 @@ pub async fn search_tables(
                     let d = levenshtein(&name, needle);
                     if d <= 2 {
                         let ttype: String = row.try_get("TABLE_TYPE").map_err(AppError::Sqlx)?;
+                        let comment = extract_table_comment(&row);
                         scored.push((d, TableMeta {
                             name,
                             is_view: ttype.eq_ignore_ascii_case("VIEW"),
+                            comment,
                         }));
                     }
                 }
@@ -1296,7 +1316,8 @@ pub async fn search_tables(
         }
 
         let mut sql = String::from(
-            "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE \
+            "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE, \
+             CAST(TABLE_COMMENT AS CHAR) AS TABLE_COMMENT \
              FROM INFORMATION_SCHEMA.TABLES \
              WHERE TABLE_SCHEMA = ?",
         );
@@ -1334,9 +1355,11 @@ pub async fn search_tables(
         for row in rows {
             let name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
             let ttype: String = row.try_get("TABLE_TYPE").map_err(AppError::Sqlx)?;
+            let comment = extract_table_comment(&row);
             out.push(TableMeta {
                 name,
                 is_view: ttype.eq_ignore_ascii_case("VIEW"),
+                comment,
             });
         }
         Ok(out)
