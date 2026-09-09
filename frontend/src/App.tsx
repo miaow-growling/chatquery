@@ -7511,7 +7511,14 @@ export function App() {
                     disabled={form.lockDbType}
                     onChange={(v) => {
                       const port = v === "redis" ? 6379 : 3306;
-                      setForm({ ...form, cfg: { ...form.cfg, db_type: v, port } });
+                      // 跨引擎类型切换时自动重置分组，防止 MySQL/Redis 串组
+                      const currentGid = form.cfg.group_id;
+                      const gType = currentGid ? envTypeOfGroup(currentGid) : undefined;
+                      const newGroupId = gType && gType !== v ? null : currentGid;
+                      setForm({
+                        ...form,
+                        cfg: { ...form.cfg, db_type: v, port, group_id: newGroupId },
+                      });
                     }}
                   />
                   {form.lockDbType && (
@@ -7584,29 +7591,25 @@ export function App() {
                       options={[
                         { value: "", label: "（不分组）" },
                         ...tree.environments
-                          .filter((e) => e.id !== "__ungrouped")
+                          .filter((e) => {
+                            if (e.id === "__ungrouped") return false;
+                            // 严格按当前连接的 db_type 过滤环境分组，防止 MySQL 和 Redis 串组
+                            const currentType = form.cfg.db_type || "mysql";
+                            const envType = e.db_type || "mysql";
+                            return envType === currentType;
+                          })
                           .flatMap((e) =>
                             e.groups.map((g) => ({
                               value: g.id,
-                              label: `${e.name} / ${g.name || "(未命名)"}`,
+                              label: `[${(e.db_type || "mysql").toUpperCase()}] ${e.name} / ${g.name || "(未命名)"}`,
                             }))
                           ),
                       ]}
                       onChange={(v) => {
                         const gid = v || null;
-                        const envType = gid ? envTypeOfGroup(gid) : undefined;
-                        const db_type = envType ?? form.cfg.db_type;
-                        // Only touch the port when the type actually flips, so
-                        // editing a connection never resets a custom port.
-                        const port =
-                          db_type !== form.cfg.db_type
-                            ? db_type === "redis"
-                              ? 6379
-                              : 3306
-                            : form.cfg.port;
                         setForm({
                           ...form,
-                          cfg: { ...form.cfg, group_id: gid, db_type, port },
+                          cfg: { ...form.cfg, group_id: gid },
                         });
                       }}
                     />
