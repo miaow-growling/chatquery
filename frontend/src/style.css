@@ -771,44 +771,46 @@ button, input, select, textarea { font: inherit; color: inherit; }
   min-height: 0;
   overflow: hidden;
   background: var(--bg-canvas);
+  padding: 8px 10px;
+  gap: 0;
 }
 .editor-pane {
   flex: 1 1 52%;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-bottom: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
   background: var(--bg-surface);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
   position: relative;
 }
 .editor-pane.expanded {
   flex: 1 1 100%;
-  border-bottom: none;
 }
 
 /* 垂直物理拖拽分割条 (Editor 与 Result 之间的机械实体分层) */
 .pane-splitter-v {
-  height: 8px;
-  background: #0B0E17;
-  border-top: 1px solid var(--border-soft);
-  border-bottom: 1px solid var(--border);
+  height: 12px;
+  margin: 1px 0;
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: row-resize;
   z-index: 10;
   flex-shrink: 0;
-  transition: background 0.15s, border-color 0.15s;
+  transition: all 0.15s ease;
   user-select: none;
 }
 .pane-splitter-v:hover,
 .pane-splitter-v.active {
-  background: rgba(99, 102, 241, 0.18);
-  border-color: var(--brand);
+  background: rgba(99, 102, 241, 0.12);
 }
 .pane-splitter-v .splitter-handle {
-  width: 42px;
-  height: 3px;
+  width: 44px;
+  height: 4px;
   border-radius: 2px;
   background: var(--border-strong);
   transition: all 0.2s ease;
@@ -816,8 +818,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .pane-splitter-v:hover .splitter-handle,
 .pane-splitter-v.active .splitter-handle {
   background: var(--brand);
-  width: 58px;
-  box-shadow: 0 0 8px var(--brand);
+  width: 60px;
+  box-shadow: 0 0 10px var(--brand);
 }
 
 .result-pane {
@@ -826,7 +828,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
   background: var(--bg-surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  position: relative;
 }
 
 /* Floating Restore Pill (inspired by DBX) */
@@ -1130,34 +1137,40 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--bg-canvas);
   border-bottom: 1px solid var(--border);
   padding: 0 var(--sp-2);
-  overflow-x: hidden;
+  overflow-x: auto;
   min-width: 0;
   flex-shrink: 0;
+  border-bottom: none;
+  padding: 2px 2px 8px 2px;
 }
 .tab {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 32px;
-  padding: 0 6px 0 10px;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: var(--r-md) var(--r-md) 0 0;
-  background: transparent;
-  color: var(--text-tertiary);
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
   font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
   cursor: pointer;
   white-space: nowrap;
-  max-width: 150px;
-  transition: background var(--t-fast), color var(--t-fast);
+  max-width: 180px;
+  transition: all 0.15s ease;
 }
-.tab:hover { background: var(--bg-subtle); color: var(--text-secondary); }
-.tab.active {
-  background: var(--bg-surface);
+.tab:hover {
+  background: var(--bg-hover);
   color: var(--text-primary);
   border-color: var(--border);
-  box-shadow: 0 -2px 0 var(--brand) inset;
+}
+.tab.active {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-color: var(--brand);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  font-weight: var(--fw-semibold);
 }
 .tab-name { overflow: hidden; text-overflow: ellipsis; }
 .tab-close {
