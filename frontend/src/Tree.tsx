@@ -1055,7 +1055,7 @@ export function Tree(props: TreeProps) {
                 />
               </div>
 
-              <div className="modal-actions" style={{ marginTop: "6px" }}>
+              <div className="modal-actions" style={{ marginTop: "14px", justifyContent: "flex-end" }}>
                 <button type="button" onClick={() => setShowImportModal(false)}>
                   取消
                 </button>
