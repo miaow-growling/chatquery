@@ -36,8 +36,8 @@ steps:
   # 4. 安装前端依赖
   - powershell: |
       Set-Location -Path "frontend"
-      npm ci
-    displayName: '安装前端依赖 (npm ci)'
+      npm install --registry=https://registry.npmjs.org
+    displayName: '安装前端依赖 (npm install)'
 
   # 5. 构建前端
   - powershell: |
