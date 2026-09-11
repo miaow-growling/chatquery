@@ -19,34 +19,35 @@ steps:
   - checkout: self
     fetchDepth: 1
 
-  # 2. 安装 Node.js 20
+  # 2. 确保使用 Node.js 20
   - task: NodeTool@0
-    displayName: '安装 Node.js 20'
+    displayName: '设置 Node.js 20'
     inputs:
       versionSpec: '20.x'
 
-  # 3. 安装 Rust 工具链
-  - script: |
-      curl -sSf -o rustup-init.exe https://win.rustup.rs
-      rustup-init.exe -y --default-toolchain stable --default-host x86_64-pc-windows-msvc
-      echo "##vso[task.prependpath]%USERPROFILE%\.cargo\bin"
-    displayName: '安装 Rust (x86_64-pc-windows-msvc)'
+  # 3. 确保 Rust stable (x86_64-pc-windows-msvc) 工具链
+  - powershell: |
+      rustup default stable-x86_64-pc-windows-msvc
+      rustup target add x86_64-pc-windows-msvc
+      cargo --version
+      rustc --version
+    displayName: '检查并配置 Rust 工具链'
 
   # 4. 安装前端依赖
-  - script: |
-      cd frontend
+  - powershell: |
+      Set-Location -Path "frontend"
       npm ci
     displayName: '安装前端依赖 (npm ci)'
 
   # 5. 构建前端
-  - script: |
-      cd frontend
+  - powershell: |
+      Set-Location -Path "frontend"
       npm run build
     displayName: '构建前端静态资源 (Vite)'
 
   # 6. 打包 Tauri Windows 应用 (EXE & MSI)
-  - script: |
-      cd frontend
+  - powershell: |
+      Set-Location -Path "frontend"
       npx tauri build
     displayName: '打包 Tauri Windows 应用'
 
@@ -57,3 +58,4 @@ steps:
       PathtoPublish: 'src-tauri/target/release/bundle'
       ArtifactName: '智询-Windows安装包'
       publishLocation: 'Container'
+
