@@ -7,6 +7,7 @@ use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlSslMode
 use sqlx::types::chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use sqlx::{Column, Row, TypeInfo, ValueRef};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -879,6 +880,7 @@ fn resolve_ssh_key(key: &str) -> Option<PathBuf> {
         .unwrap_or(0);
     let tmp = std::env::temp_dir().join(format!("cq_ssh_key_{stamp}.pem"));
     if std::fs::write(&tmp, key.as_bytes()).is_ok() {
+        #[cfg(unix)]
         let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
         return Some(tmp);
     }

@@ -19,6 +19,7 @@ use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -39,9 +40,12 @@ pub fn load_key() -> Result<[u8; 32]> {
     getrandom::getrandom(&mut k).map_err(|e| AppError::Msg(format!("getrandom: {}", e)))?;
     let mut f = std::fs::File::create(&path)?;
     f.write_all(&k)?;
-    let mut perms = std::fs::metadata(&path)?.permissions();
-    perms.set_mode(0o600);
-    std::fs::set_permissions(&path, perms)?;
+    #[cfg(unix)]
+    {
+        let mut perms = std::fs::metadata(&path)?.permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&path, perms)?;
+    }
     Ok(k)
 }
 
@@ -161,6 +165,7 @@ pub fn save_key_config(field: &str) -> Result<[u8; 32]> {
     let bytes = serde_json::to_vec_pretty(&f)?;
     std::fs::write(&path, bytes)?;
     // 0600 — keycfg holds the machine-bound K ciphertext.
+    #[cfg(unix)]
     if let Ok(mut perms) = std::fs::metadata(&path).map(|m| m.permissions()) {
         perms.set_mode(0o600);
         let _ = std::fs::set_permissions(&path, perms);
