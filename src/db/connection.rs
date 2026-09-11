@@ -271,6 +271,24 @@ impl ConnectionStore {
     ) -> Result<Vec<crate::store::KbDoc>> {
         self.storage.get_injected_kb_docs(conn_id, db)
     }
+
+    // --- Data Assistant (数据助手) 转发 ---
+    pub fn list_data_assistants(&self) -> Result<Vec<crate::model::DataAssistant>> {
+        self.storage.list_data_assistants()
+    }
+    pub fn get_data_assistant(&self, id: &str) -> Result<Option<crate::model::DataAssistant>> {
+        self.storage.get_data_assistant(id)
+    }
+    pub fn save_data_assistant(&self, a: &crate::model::DataAssistant) -> Result<()> {
+        self.storage.save_data_assistant(a)
+    }
+    pub fn delete_data_assistant(&self, id: &str) -> Result<()> {
+        self.storage.delete_data_assistant(id)
+    }
+    pub fn get_kb_docs_by_ids(&self, ids: &[String]) -> Result<Vec<crate::store::KbDoc>> {
+        self.storage.get_kb_docs_by_ids(ids)
+    }
+
     pub fn add_audit(
         &self,
         conn_id: &str,
@@ -278,14 +296,15 @@ impl ConnectionStore {
         db: Option<&str>,
         sql: &str,
         decision: &str,
+        result: Option<&str>,
     ) -> Result<()> {
         self.storage
-            .add_audit(conn_id, conn_name, db, sql, decision)
+            .add_audit(conn_id, conn_name, db, sql, decision, result)
     }
     pub fn list_audits(
         &self,
         limit: i64,
-    ) -> Result<Vec<(String, Option<String>, String, String, i64)>> {
+    ) -> Result<Vec<(String, Option<String>, String, String, Option<String>, i64)>> {
         self.storage.list_audits(limit)
     }
 

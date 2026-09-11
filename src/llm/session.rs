@@ -68,6 +68,17 @@ pub struct Agent {
     audit: AuditSink,
     /// Cumulative token usage for the turn (ADR-AI-4 决策3).
     usage: TokenUsage,
+    /// 数据助手上下文（若本轮激活了数据助手）
+    pub assistant: Option<AssistantContext>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AssistantContext {
+    pub id: String,
+    pub name: String,
+    pub system_prompt: String,
+    pub bound_databases: Vec<crate::model::AssistantDbBinding>,
+    pub bound_kb_docs: Vec<(String, String)>,
 }
 
 impl Agent {
@@ -81,6 +92,7 @@ impl Agent {
         ctl: TurnControl,
         kb: KbLoader,
         audit: AuditSink,
+        assistant: Option<AssistantContext>,
     ) -> Self {
         let registry = build_registry(mcp.as_deref()).await;
         let memory = SessionMemory::new(Some(conn_id.to_string()), db.map(|s| s.to_string()));
@@ -95,6 +107,7 @@ impl Agent {
             kb,
             audit,
             usage: TokenUsage::default(),
+            assistant,
         }
     }
 
@@ -128,6 +141,7 @@ impl Agent {
             kb,
             audit,
             usage: TokenUsage::default(),
+            assistant: None,
         }
     }
 
@@ -161,7 +175,7 @@ impl Agent {
         let last_user = prepend_refs(&last_user, block.as_deref());
 
         if !needs_planning(&planning_seed, history.len()) {
-            let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb).await;
+            let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb, self.assistant.as_ref()).await;
             // Lift prior assistant conclusions into the system prompt so the
             // model can see them as *established facts* instead of just one
             // entry in a long message log. Without this, a multi-turn
@@ -186,7 +200,7 @@ impl Agent {
         let plan: Vec<PlanStep> = match plan_task(&self.cfg, &last_user, history, &self.conns, &self.memory, &self.kb).await {
             Ok(steps) if !steps.is_empty() => steps,
             _ => {
-                let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb).await;
+                let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb, self.assistant.as_ref()).await;
                 let system = inject_prior_assistant(&system, history);
                 let mut messages = Vec::new();
                 if !system.is_empty() {
@@ -857,8 +871,9 @@ pub async fn run_turn(
     ctl: TurnControl,
     kb: KbLoader,
     audit: AuditSink,
+    assistant: Option<AssistantContext>,
 ) -> Result<()> {
-    let mut agent = Agent::build(cfg.clone(), conns, mcp, conn_id, db, ctl.clone(), kb, audit).await;
+    let mut agent = Agent::build(cfg.clone(), conns, mcp, conn_id, db, ctl.clone(), kb, audit, assistant).await;
     // ADR-AI-4 决策2: bound a single turn's wall-clock time so a stuck stream
     // or runaway worker can't wedge the turn (and its registry slot) forever.
     let result = tokio::time::timeout(TURN_TIMEOUT, agent.run(history, refs, conv_ctx.as_deref(), tx)).await;
@@ -894,6 +909,7 @@ async fn context_block(
     conns: &[ConnectionConfig],
     memory: &SessionMemory,
     kb: &KbLoader,
+    assistant: Option<&AssistantContext>,
 ) -> String {
     let mut p = String::new();
     p.push_str("可用连接（`execute_query` 的 `connection` 参数必须严格传这里的 name，不要带 (MySQL)/(Redis) 后缀）：\n");
@@ -903,6 +919,38 @@ async fn context_block(
             DbType::Redis => "Redis",
         };
         p.push_str(&format!("- name=`{}` kind={}\n", c.name, kind));
+    }
+    if let Some(ast) = assistant {
+        if ast.bound_databases.len() > 1 {
+            p.push_str("\n## 本助手已关联多个数据库（支持智能多库路由与跨库协同）：\n");
+            for b in &ast.bound_databases {
+                if let Some(c) = conns.iter().find(|conn| conn.id == b.conn_id) {
+                    let kind = match c.db_type {
+                        DbType::Mysql => "MySQL",
+                        DbType::Redis => "Redis",
+                    };
+                    let target_db = b
+                        .database
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| if c.database.is_empty() { None } else { Some(c.database.as_str()) })
+                        .unwrap_or("默认库");
+                    p.push_str(&format!("\n### 数据源 `{}` ({}，指定数据库: `{}`):\n", c.name, kind, target_db));
+                    if c.db_type == DbType::Mysql {
+                        let query_db = if target_db == "默认库" { "mysql" } else { target_db };
+                        if let Ok(tables) = mysql::search_tables(c, query_db, None, 30).await {
+                            if !tables.is_empty() {
+                                p.push_str("包含表：");
+                                let t_names = tables.iter().take(30).map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ");
+                                p.push_str(&t_names);
+                                p.push('\n');
+                            }
+                        }
+                    }
+                }
+            }
+            p.push_str("\n多库查询指引：\n- 智能路由：先判断问题涉及哪些表，并在调用 `execute_query` 时将 `connection` 指定为包含该表的数据源名称，`db` 指定为对应的数据库；\n- 跨库两阶段执行：若需跨库数据联动，可先查询第一个库获取关键过滤主键，再在后续步骤将查询结果代入第二个库中查询。\n");
+        }
     }
     // 当前 db（用户在 composer 顶部 + → 选择数据库 选中的库）：
     // execute_query 不需要 LLM 显式传 db 也会自动用这个；SELECT
@@ -976,6 +1024,23 @@ async fn context_block(
             }
         }
     }
+    // 注入数据助手显式绑定的专属知识库文档
+    if let Some(ast) = assistant {
+        if !ast.bound_kb_docs.is_empty() {
+            p.push_str("\n## 数据助手专属业务知识库（指标与业务规范）：\n");
+            let mut total = 0usize;
+            const PER_DOC: usize = 2500;
+            const TOTAL_CAP: usize = 8000;
+            for (name, content) in &ast.bound_kb_docs {
+                if total >= TOTAL_CAP {
+                    break;
+                }
+                let take: String = content.chars().take(PER_DOC).collect();
+                total += take.chars().count();
+                p.push_str(&format!("- 文档「{}」：{}\n", name, take));
+            }
+        }
+    }
     p
 }
 
@@ -987,8 +1052,18 @@ async fn build_system_prompt(
     memory: &SessionMemory,
     plan: Option<&[String]>,
     kb: &KbLoader,
+    assistant: Option<&AssistantContext>,
 ) -> String {
-    let mut p = context_block(conns, memory, kb).await;
+    let mut p = String::new();
+    if let Some(ast) = assistant {
+        if !ast.name.is_empty() {
+            p.push_str(&format!("## 当前激活的数据助手角色：【{}】\n", ast.name));
+        }
+        if !ast.system_prompt.trim().is_empty() {
+            p.push_str(&format!("{}\n\n", ast.system_prompt.trim()));
+        }
+    }
+    p.push_str(&context_block(conns, memory, kb, assistant).await);
     // 宪法紧贴上下文之后：模型刚看到表清单/知识库，正是「先取证再写 SQL」
     // 这类硬约束最容易被内化的位置。普通规则段继续保留各自的弱化表述。
     let constitution = crate::llm::constitution::render();
@@ -1031,7 +1106,7 @@ async fn build_worker_system(
 ) -> String {
     let mut p = String::new();
     p.push_str(role.system_prefix());
-    p.push_str(&context_block(conns, memory, kb).await);
+    p.push_str(&context_block(conns, memory, kb, None).await);
     // Worker 是复杂任务里真正动手写 SQL 的角色，宪法（如「先拿真实表结构
     // 再写 SQL」）对它们比对 Orchestrator 更关键，注入位置与主提示词保持
     // 一致：紧贴上下文之后。
@@ -1101,19 +1176,20 @@ async fn exec_with_policy(
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
                     .or_else(|| ctx.current_db.map(|s| s.to_string()));
-                let emit = |decision: &'static str| {
+                let emit = |decision: &'static str, result: Option<String>| {
                     audit(&AuditEvent {
                         conn_id: conn_id.clone(),
                         conn_name: conn_name.to_string(),
                         db: db.clone(),
                         sql: query.to_string(),
                         decision,
+                        result,
                     });
                 };
                 match check_statement(query) {
                     PolicyDecision::Allow => {}
                     PolicyDecision::Deny(reason) => {
-                        emit("deny");
+                        emit("deny", Some(format!("护栏拦截：{}", reason)));
                         return ("已拦截".into(), format!("AI 护栏拒绝执行：{}", reason));
                     }
                     PolicyDecision::ConfirmRequired(reason) => {
@@ -1137,13 +1213,15 @@ async fn exec_with_policy(
                         let answer = tokio::time::timeout(CONFIRM_TIMEOUT, rx).await;
                         match answer.unwrap_or(Ok(false)) {
                             Ok(true) => {
-                                emit("write-approved");
                                 let _ = tx.send(BackendMsg::ChatTool(
                                     "写操作已获用户确认，正在执行".to_string(),
                                 ));
+                                let res = reg.call(tc, ctx).await;
+                                emit("write-approved", Some(res.0.clone()));
+                                return res;
                             }
                             Ok(false) => {
-                                emit("write-rejected");
+                                emit("write-rejected", Some("用户拒绝执行".to_string()));
                                 return (
                                     "用户拒绝".into(),
                                     "用户拒绝执行这条写操作。不要重试，也不要改写后再次尝试；\
@@ -1152,7 +1230,7 @@ async fn exec_with_policy(
                                 );
                             }
                             Err(_) => {
-                                emit("write-expired");
+                                emit("write-expired", Some("确认响应超时".to_string()));
                                 return (
                                     "确认失效".into(),
                                     "确认请求未获响应（会话已结束、被取消或超时），语句未执行。".into(),
@@ -1183,9 +1261,34 @@ mod tests {
     #[tokio::test]
     async fn system_prompt_carries_constitution() {
         let memory = SessionMemory::new(None, None);
-        let prompt = build_system_prompt(&[], &memory, None, &no_kb()).await;
+        let prompt = build_system_prompt(&[], &memory, None, &no_kb(), None).await;
         assert!(prompt.contains("宪法"));
         assert!(prompt.contains("[C1]"));
+    }
+
+    #[tokio::test]
+    async fn system_prompt_carries_data_assistant() {
+        let memory = SessionMemory::new(None, None);
+        let ast = AssistantContext {
+            id: "ast-1".to_string(),
+            name: "运营分析助手".to_string(),
+            system_prompt: "只用中文回答且输出 Markdown 表格".to_string(),
+            bound_databases: vec![
+                crate::model::AssistantDbBinding {
+                    conn_id: "conn-1".to_string(),
+                    database: Some("db1".to_string()),
+                },
+                crate::model::AssistantDbBinding {
+                    conn_id: "conn-2".to_string(),
+                    database: None,
+                },
+            ],
+            bound_kb_docs: vec![("口径规范".to_string(), "GMV统计口径包含已支付未退款".to_string())],
+        };
+        let prompt = build_system_prompt(&[], &memory, None, &no_kb(), Some(&ast)).await;
+        assert!(prompt.contains("运营分析助手"));
+        assert!(prompt.contains("只用中文回答且输出 Markdown 表格"));
+        assert!(prompt.contains("GMV统计口径包含已支付未退款"));
     }
 
     /// Workers write the SQL in complex turns — the constitution must reach

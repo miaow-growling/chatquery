@@ -110,7 +110,13 @@ pub struct QueryItem {
 /// 发一条「手动执行」审计事件（写操作全量留痕）。best-effort：审计失败不
 /// 影响执行结果。仅 MySQL；写判定复用 mysql::is_read_query 的反向语义
 /// （INSERT/UPDATE/DELETE/REPLACE/DDL/SET 等都算写）。
-fn audit_manual(state: &State<'_, AppState>, conn_id: &str, db: Option<&str>, sql: &str) {
+fn audit_manual(
+    state: &State<'_, AppState>,
+    conn_id: &str,
+    db: Option<&str>,
+    sql: &str,
+    result: Option<&str>,
+) {
     let conn_name = state
         .store
         .lock()
@@ -124,7 +130,7 @@ fn audit_manual(state: &State<'_, AppState>, conn_id: &str, db: Option<&str>, sq
         .store
         .lock()
         .unwrap()
-        .add_audit(conn_id, &conn_name, db, sql, "manual");
+        .add_audit(conn_id, &conn_name, db, sql, "manual", result);
 }
 
 fn to_cfg(i: ConnInput) -> ConnectionConfig {
@@ -658,6 +664,112 @@ pub fn set_kb_bindings(
         .map_err(|e| e.to_string())
 }
 
+// --- Data Assistants (数据助手) -----------------------------------------------
+
+#[derive(Deserialize)]
+pub struct AssistantDbBindingInput {
+    pub conn_id: String,
+    #[serde(default)]
+    pub database: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct DataAssistantInput {
+    #[serde(default)]
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub system_prompt: String,
+    #[serde(default)]
+    pub bound_databases: Vec<AssistantDbBindingInput>,
+    #[serde(default)]
+    pub bound_knowledge_base_ids: Vec<String>,
+}
+
+#[tauri::command]
+pub fn list_data_assistants(
+    state: State<AppState>,
+) -> Result<Vec<chatquery::model::DataAssistant>, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .list_data_assistants()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_data_assistant(
+    state: State<AppState>,
+    id: String,
+) -> Result<Option<chatquery::model::DataAssistant>, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .get_data_assistant(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_data_assistant(
+    state: State<AppState>,
+    input: DataAssistantInput,
+) -> Result<chatquery::model::DataAssistant, String> {
+    if input.name.trim().is_empty() {
+        return Err("助手名称不能为空".to_string());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let id = if input.id.trim().is_empty() {
+        chatquery::db::container::gen_id("ast")
+    } else {
+        input.id
+    };
+    let bound_databases = input
+        .bound_databases
+        .into_iter()
+        .map(|b| chatquery::model::AssistantDbBinding {
+            conn_id: b.conn_id,
+            database: b.database.filter(|s| !s.trim().is_empty()),
+        })
+        .collect();
+    let assistant = chatquery::model::DataAssistant {
+        id,
+        name: input.name.trim().to_string(),
+        avatar: input.avatar,
+        description: input.description.trim().to_string(),
+        system_prompt: input.system_prompt,
+        bound_databases,
+        bound_knowledge_base_ids: input.bound_knowledge_base_ids,
+        created: now,
+        updated: now,
+    };
+    state
+        .store
+        .lock()
+        .unwrap()
+        .save_data_assistant(&assistant)
+        .map_err(|e| e.to_string())?;
+    Ok(assistant)
+}
+
+#[tauri::command]
+pub fn delete_data_assistant(state: State<AppState>, id: String) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .delete_data_assistant(&id)
+        .map_err(|e| e.to_string())
+}
+
 // --- Conversations (docs/chat-conversation-design.md) ------------------------
 // 会话是一等实体：有 id/标题/绑定连接/时间戳，消息落 SQLite。前端只负责
 // 展示与加载；TUI/未来客户端复用同一套命令。
@@ -902,11 +1014,30 @@ pub async fn execute_query(
             // 不会重复计数。
             if cfg.db_type == DbType::Mysql && !chatquery::db::mysql::is_read_query(&query) {
                 let target_db = if db.is_empty() { None } else { Some(db.as_str()) };
-                audit_manual(&state, &conn_id, target_db, &query);
+                let result_desc = match &inner {
+                    Ok(QueryOutput::Table { affected, last_insert_id, .. }) => {
+                        let mut desc = format!("影响 {} 行", affected.unwrap_or(0));
+                        if let Some(lid) = last_insert_id {
+                            if *lid > 0 {
+                                desc.push_str(&format!(", 自增ID {}", lid));
+                            }
+                        }
+                        desc
+                    }
+                    Err(e) => format!("执行失败: {}", e),
+                    _ => "执行完成".to_string(),
+                };
+                audit_manual(&state, &conn_id, target_db, &query, Some(&result_desc));
             }
             inner
         }
-        Err(_) => Err(format!("查询超时（服务端限制 {} 秒）", secs)),
+        Err(_) => {
+            if cfg.db_type == DbType::Mysql && !chatquery::db::mysql::is_read_query(&query) {
+                let target_db = if db.is_empty() { None } else { Some(db.as_str()) };
+                audit_manual(&state, &conn_id, target_db, &query, Some("查询超时"));
+            }
+            Err(format!("查询超时（服务端限制 {} 秒）", secs))
+        }
     }
 }
 
@@ -1153,7 +1284,7 @@ pub async fn apply_edit(
         set.iter().map(|(c, v)| format!("{}={}", quote_ident(c), v)).collect::<Vec<_>>().join(", "),
         pk.iter().map(|(c, v)| format!("{}={}", quote_ident(c), v)).collect::<Vec<_>>().join(" AND ")
     );
-    audit_manual(&state, &conn_id, Some(&database), &audit_sql);
+    audit_manual(&state, &conn_id, Some(&database), &audit_sql, Some("影响 1 行"));
     Ok(())
 }
 
@@ -1183,7 +1314,7 @@ pub async fn insert_row(
         values.iter().map(|(c, _)| quote_ident(c)).collect::<Vec<_>>().join(", "),
         values.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>().join(", ")
     );
-    audit_manual(&state, &conn_id, Some(&database), &audit_sql);
+    audit_manual(&state, &conn_id, Some(&database), &audit_sql, Some("插入 1 行"));
     Ok(())
 }
 
@@ -1207,7 +1338,7 @@ pub async fn delete_row(
         quote_ident(&table),
         pk.iter().map(|(c, v)| format!("{}={}", quote_ident(c), v)).collect::<Vec<_>>().join(" AND ")
     );
-    audit_manual(&state, &conn_id, Some(&database), &audit_sql);
+    audit_manual(&state, &conn_id, Some(&database), &audit_sql, Some("删除 1 行"));
     Ok(())
 }
 
@@ -1708,6 +1839,7 @@ pub async fn chat_turn(
     refs: Option<Vec<SqlReference>>,
     conv_id: Option<String>,
     conv_refs: Option<Vec<ConversationRef>>,
+    assistant_id: Option<String>,
 ) -> Result<String, String> {
     // One turn at a time: a second `chat_turn` while one is streaming would
     // double every token on the wire. The flag is reset by the event bridge
@@ -1715,6 +1847,51 @@ pub async fn chat_turn(
     if TURN_IN_FLIGHT.swap(true, Ordering::SeqCst) {
         return Err("上一条对话还在进行中，请先等它结束或点「停止」。".to_string());
     }
+
+    // 助手解析与数据库继承降级：
+    // 1. 若指定了数据助手，加载其设定与知识库
+    // 2. 数据库选择策略：若助手绑定了数据库，优先使用助手绑定的连接与具体数据库；若未绑定，回退到当前会话连接与库
+    // 3. 若最终连接依然为空，拦截并提示用户指定数据库
+    let (effective_conn_id, effective_db, assistant_ctx) = {
+        let store = state.store.lock().unwrap();
+        if let Some(aid) = assistant_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            if let Ok(Some(ast)) = store.get_data_assistant(aid) {
+                let bound_kb_docs = store
+                    .get_kb_docs_by_ids(&ast.bound_knowledge_base_ids)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|d| (d.name, d.content))
+                    .collect::<Vec<_>>();
+
+                let (resolved_conn, resolved_db) = if !ast.bound_databases.is_empty() {
+                    let first = &ast.bound_databases[0];
+                    let specific_db = first.database.clone().or_else(|| db.clone());
+                    (first.conn_id.clone(), specific_db)
+                } else {
+                    (conn_id.clone(), db.clone())
+                };
+
+                let ctx = chatquery::llm::session::AssistantContext {
+                    id: ast.id,
+                    name: ast.name,
+                    system_prompt: ast.system_prompt,
+                    bound_databases: ast.bound_databases,
+                    bound_kb_docs,
+                };
+                (resolved_conn, resolved_db, Some(ctx))
+            } else {
+                (conn_id.clone(), db.clone(), None)
+            }
+        } else {
+            (conn_id.clone(), db.clone(), None)
+        }
+    };
+
+    if effective_conn_id.trim().is_empty() {
+        TURN_IN_FLIGHT.store(false, Ordering::SeqCst);
+        return Err("当前数据助手未关联数据库，且当前会话尚未选择数据库。请在会话中选择数据库或在助手设置中关联数据库。".to_string());
+    }
+
     let refs = refs.unwrap_or_default();
     // P1 跨会话引用（@-mention）：从 store 读取目标会话的尾部消息，渲染成
     // 背景上下文块后随本轮注入（docs/chat-conversation-design.md §6.2）。
@@ -1771,6 +1948,7 @@ pub async fn chat_turn(
             e.db.as_deref(),
             &e.sql,
             e.decision,
+            e.result.as_deref(),
         );
     });
 
@@ -1796,12 +1974,13 @@ pub async fn chat_turn(
             &messages,
             &refs,
             conv_ctx,
-            &conn_id,
-            db.as_deref(),
+            &effective_conn_id,
+            effective_db.as_deref(),
             &tx,
-                ctl.clone(),
-                kb_loader,
-                audit,
+            ctl.clone(),
+            kb_loader,
+            audit,
+            assistant_ctx,
         )
         .await;
         if let Err(e) = r {
@@ -1856,12 +2035,12 @@ pub async fn chat_turn(
 }
 
 /// Read the write-guardrail audit trail (ADR-AI-1 决策3). Returns
-/// (conn_name, db, sql, decision, ts) rows, newest first.
+/// (conn_name, db, sql, decision, result, ts) rows, newest first.
 #[tauri::command]
 pub async fn list_audit_logs(
     state: State<'_, AppState>,
     limit: Option<i64>,
-) -> Result<Vec<(String, Option<String>, String, String, i64)>, String> {
+) -> Result<Vec<(String, Option<String>, String, String, Option<String>, i64)>, String> {
     let store = state.store.lock().unwrap();
     store
         .list_audits(limit.unwrap_or(100))

@@ -9,6 +9,8 @@ import type {
   ConversationDetail,
   ConversationRef,
   ConversationSummary,
+  DataAssistant,
+  DataAssistantInput,
   EditPayload,
   ExplainVisual,
   ForeignKeyInfo,
@@ -284,6 +286,14 @@ export const api = {
   // --- Write-guardrail audit trail (ADR-AI-1 决策3) ---
   listAuditLogs: (limit?: number) =>
     invoke<AuditRow[]>("list_audit_logs", { limit: limit ?? null }),
+  // --- Data Assistants (数据助手) ---
+  listDataAssistants: () => invoke<DataAssistant[]>("list_data_assistants"),
+  getDataAssistant: (id: string) =>
+    invoke<DataAssistant | null>("get_data_assistant", { id }),
+  saveDataAssistant: (input: DataAssistantInput) =>
+    invoke<DataAssistant>("save_data_assistant", { input }),
+  deleteDataAssistant: (id: string) =>
+    invoke("delete_data_assistant", { id }),
   // --- Conversations (docs/chat-conversation-design.md) ---
   listConversations: () => invoke<ConversationSummary[]>("list_conversations"),
   createConversation: (connId: string | null, title?: string | null) =>
@@ -353,6 +363,7 @@ export function chatTurn(
   refs?: SqlReference[],
   convId?: string | null,
   convRefs?: ConversationRef[],
+  assistantId?: string | null,
 ): Promise<string> {
   return invoke<string>("chat_turn", {
     connId,
@@ -361,6 +372,7 @@ export function chatTurn(
     refs: refs && refs.length > 0 ? refs : null,
     convId: convId ?? null,
     convRefs: convRefs && convRefs.length > 0 ? convRefs : null,
+    assistantId: assistantId ?? null,
   });
 }
 export function cancelTurn(turnId: string): Promise<void> {

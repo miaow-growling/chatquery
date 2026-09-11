@@ -534,6 +534,7 @@ impl App {
                 ctl,
                 std::sync::Arc::new(|_, _| Vec::new()),
                 std::sync::Arc::new(|_| {}),
+                None,
             )
             .await
             {

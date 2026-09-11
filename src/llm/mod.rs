@@ -24,8 +24,9 @@ pub struct AuditEvent {
     pub conn_name: String,
     pub db: Option<String>,
     pub sql: String,
-    /// One of: "write-approved" | "write-rejected" | "write-expired" | "deny".
+    /// One of: "write-approved" | "write-rejected" | "write-expired" | "deny" | "manual".
     pub decision: &'static str,
+    pub result: Option<String>,
 }
 
 /// Host callback that persists an `AuditEvent`. Injected by the Tauri command

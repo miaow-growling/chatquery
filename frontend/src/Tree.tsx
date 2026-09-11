@@ -425,6 +425,58 @@ interface TreeProps {
   onShowRelationships: (connId: string, db: string) => void;
 }
 
+function nodeMatchesQuery(node: Node, q: string): boolean {
+  switch (node.kind) {
+    case "dbtype":
+    case "env":
+    case "group":
+      return node.name.toLowerCase().includes(q);
+    case "conn":
+      return (
+        node.conn.name.toLowerCase().includes(q) ||
+        (node.conn.host ? node.conn.host.toLowerCase().includes(q) : false)
+      );
+    case "db":
+      return node.db.toLowerCase().includes(q);
+    case "redisdb":
+      return `db${node.db}`.toLowerCase().includes(q);
+    case "folder":
+      return node.label.toLowerCase().includes(q);
+    case "table":
+      return (
+        node.name.toLowerCase().includes(q) ||
+        (node.comment ? node.comment.toLowerCase().includes(q) : false)
+      );
+    case "column":
+      return (
+        node.col.name.toLowerCase().includes(q) ||
+        (node.col.comment ? node.col.comment.toLowerCase().includes(q) : false) ||
+        (node.col.data_type ? node.col.data_type.toLowerCase().includes(q) : false)
+      );
+    default:
+      return false;
+  }
+}
+
+function renderHighlightedText(text: string, q: string): React.ReactNode {
+  if (!q) return text;
+  const lowerText = text.toLowerCase();
+  const lowerQ = q.toLowerCase();
+  const idx = lowerText.indexOf(lowerQ);
+  if (idx === -1) return text;
+
+  const before = text.slice(0, idx);
+  const match = text.slice(idx, idx + q.length);
+  const after = text.slice(idx + q.length);
+  return (
+    <>
+      {before}
+      <span className="tree-match-highlight">{match}</span>
+      {renderHighlightedText(after, q)}
+    </>
+  );
+}
+
 export function Tree(props: TreeProps) {
   const { tree, selectedConnId, selectedDb } = props;
   const roots = useMemo(() => buildRoots(tree), [tree]);
@@ -435,6 +487,8 @@ export function Tree(props: TreeProps) {
   // Per-folder filter text + how many children are currently revealed (windowing).
   const [folderFilter, setFolderFilter] = useState<Record<string, string>>({});
   const [folderShown, setFolderShown] = useState<Record<string, number>>({});
+  // 全局树搜索关键词
+  const [searchQuery, setSearchQuery] = useState("");
 
   // --- Connection import / export / template (#1, #2) ----------------------
   const fileRef = useRef<HTMLInputElement>(null);
@@ -533,10 +587,9 @@ export function Tree(props: TreeProps) {
     }
   }, []);
 
-  // Auto-expand top-level dbtype nodes AND environment nodes on every tree
-  // change — but only for nodes the user hasn't explicitly toggled. This way
-  // newly created environments/groups appear immediately without the user
-  // needing to manually expand, while respecting user collapses.
+  // Auto-expand top-level dbtype nodes on every tree change — only for nodes
+  // the user hasn't explicitly toggled. Environments remain collapsed by default
+  // so the view opens at the environment level.
   const userToggledRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (roots.length === 0) return;
@@ -547,14 +600,6 @@ export function Tree(props: TreeProps) {
         if (!userToggledRef.current.has(r.key) && !next[r.key]) {
           next[r.key] = true;
           changed = true;
-        }
-        if (r.kind === "dbtype" || r.kind === "env" || r.kind === "group") {
-          for (const env of r.children) {
-            if (env.kind === "env" && !userToggledRef.current.has(env.key) && !next[env.key]) {
-              next[env.key] = true;
-              changed = true;
-            }
-          }
         }
       }
       return changed ? next : e;
@@ -594,6 +639,67 @@ export function Tree(props: TreeProps) {
     },
     [expanded, cache, loading, load]
   );
+
+  // 全局树搜索：搜索当前树上已加载/展开过的节点（含连接、环境、分组、数据库、表、视图、字段等）
+  const { filteredRoots, searchExpandedKeys, searchMatchCount, filteredCache } = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) {
+      return {
+        filteredRoots: roots,
+        searchExpandedKeys: null,
+        searchMatchCount: 0,
+        filteredCache: null,
+      };
+    }
+
+    const autoKeys = new Set<string>();
+    const fCache: Record<string, Node[]> = {};
+    let totalCount = 0;
+
+    function filterRecursive(node: Node): Node | null {
+      const selfMatch = nodeMatchesQuery(node, q);
+
+      let rawChildren: Node[] = [];
+      if (node.kind === "dbtype" || node.kind === "env" || node.kind === "group") {
+        rawChildren = node.children;
+      } else if (cache[node.key]) {
+        rawChildren = cache[node.key];
+      }
+
+      const keptChildren: Node[] = [];
+      for (const ch of rawChildren) {
+        const keptChild = filterRecursive(ch);
+        if (keptChild) {
+          keptChildren.push(keptChild);
+        }
+      }
+
+      if (selfMatch || keptChildren.length > 0) {
+        if (selfMatch) totalCount++;
+        autoKeys.add(node.key);
+        if (node.kind === "dbtype" || node.kind === "env" || node.kind === "group") {
+          return { ...node, children: keptChildren };
+        } else {
+          fCache[node.key] = keptChildren;
+          return { ...node };
+        }
+      }
+      return null;
+    }
+
+    const resRoots: Node[] = [];
+    for (const r of roots) {
+      const res = filterRecursive(r);
+      if (res) resRoots.push(res);
+    }
+
+    return {
+      filteredRoots: resRoots,
+      searchExpandedKeys: autoKeys,
+      searchMatchCount: totalCount,
+      filteredCache: fCache,
+    };
+  }, [roots, cache, searchQuery]);
 
   // --- right-click context menu -------------------------------------------
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
@@ -760,20 +866,34 @@ export function Tree(props: TreeProps) {
       node.kind === "env" ||
       node.kind === "group" ||
       isLazy(node);
-    const isOpen = !!expanded[node.key];
-    const kids: Node[] =
-      node.kind === "dbtype" || node.kind === "env" || node.kind === "group"
-        ? node.children
-        : cache[node.key] ?? [];
+    const isSearching = !!searchExpandedKeys;
+    const isOpen = isSearching ? searchExpandedKeys.has(node.key) : !!expanded[node.key];
+    const kids: Node[] = isSearching
+      ? (node.kind === "dbtype" || node.kind === "env" || node.kind === "group"
+          ? node.children
+          : (filteredCache?.[node.key] ?? []))
+      : (node.kind === "dbtype" || node.kind === "env" || node.kind === "group"
+          ? node.children
+          : (cache[node.key] ?? []));
     const pad = { paddingLeft: `${depth * 10 + 4}px` };
     const cnt = counts[node.key];
 
-    // Clicking the row selects the node (connection/database/key). It does NOT
-    // expand/collapse — that is handled by the dedicated caret on the left.
+    // 单击环境、文件夹(分组)、表视图文件夹或类型时展开/收缩；只有单击实例和数据库时才触发选中
     const onRowClick = () => {
-      if (node.kind === "conn") props.onSelectConn(node.conn.id);
-      if (node.kind === "db") props.onSelectDb?.(node.connId, node.db);
-      if (node.kind === "redisdb") props.onSelectDb?.(node.connId, String(node.db));
+      if (
+        node.kind === "env" ||
+        node.kind === "group" ||
+        node.kind === "folder" ||
+        node.kind === "dbtype"
+      ) {
+        if (hasChildren) onToggle(node);
+      } else if (node.kind === "conn") {
+        props.onSelectConn(node.conn.id);
+      } else if (node.kind === "db") {
+        props.onSelectDb?.(node.connId, node.db);
+      } else if (node.kind === "redisdb") {
+        props.onSelectDb?.(node.connId, String(node.db));
+      }
     };
 
     const onLabelClick = (e: React.MouseEvent) => {
@@ -798,9 +918,9 @@ export function Tree(props: TreeProps) {
         : node.kind === "redisdb"
         ? "单击选中，双击打开查询"
         : node.kind === "env" || node.kind === "group"
-        ? "右键可新建组 / 新建链接 / 重命名 / 删除"
+        ? "单击展开/收缩，右键更多操作"
         : node.kind === "conn"
-        ? "单击选中，点左侧箭头展开数据库"
+        ? "单击选中该实例"
         : node.kind === "db"
         ? "单击选中该数据库"
         : undefined;
@@ -834,9 +954,11 @@ export function Tree(props: TreeProps) {
             <Icon name={b.icon} size={b.cls === "b-col" ? 6 : 14} />
           </span>
           <span className="tree-label">
-            {nodeLabel(node)}
+            {renderHighlightedText(nodeLabel(node), searchQuery.trim())}
             {node.kind === "table" && node.comment && (
-              <span className="tree-comment" title={node.comment}> {node.comment}</span>
+              <span className="tree-comment" title={node.comment}>
+                {" "}{renderHighlightedText(node.comment, searchQuery.trim())}
+              </span>
             )}
             {node.kind === "column" && node.col.key === "PRI" && (
               <span className="pk">PK</span>
@@ -845,14 +967,20 @@ export function Tree(props: TreeProps) {
               <span className="col-type">{node.col.data_type}</span>
             )}
             {node.kind === "column" && node.col.comment && (
-              <span className="tree-comment" title={node.col.comment}> {node.col.comment}</span>
+              <span className="tree-comment" title={node.col.comment}>
+                {" "}{renderHighlightedText(node.col.comment, searchQuery.trim())}
+              </span>
             )}
           </span>
           {cnt !== undefined && <span className="tree-count">{cnt}</span>}
           {loading[node.key] && <span className="tree-loading">…</span>}
         </div>
         {isOpen &&
-          (node.kind === "folder" ? (
+          (isSearching ? (
+            kids.length > 0 ? (
+              kids.map((c) => <div key={c.key}>{renderNode(c, depth + 1)}</div>)
+            ) : null
+          ) : node.kind === "folder" ? (
             <ListView
               kids={kids}
               depth={depth}
@@ -977,12 +1105,50 @@ export function Tree(props: TreeProps) {
         />
       </div>
 
+      {/* 侧边栏搜索栏：可搜索当前展开/加载过的连接、环境、数据库、表等 */}
+      <div className="tree-search-bar">
+        <div className="tree-search-box">
+          <span className="tree-search-icon">
+            <Icon name="search" size={11} />
+          </span>
+          <input
+            className="tree-search-input"
+            placeholder="搜索已加载的环境、实例、库、表..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            spellCheck={false}
+            autoComplete="off"
+          />
+          {searchQuery && (
+            <>
+              <span className="tree-search-count" title={`共找到 ${searchMatchCount} 项`}>
+                {searchMatchCount}
+              </span>
+              <button
+                type="button"
+                className="tree-search-clear"
+                onClick={() => setSearchQuery("")}
+                title="清空搜索"
+              >
+                ×
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
       {/* Scrollable tree content */}
       <ScrollArea>
-        {roots.length === 0 && <div className="tree-empty">暂无连接，点右上角 ＋ 添加</div>}
+        {filteredRoots.length === 0 && (
+          <div className="tree-empty">
+            {searchQuery.trim()
+              ? "未找到匹配项（仅搜索已展开/加载过的节点）"
+              : "暂无连接，点右上角 ＋ 添加"}
+          </div>
+        )}
         {treeMsg && <div className="tree-msg">{treeMsg}</div>}
 
-        {roots.map((r) => (
+        {filteredRoots.map((r) => (
           <div key={r.key}>{renderNode(r, 0)}</div>
         ))}
       </ScrollArea>

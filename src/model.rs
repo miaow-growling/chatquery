@@ -208,3 +208,32 @@ pub fn role_str(r: ChatRole) -> &'static str {
         ChatRole::System => "system",
     }
 }
+
+/// 助手绑定的数据库目标：包含连接实例 ID 及具体数据库名（database 为 None 表示使用连接的默认库）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssistantDbBinding {
+    pub conn_id: String,
+    #[serde(default)]
+    pub database: Option<String>,
+}
+
+/// 数据助手模型 (Data Assistant)
+/// 允许用户配置专属助手：预设提示词、多选绑定具体数据库、多选绑定知识库
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataAssistant {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub system_prompt: String,
+    #[serde(default)]
+    pub bound_databases: Vec<AssistantDbBinding>,
+    #[serde(default)]
+    pub bound_knowledge_base_ids: Vec<String>,
+    pub created: i64,
+    pub updated: i64,
+}
+

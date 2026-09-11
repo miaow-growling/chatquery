@@ -308,8 +308,8 @@ export interface TokenUsage {
 }
 
 /// One row of the write-guardrail audit trail (ADR-AI-1 决策3), newest first:
-/// [连接名, 库, SQL, 判定, 时间戳(秒)].
-export type AuditRow = [string, string | null, string, string, number];
+/// [连接名, 库, SQL, 判定, 执行结果, 时间戳(秒)].
+export type AuditRow = [string, string | null, string, string, string | null, number];
 
 /// A write statement the AI guardrail paused, awaiting the user's verdict
 /// (ADR-AI-1 / ADR-AI-4). Answer via `resolveConfirm(turn_id, id, approved)`.
@@ -505,3 +505,32 @@ export interface ConvRefCard extends ConversationRef {
   title: string;
   preview: string;
 }
+
+export interface AssistantDbBinding {
+  conn_id: string;
+  database?: string | null;
+}
+
+/// 数据助手 (Data Assistant)
+export interface DataAssistant {
+  id: string;
+  name: string;
+  avatar?: string | null;
+  description: string;
+  system_prompt: string;
+  bound_databases: AssistantDbBinding[];
+  bound_knowledge_base_ids: string[];
+  created: number;
+  updated: number;
+}
+
+export interface DataAssistantInput {
+  id?: string;
+  name: string;
+  avatar?: string | null;
+  description: string;
+  system_prompt: string;
+  bound_databases: AssistantDbBinding[];
+  bound_knowledge_base_ids: string[];
+}
+

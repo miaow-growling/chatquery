@@ -32,6 +32,8 @@ import type {
   ConnSummary,
   ConversationSummary,
   ConvRefCard,
+  DataAssistant,
+  DataAssistantInput,
   ExplainNode,
   ExplainVisual,
   ForeignKeyInfo,
@@ -66,6 +68,7 @@ import { writeFile, writeTextFile, readTextFile } from "@tauri-apps/plugin-fs";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { InlineAiBar } from "./InlineAiBar";
+import { DataAssistantEditor } from "./components/DataAssistantEditor";
 
 /** 表格右键菜单自适应容器（具有视口边缘碰撞检测，自动翻转防止菜单底部被遮挡截断） */
 function TableContextMenuContainer({
@@ -201,9 +204,24 @@ function CodeBlock({
   const codeText = useMemo(() => nodeText(children).replace(/\n$/, ""), [children]);
   const isWrite = /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(codeText);
   const canExecute = !!onExecute;
+  const lineCount = useMemo(() => codeText.split("\n").length, [codeText]);
+  const isLong = lineCount > 6 || codeText.length > 220;
+  const [collapsed, setCollapsed] = useState(isLong);
+
   return (
-    <div className="md-code">
+    <div className={"md-code" + (collapsed ? " collapsed" : "")}>
       <div className="md-code-actions">
+        {isLong && (
+          <button
+            type="button"
+            className="md-code-btn md-code-toggle"
+            title={collapsed ? "展开完整 SQL" : "收起 SQL"}
+            aria-label={collapsed ? "展开完整 SQL" : "收起 SQL"}
+            onClick={() => setCollapsed(!collapsed)}
+          >
+            {collapsed ? "▾ 展开" : "▴ 收起"}
+          </button>
+        )}
         {canExecute && (
           <button
             type="button"
@@ -307,6 +325,20 @@ function CodeBlock({
         </div>
       )}
       <pre>{children}</pre>
+      {collapsed && isLong && (
+        <div className="md-code-expand-bar" onClick={() => setCollapsed(false)} title="点击展开完整 SQL">
+          <span className="md-code-expand-btn">
+            ▾ 展开完整 SQL（共 {lineCount} 行，{codeText.length.toLocaleString()} 字符）
+          </span>
+        </div>
+      )}
+      {!collapsed && isLong && (
+        <div className="md-code-collapse-bar">
+          <span className="md-code-collapse-btn" onClick={() => setCollapsed(true)}>
+            ▴ 收起 SQL
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -711,10 +743,12 @@ function CertPickButton({
   onPick,
   accept,
   title,
+  label,
 }: {
   onPick: (text: string) => void;
   accept?: string;
   title?: string;
+  label?: string;
 }) {
   const ref = useRef<HTMLInputElement>(null);
   const handle = (e: ChangeEvent<HTMLInputElement>) => {
@@ -736,12 +770,13 @@ function CertPickButton({
       />
       <button
         type="button"
-        className="field-file-btn"
+        className={label ? "ast-template-btn" : "field-file-btn"}
         title={title ?? "从文件选择"}
         aria-label={title ?? "从文件选择"}
         onClick={() => ref.current?.click()}
       >
-        <Icon name="folder" size={13} />
+        <Icon name="folder" size={12} />
+        {label && <span>{label}</span>}
       </button>
     </>
   );
@@ -1101,20 +1136,45 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
   /// trade-off to keep the picker fast on large accounts).
   const [filter, setFilter] = useState("");
 
-  // Auto-expand type, env, and active connection whenever the tree changes so the user
-  // starts with the active connection expanded and loaded.
+  // 打开时除当前数据库所在连接及环境外，其他全部收缩到环境那一层
   useEffect(() => {
     if (roots.length === 0) return;
+
+    // 查找当前激活连接所属的环境与分组
+    let targetEnvKey: string | null = null;
+    let targetGroupKey: string | null = null;
+    let targetConn: ConnSummary | null = null;
+
+    if (activeConnId) {
+      for (const env of tree.environments) {
+        for (const g of env.groups) {
+          const found = g.connections.find((c) => c.id === activeConnId);
+          if (found) {
+            targetConn = found;
+            targetEnvKey = `env:${env.id}:${found.db_type}`;
+            targetGroupKey = `grp:${g.id}:${found.db_type}`;
+            break;
+          }
+        }
+        if (targetConn) break;
+      }
+    }
+
     setExpanded((prev) => {
       const next = { ...prev };
       for (const r of roots) {
+        // 展开顶层类型（MySQL、Redis），露出各个环境
         next[r.key] = true;
         if (r.kind === "type") {
           for (const e of r.children) {
-            next[e.key] = true;
+            // 仅当前连接所在的环境展开，其余环境默认收缩在环境那一层
+            const isTargetEnv = targetEnvKey ? e.key === targetEnvKey : false;
+            next[e.key] = isTargetEnv;
             if (e.kind === "env") {
               for (const g of e.children) {
-                next[g.key] = true;
+                // 仅当前连接所在的分组展开，其余收缩
+                const isTargetGroup = targetGroupKey ? g.key === targetGroupKey : false;
+                next[g.key] = isTargetGroup;
               }
             }
           }
@@ -1127,18 +1187,10 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
     });
 
     // 打开弹框时若当前已有连接，自动触发拉取其数据库列表
-    if (activeConnId) {
+    if (targetConn) {
       const key = `conn:${activeConnId}`;
       if (!(key in dbs) && !loading[key]) {
-        for (const env of tree.environments) {
-          for (const g of env.groups) {
-            const found = g.connections.find((c) => c.id === activeConnId);
-            if (found) {
-              void toggleConn(found);
-              break;
-            }
-          }
-        }
+        void toggleConn(targetConn);
       }
     }
   }, [roots, activeConnId]);
@@ -1532,6 +1584,15 @@ export function App() {
   /// Write-guardrail audit trail (ADR-AI-1 决策3), loaded on demand.
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
+  /// Chat 中一键执行 SQL 的二次确认弹窗（防误触）
+  const [chatSqlConfirm, setChatSqlConfirm] = useState<{
+    sql: string;
+    connId: string;
+    db: string | null;
+    connName: string;
+    isWrite: boolean;
+    resolve: (approved: boolean) => void;
+  } | null>(null);
   const [form, setForm] = useState<ConnForm>({
     open: false,
     editing: false,
@@ -1971,7 +2032,7 @@ export function App() {
   // page on the right. Keeping this as explicit buttons (not a <select>
   // dropdown) makes the module list scannable and easy to extend.
   const [settingsTab, setSettingsTab] = useState<
-    "model" | "key" | "general" | "kb"
+    "model" | "key" | "general" | "kb" | "assistant"
   >("model");
   const [presets, setPresets] = useState<VendorPreset[]>([]);
   const [llmCfg, setLlmCfg] = useState<LlmConfigDto | null>(null);
@@ -2654,6 +2715,68 @@ export function App() {
   useEffect(() => {
     if (settingsTab === "kb") void loadKbDocs();
   }, [settingsTab]);
+
+  // --- Data Assistants (数据助手) state & handlers ---
+  const [assistants, setAssistants] = useState<DataAssistant[]>([]);
+  const [activeAssistant, setActiveAssistant] = useState<DataAssistant | null>(null);
+  const [astEditing, setAstEditing] = useState<DataAssistant | null>(null);
+  const [astIsNew, setAstIsNew] = useState(false);
+
+  const loadAssistants = useCallback(async () => {
+    try {
+      const list = await api.listDataAssistants();
+      setAssistants(list);
+    } catch (e) {
+      console.error("加载数据助手失败:", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadAssistants();
+  }, [loadAssistants]);
+
+  useEffect(() => {
+    if (settingsTab === "assistant") {
+      void loadAssistants();
+      void loadKbDocs();
+    }
+  }, [settingsTab, loadAssistants, loadKbDocs]);
+
+  const startNewAssistant = () => {
+    setAstIsNew(true);
+    setAstEditing(null);
+  };
+
+  const editAssistant = (a: DataAssistant) => {
+    setAstIsNew(false);
+    setAstEditing(a);
+  };
+
+  const saveAssistant = async (payload: DataAssistantInput) => {
+    const saved = await api.saveDataAssistant(payload);
+    await loadAssistants();
+    setAstEditing(saved);
+    setAstIsNew(false);
+    if (activeAssistant?.id === saved.id) {
+      setActiveAssistant(saved);
+    }
+  };
+
+  const deleteAssistant = async () => {
+    if (!astEditing) return;
+    if (!confirm(`确定要删除数据助手「${astEditing.name}」吗？`)) return;
+    try {
+      await api.deleteDataAssistant(astEditing.id);
+      if (activeAssistant?.id === astEditing.id) {
+        setActiveAssistant(null);
+      }
+      setAstEditing(null);
+      setAstIsNew(false);
+      await loadAssistants();
+    } catch (e) {
+      showToast("删除失败: " + String(e));
+    }
+  };
 
   // `val` may be a string (prompt), boolean (confirm), the envType payload
   // ({name, dbType}), or null — kept loosely typed because each dialog variant
@@ -5389,15 +5512,39 @@ export function App() {
     return [...base].sort((a, b) => b.updated - a.updated);
   }, [convs, convSearch]);
 
-  /// @-mention candidates: the cached list, filtered by the text after "@".
-  const atList = useMemo(
+  /// @-mention candidates:
+  /// 1. 数据助手 (Data Assistants)
+  /// 2. 历史会话 (Conversations)
+  const atAssistants = useMemo(() => {
+    const f = atFilter.trim().toLowerCase();
+    return assistants
+      .filter((a) => !f || a.name.toLowerCase().includes(f) || a.description.toLowerCase().includes(f))
+      .slice(0, 5);
+  }, [assistants, atFilter]);
+
+  const atConvs = useMemo(
     () =>
       convs
         .filter((c) => !atFilter || c.title.toLowerCase().includes(atFilter))
         .sort((a, b) => b.updated - a.updated)
-        .slice(0, 8),
+        .slice(0, 6),
     [convs, atFilter],
   );
+
+  type AtCombinedItem =
+    | { kind: "assistant"; item: DataAssistant }
+    | { kind: "conv"; item: ConversationSummary };
+
+  const atCombined = useMemo<AtCombinedItem[]>(() => {
+    const out: AtCombinedItem[] = [];
+    for (const a of atAssistants) {
+      out.push({ kind: "assistant", item: a });
+    }
+    for (const c of atConvs) {
+      out.push({ kind: "conv", item: c });
+    }
+    return out;
+  }, [atAssistants, atConvs]);
 
   /// Composer typing: open the @-picker when "@" is typed at the end.
   const onChatInput = (e: ChangeEvent<HTMLTextAreaElement>) => {
@@ -5435,15 +5582,19 @@ export function App() {
     if (atOpen) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setAtIdx((i) => Math.min(i + 1, Math.max(atList.length - 1, 0)));
+        setAtIdx((i) => Math.min(i + 1, Math.max(atCombined.length - 1, 0)));
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         setAtIdx((i) => Math.max(i - 1, 0));
       } else if (e.key === "Enter") {
-        const c = atList[atIdx];
-        if (!c) return;
+        const sel = atCombined[atIdx];
+        if (!sel) return;
         e.preventDefault();
-        pickConvRef(c, true);
+        if (sel.kind === "assistant") {
+          setActiveAssistant(sel.item);
+        } else {
+          pickConvRef(sel.item, true);
+        }
         const ta = e.currentTarget;
         const m = /(?:^|\s)@[^\s@]*$/.exec(ta.value);
         if (m) ta.value = ta.value.slice(0, m.index);
@@ -5467,6 +5618,28 @@ export function App() {
     const input = document.getElementById("chat-input") as HTMLTextAreaElement;
     const text = input.value;
     if (!text.trim() || streaming || sendingRef.current) return;
+
+    // 数据库连接解析与降级检查：
+    // 1. 若激活了数据助手且助手配置了关联数据库，优先使用助手绑定的数据库连接与具体库；
+    // 2. 若数据助手未配置连接，则继承会话当前选择的连接与库 (chatConnId ?? selId, chatDb)；
+    // 3. 若会话也尚未选择数据库连接，则拦截发送并友好提示！
+    let targetConnId = chatConnId ?? selId;
+    let targetDb = chatDb;
+    if (activeAssistant && activeAssistant.bound_databases && activeAssistant.bound_databases.length > 0) {
+      targetConnId = activeAssistant.bound_databases[0].conn_id;
+      if (activeAssistant.bound_databases[0].database) {
+        targetDb = activeAssistant.bound_databases[0].database;
+      }
+    }
+    if (!targetConnId) {
+      showToast(
+        activeAssistant
+          ? `「${activeAssistant.name}」未关联数据库，且当前会话尚未指定数据库。请先在会话指定数据库或在助手设置中关联数据库。`
+          : "当前会话尚未指定数据库连接，请先在上方指定数据库。"
+      );
+      return;
+    }
+
     sendingRef.current = true;
     // Snapshot the staged references and clear them immediately: they belong to
     // this turn only. Leaving them on the composer would silently re-attach the
@@ -5507,7 +5680,7 @@ export function App() {
     setChat((prev) => [...prev, { role: "assistant", content: "" }]);
     // Stamp the conn/db this turn runs against — chat-done attaches it to the
     // final assistant message so the reply remembers its database context.
-    turnBindingRef.current = { conn_id: chatConnId ?? selId, db: chatDb };
+    turnBindingRef.current = { conn_id: targetConnId, db: targetDb };
     // §5.2 snapshot: everything this turn will append to the store. Plan cards
     // and token-streamed assistant text extend it via the event listeners.
     turnItemsRef.current = { convId, items: [...next, { role: "assistant", content: "" }] };
@@ -5533,14 +5706,16 @@ export function App() {
           }
         }
       }
-      // The chat's conn context lives in `chatConnId` (independent of
-      // the SQL tab). Fall back to `selId` if the user hasn't picked
-      // anything via the + menu yet. `selId` still binds the *agent*
-      // (which tools it can reach); each reference carries its own
-      // connection, and the backend tells the model to honour that
-      // one when running the referenced SQL. `convId`/`convRefs` are
-      // the P0/P1 conversation plumbing.
-      turnIdRef.current = await chatTurn(chatConnId ?? selId, chatDb, history, refs, convId, convRefs);
+      // The chat's conn context lives in `targetConnId` (inherited from assistant or session).
+      turnIdRef.current = await chatTurn(
+        targetConnId,
+        targetDb,
+        history,
+        refs,
+        convId,
+        convRefs,
+        activeAssistant?.id ?? null
+      );
     } catch (e) {
       setStreaming(false);
       sendingRef.current = false;
@@ -5824,6 +5999,17 @@ export function App() {
     }).then(safe);
 
     onChatTool((t) => {
+      // 动态矫正本轮实际执行的数据库上下文（智能多库路由动态感知）
+      const m = /^execute_query「[\s\S]+?」→\s*([^·:]+?)(?:\s*·\s*([^:]+?))?:\s*(.*)$/.exec(t);
+      if (m) {
+        const connName = m[1].trim();
+        const dbName = m[2] ? m[2].trim() : null;
+        const matched = allConns.find((c) => c.name === connName);
+        if (matched) {
+          turnBindingRef.current = { conn_id: matched.id, db: dbName };
+        }
+      }
+
       // 工具调用直接挂载到当前本轮 assistant 消息的 tools 数组，物理隔离步骤与正文
       setChat((prev) => {
         if (prev.length === 0) return prev;
@@ -5932,7 +6118,26 @@ export function App() {
       // Stamp this turn's conn/db context onto the final assistant reply, so
       // the message remembers which database its SQL targets (shown as a chip
       // under the message and used by SQL import to locate the connection).
-      const turnBinding = turnBindingRef.current;
+      // 优先从本轮真实执行的 execute_query 工具调用中提取目标连接与数据库
+      let executedBinding: ChatDbBinding | null = null;
+      const lastAssistant = snap.items[snap.items.length - 1];
+      const toolsList = (lastAssistant as any)?.tools as string[] | undefined;
+      if (toolsList && toolsList.length > 0) {
+        for (let i = toolsList.length - 1; i >= 0; i--) {
+          const m = /^execute_query「[\s\S]+?」→\s*([^·:]+?)(?:\s*·\s*([^:]+?))?:\s*(.*)$/.exec(toolsList[i]);
+          if (m) {
+            const connName = m[1].trim();
+            const dbName = m[2] ? m[2].trim() : null;
+            const matched = allConns.find((c) => c.name === connName);
+            if (matched) {
+              executedBinding = { conn_id: matched.id, db: dbName };
+              break;
+            }
+          }
+        }
+      }
+
+      const turnBinding = executedBinding || turnBindingRef.current;
       turnBindingRef.current = null;
 
       // Front-end fallback: ensure assistant message has content and usage attached
@@ -6101,14 +6306,6 @@ export function App() {
           onSelectDb={onSelectDb}
           onNewQuery={onNewQuery}
         />
-        <div className="sidebar-actions">
-          <button onClick={() => openEditFor(selId)} disabled={!selId}>
-            编辑连接
-          </button>
-          <button onClick={() => delConnFor(selId)} disabled={!selId}>
-            删除连接
-          </button>
-        </div>
       </aside>
 
       <main className="app-main" ref={appMainRef}>
@@ -6849,27 +7046,71 @@ export function App() {
                             handleOpenInNewTab(sql, "dbBinding" in m ? m.dbBinding : undefined)
                           }
                           onExecuteSql={async (sql) => {
-                            const connId =
-                              ("dbBinding" in m && m.dbBinding?.conn_id) ||
-                              chatConnId ||
-                              active?.connId ||
-                              selId ||
-                              "";
-                            const db =
-                              "dbBinding" in m && m.dbBinding
-                                ? m.dbBinding.db
-                                : chatDb !== undefined
-                                ? chatDb
-                                : active?.db ?? selDb ?? null;
-                            if (!connId) {
+                            // 多级精准解析目标连接与数据库
+                            let resolvedConnId = "";
+                            let resolvedDb: string | null = null;
+
+                            // 1. 优先从本条消息自身的 dbBinding 解析
+                            if ("dbBinding" in m && m.dbBinding && m.dbBinding.conn_id) {
+                              resolvedConnId = m.dbBinding.conn_id;
+                              resolvedDb = m.dbBinding.db ?? null;
+                            }
+
+                            // 2. 若消息自带执行记录 (tools)，提取最近一次实际执行的连接与库名
+                            if (!resolvedConnId && "tools" in m && Array.isArray((m as any).tools)) {
+                              const tools = (m as any).tools as string[];
+                              for (let ti = tools.length - 1; ti >= 0; ti--) {
+                                const toolMatch = /^execute_query「[\s\S]+?」→\s*([^·:]+?)(?:\s*·\s*([^:]+?))?:\s*(.*)$/.exec(tools[ti]);
+                                if (toolMatch) {
+                                  const cName = toolMatch[1].trim();
+                                  const dName = toolMatch[2] ? toolMatch[2].trim() : null;
+                                  const matched = allConns.find((c) => c.name === cName);
+                                  if (matched) {
+                                    resolvedConnId = matched.id;
+                                    resolvedDb = dName;
+                                    break;
+                                  }
+                                }
+                              }
+                            }
+
+                            // 3. 若当前激活了数据助手，取数据助手绑定的数据库
+                            if (!resolvedConnId && activeAssistant && activeAssistant.bound_databases && activeAssistant.bound_databases.length > 0) {
+                              resolvedConnId = activeAssistant.bound_databases[0].conn_id;
+                              resolvedDb = activeAssistant.bound_databases[0].database ?? null;
+                            }
+
+                            // 4. 回退使用当前会话选择的连接或全局树选中连接
+                            if (!resolvedConnId) {
+                              resolvedConnId = chatConnId || active?.connId || selId || "";
+                              resolvedDb = chatDb || active?.db || selDb || null;
+                            }
+
+                            if (!resolvedConnId) {
                               showToast("请先选择数据库连接");
                               return;
                             }
+                            const connObj = findConn(resolvedConnId);
+                            const connName = connObj ? connObj.name : resolvedConnId;
                             const isWrite = /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql);
+
+                            // 二次弹窗确认，避免误触
+                            const confirmed = await new Promise<boolean>((resolve) => {
+                              setChatSqlConfirm({
+                                sql,
+                                connId: resolvedConnId,
+                                db: resolvedDb,
+                                connName,
+                                isWrite,
+                                resolve,
+                              });
+                            });
+                            if (!confirmed) return;
+
                             if (isWrite) {
-                              await execChatWriteSql(connId, db, sql);
+                              await execChatWriteSql(resolvedConnId, resolvedDb, sql);
                             } else {
-                              await runSqlExplicit(connId, sql, db);
+                              await runSqlExplicit(resolvedConnId, sql, resolvedDb);
                               setResultCollapsed(false);
                             }
                           }}
@@ -6933,31 +7174,60 @@ export function App() {
          * user sees them as one "what I'm sending" group, not four
          * independent blocks. Type colour cue lives in a small left-edge
          * tag so each chip is still scannable. */}
-        {(chatConnId ||
+        {(activeAssistant !== null ||
+          chatConnId ||
           chatDb ||
           chatAttachments.length > 0 ||
           pendingRefs.length > 0 ||
           pendingConvRefs.length > 0) && (
           <div className="refs-tray" aria-label="本轮引用">
-            <button
-              type="button"
-              className="refs-tray-clear"
-              title="清空所有引用"
-              aria-label="清空所有引用"
-              onClick={() => {
-                setChatConnId(null);
-                setChatDb(null);
-                setChatAttachments([]);
-                setPendingRefs([]);
-                setPendingConvRefs([]);
-              }}
-            >
-              <Icon name="trash" size={11} />
-            </button>
-            {/* Database chip — the chat's *active* conn/db.
-             * Stays pinned across conversation turns so the user doesn't
-             * have to re-select the database for every single question. */}
-            {(chatConnId || chatDb) && (
+            {/* 数据助手 Chip */}
+            {activeAssistant && (
+              <span
+                className="ref-chip ast-chip"
+                style={{ borderColor: "rgba(121, 82, 214, 0.4)", background: "rgba(121, 82, 214, 0.08)" }}
+                title={`数据助手: ${activeAssistant.name}\n${activeAssistant.description || ""}\n点击前往助手设置`}
+                onClick={() => {
+                  editAssistant(activeAssistant);
+                  setSettingsTab("assistant");
+                  setSettingsOpen(true);
+                }}
+              >
+                <span className="ref-chip-kind ast" style={{ background: "#7952d6", color: "#fff", fontWeight: "bold" }}>
+                  {activeAssistant.avatar || "🤖"}
+                </span>
+                <span className="ref-conn" style={{ fontWeight: 600, maxWidth: "120px" }}>{activeAssistant.name}</span>
+                {activeAssistant.bound_databases && activeAssistant.bound_databases.length > 0 && (
+                  <>
+                    <span className="ref-sep">·</span>
+                    <span className="ref-db" style={{ maxWidth: "110px", color: "#93c5fd" }}>
+                      {activeAssistant.bound_databases.length === 1
+                        ? `${activeAssistant.bound_databases[0].database || allConns.find((x) => x.id === activeAssistant.bound_databases[0].conn_id)?.name || "默认库"}`
+                        : `${activeAssistant.bound_databases.length}库`}
+                    </span>
+                  </>
+                )}
+                {activeAssistant.bound_knowledge_base_ids.length > 0 && (
+                  <>
+                    <span className="ref-sep">·</span>
+                    <span className="ref-scope">📚 {activeAssistant.bound_knowledge_base_ids.length}</span>
+                  </>
+                )}
+                <button
+                  type="button"
+                  className="ref-chip-x"
+                  title="移除数据助手"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setActiveAssistant(null);
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            )}
+            {/* Database chip — 当未激活助手或助手未绑定具体库时，才展示全局会话的连接/库 */}
+            {(!activeAssistant || !activeAssistant.bound_databases || activeAssistant.bound_databases.length === 0) && (chatConnId || chatDb) && (
               <span className="ref-chip" title="当前 Chat 会话绑定的连接 / 库（持续生效）">
                 <span className="ref-chip-kind db">DB</span>
                 <Icon name="cylinder" size={11} />
@@ -7069,7 +7339,7 @@ export function App() {
                 }
               >
                 <span className="ref-chip-kind conv">@</span>
-                <span className="convref-title">{r.title}</span>
+                <span className="convref-title" style={{ maxWidth: 120 }}>{r.title}</span>
                 <span
                   className={
                     "convref-scope " + (r.scope === "session" ? "whole" : "single")
@@ -7090,6 +7360,24 @@ export function App() {
                 </button>
               </span>
             ))}
+            {/* 清空所有引用按钮 */}
+            <button
+              type="button"
+              className="refs-tray-clear"
+              title="清空所有引用"
+              aria-label="清空所有引用"
+              onClick={() => {
+                setActiveAssistant(null);
+                setChatConnId(null);
+                setChatDb(null);
+                setChatAttachments([]);
+                setPendingRefs([]);
+                setPendingConvRefs([]);
+              }}
+            >
+              <Icon name="trash" size={10} />
+              <span>清空</span>
+            </button>
           </div>
         )}
         <div className="chat-composer">
@@ -7098,22 +7386,48 @@ export function App() {
               tail); clicking an item opens the message drill-down instead. */}
           {atOpen && (
             <div className="at-pop">
-              {atList.length > 0 ? (
-                atList.map((c, i) => (
-                  <div
-                    key={c.id}
-                    className={"at-item" + (i === atIdx ? " active" : "")}
-                    onMouseEnter={() => setAtIdx(i)}
-                    onClick={() => pickConvRef(c, true)}
-                  >
-                    <span className="at-title">{c.title}</span>
-                    <span className="at-sub">
-                      {c.conn_name ?? "全部"} · {relTime(c.updated)}
-                    </span>
-                  </div>
-                ))
+              {atCombined.length > 0 ? (
+                atCombined.map((cand, i) => {
+                  const isAst = cand.kind === "assistant";
+                  const a = isAst ? cand.item : null;
+                  const c = !isAst ? cand.item : null;
+                  return (
+                    <div
+                      key={cand.kind + "-" + (a ? a.id : c?.id)}
+                      className={"at-item" + (i === atIdx ? " active" : "")}
+                      onMouseEnter={() => setAtIdx(i)}
+                      onClick={() => {
+                        if (a) {
+                          setActiveAssistant(a);
+                        } else if (c) {
+                          pickConvRef(c, true);
+                        }
+                        const ta = document.getElementById("chat-input") as HTMLTextAreaElement | null;
+                        if (ta) {
+                          const m = /(?:^|\s)@[^\s@]*$/.exec(ta.value);
+                          if (m) ta.value = ta.value.slice(0, m.index);
+                        }
+                        setAtOpen(false);
+                        setAtFilter("");
+                      }}
+                    >
+                      <span className="at-title">
+                        {isAst ? `${a?.avatar || "🤖"} ${a?.name}` : `💬 ${c?.title}`}
+                      </span>
+                      <span className="at-sub">
+                        {isAst
+                          ? (a?.description
+                              ? a.description
+                              : a?.bound_databases && a.bound_databases.length > 0
+                                ? `绑定 ${a.bound_databases.length} 个库`
+                                : "继承会话库")
+                          : `${c?.conn_name ?? "全部"} · ${relTime(c?.updated ?? 0)}`}
+                      </span>
+                    </div>
+                  );
+                })
               ) : (
-                <div className="at-empty">暂无匹配的历史会话</div>
+                <div className="at-empty">暂无匹配的数据助手或历史会话</div>
               )}
             </div>
           )}
@@ -7158,35 +7472,38 @@ export function App() {
               </div>
             </div>
           )}
-          <div className="prompt-pills-bar">
-            {[
-              { icon: "⚡", label: "慢查询诊断", prompt: "请帮我分析这段 SQL 的执行计划与潜在性能瓶颈，并给出具体的索引与改写优化建议。" },
-              { icon: "📊", label: "数据统计总览", prompt: "请帮我统计当前数据库中核心业务表的记录行数、数据体量与重要字段分布。" },
-              { icon: "🔍", label: "缺失索引排查", prompt: "请检查当前业务表的索引覆盖情况，指出是否存在全表扫描隐患或需要补充的复合索引。" },
-              { icon: "📝", label: "生成字典文档", prompt: "请根据当前表结构、字段类型与注释，生成一份结构清晰规范的 Markdown 数据字典文档。" },
-            ].map((item, idx) => (
-              <button
-                key={idx}
-                type="button"
-                className="prompt-pill"
-                title={`点击填入提示词：${item.prompt}`}
-                onClick={() => {
-                  const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
-                  if (!input) return;
-                  const current = input.value.trim();
-                  const next = current ? `${current}\n${item.prompt}` : item.prompt;
-                  input.value = next;
-                  input.focus();
-                  input.setSelectionRange(next.length, next.length);
-                  input.style.height = "auto";
-                  input.style.height = Math.min(input.scrollHeight, 180) + "px";
-                }}
-              >
-                <span>{item.icon}</span>
-                <span>{item.label}</span>
-              </button>
-            ))}
-          </div>
+          {/* 仅在未激活助手且无挂载引用时展示通用快捷提问胶囊，避免过多元素层叠挤压输入区 */}
+          {!activeAssistant && pendingRefs.length === 0 && pendingConvRefs.length === 0 && (
+            <div className="prompt-pills-bar">
+              {[
+                { icon: "⚡", label: "慢查询诊断", prompt: "请帮我分析这段 SQL 的执行计划与潜在性能瓶颈，并给出具体的索引与改写优化建议。" },
+                { icon: "📊", label: "数据统计总览", prompt: "请帮我统计当前数据库中核心业务表的记录行数、数据体量与重要字段分布。" },
+                { icon: "🔍", label: "缺失索引排查", prompt: "请检查当前业务表的索引覆盖情况，指出是否存在全表扫描隐患或需要补充的复合索引。" },
+                { icon: "📝", label: "生成字典文档", prompt: "请根据当前表结构、字段类型与注释，生成一份结构清晰规范的 Markdown 数据字典文档。" },
+              ].map((item, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  className="prompt-pill"
+                  title={`点击填入提示词：${item.prompt}`}
+                  onClick={() => {
+                    const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
+                    if (!input) return;
+                    const current = input.value.trim();
+                    const next = current ? `${current}\n${item.prompt}` : item.prompt;
+                    input.value = next;
+                    input.focus();
+                    input.setSelectionRange(next.length, next.length);
+                    input.style.height = "auto";
+                    input.style.height = Math.min(input.scrollHeight, 180) + "px";
+                  }}
+                >
+                  <span>{item.icon}</span>
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="chat-composer-input">
             <textarea
               id="chat-input"
@@ -7240,8 +7557,19 @@ export function App() {
                     triggerAtPicker();
                   }}
                 >
-                  <span className="composer-plus-item-title">引用会话</span>
-                  <span className="composer-plus-item-sub">跨会话 @ 引用一条上下文</span>
+                  <span className="composer-plus-item-title">🤖 @ 数据助手 / 引用会话</span>
+                  <span className="composer-plus-item-sub">输入 @ 唤出专属业务助手或引用历史会话</span>
+                </button>
+                <button
+                  className="composer-plus-item"
+                  onClick={() => {
+                    setPlusOpen(false);
+                    setSettingsTab("assistant");
+                    setSettingsOpen(true);
+                  }}
+                >
+                  <span className="composer-plus-item-title">⚙️ 数据助手管理</span>
+                  <span className="composer-plus-item-sub">创建、编辑专属数据助手并绑定多库/知识库</span>
                 </button>
                 <button
                   className="composer-plus-item"
@@ -7947,7 +8275,7 @@ export function App() {
             </p>
             <div className="audit-list">
               {auditRows.length === 0 && <div className="empty">暂无记录</div>}
-              {auditRows.map(([conn, db, sql, decision, ts], i) => (
+              {auditRows.map(([conn, db, sql, decision, result, ts], i) => (
                 <div key={i} className="audit-item">
                   <div className="audit-meta">
                     <span className={"audit-tag audit-" + decision}>
@@ -7958,6 +8286,19 @@ export function App() {
                     <span className="history-time">{fmtTime(ts)}</span>
                   </div>
                   <pre className="history-sql">{sql}</pre>
+                  {/* 执行结果状态条 */}
+                  <div className="audit-result-bar">
+                    <span className="audit-result-label">执行结果：</span>
+                    {result ? (
+                      <span className={"audit-result-val " + (result.includes("失败") || result.includes("错误") ? "err" : result.includes("拒绝") || result.includes("拦截") || result.includes("超时") ? "warn" : "ok")}>
+                        {result.includes("影响") || result.includes("成功") ? "✓ " : ""}{result}
+                      </span>
+                    ) : (
+                      <span className="audit-result-val dim">
+                        {decision === "manual" || decision === "write-approved" ? "✓ 执行完成" : "未执行"}
+                      </span>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -8013,9 +8354,15 @@ export function App() {
               >
                 知识库
               </button>
+              <button
+                className={"nav-item" + (settingsTab === "assistant" ? " active" : "")}
+                onClick={() => setSettingsTab("assistant")}
+              >
+                数据助手
+              </button>
             </div>
 
-            <div className={"settings-content" + (settingsTab === "kb" ? " kb-content-flush" : "")}>
+            <div className={"settings-content" + (settingsTab === "kb" || settingsTab === "assistant" ? " kb-content-flush" : "")}>
               {/* --- 模块一：模型设置（LLM） --- */}
               {settingsTab === "model" && (
                 <div className="settings-page">
@@ -8733,15 +9080,25 @@ export function App() {
                       </div>
                     </div>
 
-                    {/* 右：编辑器 */}
-                    <div className="kb-editor">
+                    {/* 右：安全顶栏 + 编辑器 */}
+                    <div className="kb-right-container">
+                      <div className="kb-top-safe-bar">
+                        <div className="kb-top-safe-title">
+                          <span>📚</span>
+                          <span>{kbEditing ? `编辑文档 · ${kbName || kbEditing.name}` : "新建知识库文档"}</span>
+                        </div>
+                        {kbEditing && (
+                          <span className="kb-top-safe-badge">ID: {kbEditing.id}</span>
+                        )}
+                      </div>
+                      <div className="kb-editor">
                       {!kbIsNew && !kbEditing ? (
                         <div className="kb-empty-large">
                           <div className="kb-empty-hero">
                             <div className="kb-empty-hero-icon">📚</div>
                             <h4>知识库与上下文增强</h4>
                             <p>
-                              在此维护数据库表结构说明、字段业务含义与口径规范。
+                              在此维护数据库表结构说明、字段业务含义与口径规范。<br />
                               在已绑定的数据库提问时，AI 会智能检索相关文档作为上下文参考。
                             </p>
                             <button
@@ -8754,89 +9111,93 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <div className="kb-form-container">
-                          <div className="kb-form-header">
-                            <h4>{kbEditing ? "编辑知识库文档" : "新建知识库文档"}</h4>
-                            {kbEditing && (
-                              <span className="kb-id-tag">ID: {kbEditing.id}</span>
-                            )}
-                          </div>
-
-                          <div className="kb-form-body">
-                            {/* 文档名称 */}
-                            <div className="kb-field-group">
-                              <label className="kb-label">
-                                <span>文档名称 <span className="req">*</span></span>
+                        <div className="ast-form-container">
+                          <div className="ast-form-scroll">
+                            {/* 卡片 1：基础信息 */}
+                            <div className="ast-section-card">
+                              <div className="ast-section-header">
+                                <span className="ast-section-title">
+                                  <span>📄</span> 文档信息
+                                </span>
+                              </div>
+                              <div>
+                                <label className="kb-label" style={{ marginBottom: "6px" }}>
+                                  文档名称 <span style={{ color: "var(--danger-500, #ef4444)" }}>*</span>
+                                </label>
                                 <input
                                   className="kb-input"
                                   value={kbName}
                                   placeholder="例如：电商订单业务与核心表说明、会员状态口径"
                                   onChange={(e) => setKbName(e.target.value)}
+                                  spellCheck={false}
+                                  autoCorrect="off"
                                 />
-                              </label>
+                              </div>
                             </div>
 
-                            {/* 文档内容 */}
-                            <div className="kb-field-group">
-                              <div className="kb-content-head">
-                                <label className="kb-label-inline">
-                                  文档内容（Markdown / 纯文本） <span className="req">*</span>
-                                </label>
-                                <div className="kb-content-actions">
-                                  <span className="kb-char-count">{kbContent.length} 字</span>
+                            {/* 卡片 2：文档内容 */}
+                            <div className="ast-section-card">
+                              <div className="ast-section-header">
+                                <span className="ast-section-title">
+                                  <span>📝</span> 文档内容（Markdown / 纯文本）
+                                  <span className="ast-section-badge">{kbContent.length} 字</span>
+                                </span>
+                                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                                   <CertPickButton
                                     accept=".txt,.md,.markdown,.text,text/plain,text/markdown"
                                     title="从文件导入（.txt / .md）"
                                     onPick={(t) => setKbContent(t)}
+                                    label="导入文件"
                                   />
                                 </div>
                               </div>
                               <textarea
                                 className="kb-textarea"
+                                style={{ minHeight: "180px", fontFamily: "var(--font-mono, monospace)", fontSize: "13px", resize: "vertical" }}
                                 value={kbContent}
                                 placeholder="编写表含义、核心字段业务口径、常用关联 SQL 等知识内容…&#10;&#10;示例：&#10;## 订单库 (order_db) 业务说明&#10;- orders: 订单主表，status: 1 待支付，2 已完成，3 已取消&#10;- order_items: 订单明细表，以 order_id 关联主表&#10;&#10;## 常用统计口径&#10;- GMV 计算：status IN (1, 2) 且 is_deleted = 0"
                                 onChange={(e) => setKbContent(e.target.value)}
+                                spellCheck={false}
+                                autoCorrect="off"
                               />
-                              <div className="kb-field-hint">
-                                💡 提示：支持标准 Markdown。AI 会在提问时结合语义检索最相关的片段辅助 SQL 生成与分析。
+                              <div className="ast-section-desc">
+                                💡 提示：支持标准 Markdown。AI 会在提问时结合语义检索最相关的片段辅助 SQL 生成与业务口径理解。
                               </div>
                             </div>
 
-                            {/* 绑定连接/库 */}
-                            <div className="kb-bindings-card">
-                              <div className="kb-bindings-head">
-                                <div>
-                                  <div className="kb-bindings-title">🔗 绑定到连接 / 数据库</div>
-                                  <div className="kb-bindings-sub">
-                                    绑定后，AI 仅在选中的连接或具体数据库中对话时才自动引用本文档
-                                  </div>
-                                </div>
+                            {/* 卡片 3：绑定连接 / 数据库 */}
+                            <div className="ast-section-card">
+                              <div className="ast-section-header">
+                                <span className="ast-section-title">
+                                  <span>🔗</span> 绑定到连接 / 具体数据库
+                                  <span className={"ast-section-badge" + (kbBindings.length > 0 ? " highlight" : "")}>
+                                    已绑定 {kbBindings.length} 项
+                                  </span>
+                                </span>
+                              </div>
+                              <div className="ast-section-desc">
+                                绑定后，AI 仅在选中的连接或具体数据库中对话时才自动引用本文档；未绑定时文档处于闲置状态。
                               </div>
 
-                              <div className="kb-bindings-list">
+                              <div className="ast-bindings-list">
                                 {kbBindings.length === 0 ? (
-                                  <div className="kb-bindings-empty">
+                                  <div style={{ fontSize: "12px", color: "var(--text-tertiary, #888)", padding: "6px 0" }}>
                                     ⚠️ 尚未绑定任何数据库连接（文档当前未生效，请在下方选择连接进行绑定）
                                   </div>
                                 ) : (
                                   kbBindings.map((b, i) => {
                                     const c = allConns.find((x) => x.id === b.conn_id);
                                     const isRedis = c?.db_type === "redis";
+                                    const dbName = b.database || "整条连接（默认库）";
                                     return (
-                                      <div className="kb-binding-chip" key={i}>
-                                        <span className="kb-binding-icon">
-                                          {isRedis ? "🔴" : "🐬"}
-                                        </span>
-                                        <span className="kb-binding-conn-name">
-                                          {c ? c.name : b.conn_id}
-                                        </span>
-                                        <span className="kb-binding-dot">/</span>
-                                        <span className="kb-binding-db-name">
-                                          {b.database ? `🗄 ${b.database}` : "整条连接（全部库）"}
-                                        </span>
+                                      <div className="ast-binding-chip" key={i} title={`${c?.name ?? b.conn_id} / ${dbName}`}>
+                                        <span className="ast-binding-chip-icon">{isRedis ? "🔴" : "🐬"}</span>
+                                        <span className="ast-binding-chip-conn">{c ? c.name : b.conn_id}</span>
+                                        <span className="ast-binding-chip-sep">/</span>
+                                        <span className="ast-binding-chip-db">{dbName}</span>
                                         <button
                                           type="button"
-                                          className="kb-binding-chip-del"
+                                          className="ast-binding-chip-del"
                                           title="移除此绑定"
                                           onClick={() => removeKbBinding(i)}
                                         >
@@ -8848,9 +9209,9 @@ export function App() {
                                 )}
                               </div>
 
-                              <div className="kb-binding-add-bar">
+                              <div className="ast-bind-bar">
                                 <select
-                                  className="kb-select"
+                                  className="ast-select-native"
                                   value={kbNewConn}
                                   onChange={(e) => {
                                     setKbNewConn(e.target.value);
@@ -8858,7 +9219,7 @@ export function App() {
                                     if (e.target.value) void loadKbDbs(e.target.value);
                                   }}
                                 >
-                                  <option value="">请选择连接…</option>
+                                  <option value="">请选择连接实例…</option>
                                   {allConns.map((c) => (
                                     <option key={c.id} value={c.id}>
                                       {c.db_type === "redis" ? "🔴 " : "🐬 "}
@@ -8867,8 +9228,10 @@ export function App() {
                                   ))}
                                 </select>
 
+                                <span style={{ color: "var(--text-tertiary, #64748b)", fontSize: "12px", flexShrink: 0 }}>/</span>
+
                                 <select
-                                  className="kb-select"
+                                  className="ast-select-native"
                                   value={kbNewDb}
                                   disabled={!kbNewConn}
                                   onChange={(e) => setKbNewDb(e.target.value)}
@@ -8888,13 +9251,10 @@ export function App() {
 
                                 <button
                                   type="button"
-                                  className="btn-kb-add-bind"
+                                  className="ast-btn-add-bind"
                                   disabled={!kbNewConn}
                                   onClick={() => {
-                                    addKbBinding(
-                                      kbNewConn,
-                                      kbNewDb === "" ? null : kbNewDb
-                                    );
+                                    addKbBinding(kbNewConn, kbNewDb === "" ? null : kbNewDb);
                                     setKbNewDb("");
                                   }}
                                 >
@@ -8904,31 +9264,151 @@ export function App() {
                             </div>
                           </div>
 
-                          <div className="kb-form-footer">
-                            <button
-                              type="button"
-                              className="btn btn-primary kb-btn-save"
-                              onClick={() => void saveKbDoc()}
-                            >
-                              {kbEditing ? "保存文档" : "创建文档"}
-                            </button>
-                            {kbEditing && (
+                          {/* 底部固定操作栏（无论文档多长始终固定吸底可见） */}
+                          <div className="ast-footer-fixed">
+                            <div>
+                              {kbMsg && (
+                                <div className={"cfg-msg " + (kbMsg.ok ? "ok" : "err")} style={{ margin: 0 }}>
+                                  {kbMsg.text}
+                                </div>
+                              )}
+                            </div>
+                            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                              {kbEditing && (
+                                <button
+                                  type="button"
+                                  className="btn btn-danger"
+                                  style={{ height: "34px", padding: "0 14px", fontSize: "13px" }}
+                                  onClick={() => void deleteKb(kbEditing)}
+                                >
+                                  删除文档
+                                </button>
+                              )}
                               <button
                                 type="button"
-                                className="btn btn-danger kb-btn-delete"
-                                onClick={() => void deleteKb(kbEditing)}
+                                className="btn btn-primary"
+                                style={{ height: "34px", padding: "0 22px", fontSize: "13px", fontWeight: 600 }}
+                                onClick={() => void saveKbDoc()}
                               >
-                                删除文档
+                                {kbEditing ? "保存文档" : "创建文档"}
                               </button>
-                            )}
-                            {kbMsg && (
-                              <div className={"cfg-msg " + (kbMsg.ok ? "ok" : "err")}>
-                                {kbMsg.text}
-                              </div>
-                            )}
+                            </div>
                           </div>
                         </div>
                       )}
+                    </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* --- 模块五：数据助手 (Data Assistant) --- */}
+              {settingsTab === "assistant" && (
+                <div className="settings-page kb-page">
+                  <div className="kb-layout">
+                    {/* 左侧：助手列表 */}
+                    <div className="kb-list">
+                      <div className="kb-list-header">
+                        <div className="kb-header-title">
+                          <span>数据助手</span>
+                          <span className="kb-count-pill">{assistants.length}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn-kb-new"
+                          title="新建数据助手"
+                          onClick={startNewAssistant}
+                        >
+                          ＋ 新建
+                        </button>
+                      </div>
+                      <div className="kb-list-scroll">
+                        {assistants.length === 0 && (
+                          <div className="kb-empty-box">
+                            <span className="kb-empty-icon">🤖</span>
+                            <span>暂无助手</span>
+                            <small>点击上方「＋ 新建」创建专属数据助手</small>
+                          </div>
+                        )}
+                        {assistants.map((a) => {
+                          const isCur = astEditing?.id === a.id;
+                          return (
+                            <div
+                              key={a.id}
+                              className={"kb-list-item" + (isCur ? " active" : "")}
+                              onClick={() => editAssistant(a)}
+                            >
+                              <div className="kb-item-head">
+                                <span className="kb-item-icon">{a.avatar || "🤖"}</span>
+                                <span className="kb-list-name" title={a.name}>
+                                  {a.name}
+                                </span>
+                              </div>
+                              <div className="kb-list-meta">
+                                <span className="kb-badge-bind">
+                                  {a.bound_databases && a.bound_databases.length > 0
+                                    ? `🗄 绑定 ${a.bound_databases.length} 库`
+                                    : "继承会话库"}
+                                </span>
+                                {a.bound_knowledge_base_ids.length > 0 && (
+                                  <span className="kb-badge-chars">
+                                    📚 {a.bound_knowledge_base_ids.length} 知识库
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* 右侧：安全顶栏 + 助手配置表单 */}
+                    <div className="kb-right-container">
+                      <div className="kb-top-safe-bar">
+                        <div className="kb-top-safe-title">
+                          <span>🤖</span>
+                          <span>{astIsNew ? "新建数据助手" : (astEditing ? `编辑助手 · ${astEditing.name}` : "数据助手配置")}</span>
+                        </div>
+                        {astEditing && (
+                          <span className="kb-top-safe-badge">
+                            {astEditing.bound_databases?.length ? `已绑定 ${astEditing.bound_databases.length} 库` : "继承会话库"}
+                          </span>
+                        )}
+                      </div>
+                      <div className="kb-editor" style={{ overflow: "hidden" }}>
+                        {!astIsNew && !astEditing ? (
+                          <div className="kb-empty-large">
+                            <div className="kb-empty-hero">
+                              <div className="kb-empty-hero-icon">🤖</div>
+                              <h4>数据助手 (Data Assistant)</h4>
+                              <p>
+                                预设专属业务提示词，多选关联数据库与知识库。<br />
+                                在 Chat 对话框中输入 <code>@助手名</code> 即可随时调用专属专家。
+                              </p>
+                              <button
+                                type="button"
+                                className="btn btn-primary kb-hero-btn"
+                                onClick={startNewAssistant}
+                              >
+                                ＋ 创建第一个数据助手
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <DataAssistantEditor
+                            key={astIsNew ? "new" : astEditing?.id}
+                            initialAssistant={astEditing}
+                            isNew={astIsNew}
+                            allConns={allConns}
+                            kbDocs={kbDocs}
+                            kbDbCache={kbDbCache}
+                            kbLoadingDbs={kbLoadingDbs}
+                            loadKbDbs={loadKbDbs}
+                            onSave={saveAssistant}
+                            onDelete={deleteAssistant}
+                          />
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -9139,7 +9619,7 @@ export function App() {
           className="modal-mask"
           onMouseDown={() => closeDlg(dlg.kind === "confirm" ? false : null)}
         >
-          <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+          <div className="modal dialog-modal" onMouseDown={(e) => e.stopPropagation()}>
             <h3>{dlg.title}</h3>
             {dlg.kind === "prompt" ? (
               <input
@@ -9236,6 +9716,106 @@ export function App() {
               <button onClick={() => answerConfirm(false)}>拒绝</button>
               <button className="primary danger" onClick={() => answerConfirm(true)}>
                 执行
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Chat 消息一键执行 SQL 二次确认弹窗（防误触） */}
+      {chatSqlConfirm && (
+        <div
+          className="modal-mask"
+          onClick={() => {
+            const res = chatSqlConfirm.resolve;
+            setChatSqlConfirm(null);
+            res(false);
+          }}
+        >
+          <div className="modal chat-sql-confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="chat-sql-confirm-head">
+              <div className="chat-sql-confirm-title-group">
+                <span className="chat-sql-confirm-icon">{chatSqlConfirm.isWrite ? "⚠️" : "⚡"}</span>
+                <span className="chat-sql-confirm-title">执行 SQL 确认</span>
+                <span className={"chat-sql-confirm-badge " + (chatSqlConfirm.isWrite ? "write" : "read")}>
+                  {chatSqlConfirm.isWrite ? "写操作 (写入/变更)" : "只读查询"}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => {
+                  const res = chatSqlConfirm.resolve;
+                  setChatSqlConfirm(null);
+                  res(false);
+                }}
+                title="取消 (Esc)"
+              >
+                ×
+              </button>
+            </div>
+            <div className="chat-sql-confirm-body">
+              {/* 目标环境与数据库信息栏（对称单行） */}
+              <div className="chat-sql-confirm-meta">
+                <div className="chat-sql-confirm-meta-item">
+                  <span className="chat-sql-confirm-meta-label">目标环境：</span>
+                  <span className="chat-sql-confirm-meta-val">
+                    {(() => {
+                      const c = allConns.find((x) => x.id === chatSqlConfirm.connId);
+                      return `${c?.db_type === "redis" ? "🔴 " : "🐬 "}${chatSqlConfirm.connName}`;
+                    })()}
+                  </span>
+                </div>
+                <span className="chat-sql-confirm-meta-divider">/</span>
+                <div className="chat-sql-confirm-meta-item">
+                  <span className="chat-sql-confirm-meta-label">目标数据库：</span>
+                  <span className="chat-sql-confirm-meta-val db">
+                    🗄 {chatSqlConfirm.db || "默认库"}
+                  </span>
+                </div>
+              </div>
+
+              {/* 待执行 SQL 预览 */}
+              <div className="chat-sql-confirm-preview-wrap">
+                <div className="chat-sql-confirm-preview-head">
+                  <span>SQL STATEMENT</span>
+                  <span>{chatSqlConfirm.sql.length} 字符</span>
+                </div>
+                <pre className="chat-sql-confirm-preview">{chatSqlConfirm.sql}</pre>
+              </div>
+
+              {/* 提示与警告 Banner */}
+              <div className={"chat-sql-confirm-alert " + (chatSqlConfirm.isWrite ? "warn" : "info")}>
+                <span>{chatSqlConfirm.isWrite ? "⚠️" : "💡"}</span>
+                <span>
+                  {chatSqlConfirm.isWrite
+                    ? "警告：该语句包含写入/修改操作（INSERT / UPDATE / DELETE / REPLACE），确认后将在目标数据库直接生效，并自动留存审计日志。"
+                    : "提示：即将向目标数据库发送此查询，执行结果将展示在下方数据结果区。"}
+                </span>
+              </div>
+            </div>
+            <div className="modal-actions" style={{ margin: 0, padding: "12px 18px 16px" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  const res = chatSqlConfirm.resolve;
+                  setChatSqlConfirm(null);
+                  res(false);
+                }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className={"primary" + (chatSqlConfirm.isWrite ? " danger" : "")}
+                onClick={() => {
+                  const res = chatSqlConfirm.resolve;
+                  setChatSqlConfirm(null);
+                  res(true);
+                }}
+                autoFocus
+              >
+                {chatSqlConfirm.isWrite ? "确认执行写操作" : "确认执行查询"}
               </button>
             </div>
           </div>

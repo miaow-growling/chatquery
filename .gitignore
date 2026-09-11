@@ -17,11 +17,16 @@ Thumbs.db
 .idea
 .vscode
 .zcode
+.workbuddy
 
-# Local env (never commit secrets)
+# Local env & certificates (never commit secrets)
 *.local
 .env
 .env.*
+*.pem
+*.key
+*.pfx
+*.p12
 
 # Tauri dev runtime log (regenerated on every run, may leak local paths)
 .tauri-dev.log

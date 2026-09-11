@@ -2,7 +2,9 @@ use crate::crypto;
 use crate::db::connection::{ConnectionConfig, DbType};
 use crate::db::container::{gen_id, Container, ContainerKind, LegacyConnection};
 use crate::error::{AppError, Result};
-use crate::model::{ConversationSummary, NewChatMessage, StoredChatMessage};
+use crate::model::{
+    AssistantDbBinding, ConversationSummary, DataAssistant, NewChatMessage, StoredChatMessage,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -598,10 +600,11 @@ impl Storage {
         db: Option<&str>,
         sql: &str,
         decision: &str,
+        result: Option<&str>,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO audit_log (id, ts, conn_id, conn_name, db, sql, decision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO audit_log (id, ts, conn_id, conn_name, db, sql, decision, result)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 gen_id("aud"),
                 now_secs(),
@@ -609,23 +612,24 @@ impl Storage {
                 conn_name,
                 db,
                 sql,
-                decision
+                decision,
+                result,
             ],
         )?;
         Ok(())
     }
 
     /// Most-recent-first audit entries, capped at `limit`. Tuple fields:
-    /// (conn_name, db, sql, decision, ts). `db` is `None` for whole-connection.
+    /// (conn_name, db, sql, decision, result, ts). `db` is `None` for whole-connection.
     pub fn list_audits(
         &self,
         limit: i64,
-    ) -> Result<Vec<(String, Option<String>, String, String, i64)>> {
+    ) -> Result<Vec<(String, Option<String>, String, String, Option<String>, i64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT conn_name, db, sql, decision, ts FROM audit_log ORDER BY ts DESC LIMIT ?1",
+            "SELECT conn_name, db, sql, decision, result, ts FROM audit_log ORDER BY ts DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
         })?;
         let mut out = Vec::new();
         for row in rows {
@@ -901,6 +905,142 @@ impl Storage {
             .map(|c| (c.id.clone(), c.name))
             .collect()
     }
+
+    // --- Data Assistants (数据助手) ---
+
+    pub fn list_data_assistants(&self) -> Result<Vec<DataAssistant>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, avatar, description, system_prompt, bound_db_connection_ids, bound_knowledge_base_ids, created, updated
+             FROM data_assistants ORDER BY updated DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let db_ids_str: String = r.get(5)?;
+            let kb_ids_str: String = r.get(6)?;
+            let bound_databases = parse_assistant_db_bindings(&db_ids_str);
+            let bound_knowledge_base_ids: Vec<String> =
+                serde_json::from_str(&kb_ids_str).unwrap_or_default();
+            Ok(DataAssistant {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                avatar: r.get(2)?,
+                description: r.get(3)?,
+                system_prompt: r.get(4)?,
+                bound_databases,
+                bound_knowledge_base_ids,
+                created: r.get(7)?,
+                updated: r.get(8)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn get_data_assistant(&self, id: &str) -> Result<Option<DataAssistant>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, avatar, description, system_prompt, bound_db_connection_ids, bound_knowledge_base_ids, created, updated
+             FROM data_assistants WHERE id = ?1",
+        )?;
+        let res = stmt.query_row(params![id], |r| {
+            let db_ids_str: String = r.get(5)?;
+            let kb_ids_str: String = r.get(6)?;
+            let bound_databases = parse_assistant_db_bindings(&db_ids_str);
+            let bound_knowledge_base_ids: Vec<String> =
+                serde_json::from_str(&kb_ids_str).unwrap_or_default();
+            Ok(DataAssistant {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                avatar: r.get(2)?,
+                description: r.get(3)?,
+                system_prompt: r.get(4)?,
+                bound_databases,
+                bound_knowledge_base_ids,
+                created: r.get(7)?,
+                updated: r.get(8)?,
+            })
+        }).optional()?;
+        Ok(res)
+    }
+
+    pub fn save_data_assistant(&self, a: &DataAssistant) -> Result<()> {
+        let db_bindings_json = serde_json::to_string(&a.bound_databases).unwrap_or_else(|_| "[]".into());
+        let kb_ids_json = serde_json::to_string(&a.bound_knowledge_base_ids).unwrap_or_else(|_| "[]".into());
+        self.conn.execute(
+            "INSERT INTO data_assistants (id, name, avatar, description, system_prompt, bound_db_connection_ids, bound_knowledge_base_ids, created, updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               avatar = excluded.avatar,
+               description = excluded.description,
+               system_prompt = excluded.system_prompt,
+               bound_db_connection_ids = excluded.bound_db_connection_ids,
+               bound_knowledge_base_ids = excluded.bound_knowledge_base_ids,
+               updated = excluded.updated",
+            params![
+                a.id,
+                a.name,
+                a.avatar,
+                a.description,
+                a.system_prompt,
+                db_bindings_json,
+                kb_ids_json,
+                a.created,
+                a.updated,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_data_assistant(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM data_assistants WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Retrieve knowledge-base documents by their IDs (for Data Assistant injection)
+    pub fn get_kb_docs_by_ids(&self, ids: &[String]) -> Result<Vec<KbDoc>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, name, content, created, updated FROM kb_docs WHERE id IN ({})",
+            placeholders
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_vec: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_vec.as_slice(), |r| {
+            Ok(KbDoc {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                content: r.get(2)?,
+                created: r.get(3)?,
+                updated: r.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+}
+
+fn parse_assistant_db_bindings(raw: &str) -> Vec<AssistantDbBinding> {
+    if let Ok(bindings) = serde_json::from_str::<Vec<AssistantDbBinding>>(raw) {
+        return bindings;
+    }
+    if let Ok(ids) = serde_json::from_str::<Vec<String>>(raw) {
+        return ids
+            .into_iter()
+            .map(|conn_id| AssistantDbBinding {
+                conn_id,
+                database: None,
+            })
+            .collect();
+    }
+    Vec::new()
 }
 
 fn now_secs() -> i64 {
@@ -1064,9 +1204,19 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn_name TEXT NOT NULL,
             db        TEXT,
             sql       TEXT NOT NULL,
-            decision  TEXT NOT NULL
+            decision  TEXT NOT NULL,
+            result    TEXT
         );",
     )?;
+    {
+        let mut pragma = conn.prepare("PRAGMA table_info(audit_log)")?;
+        let has_result: bool = pragma
+            .query_map([], |r| r.get::<_, String>(1))?
+            .any(|c| c.map(|n| n == "result").unwrap_or(false));
+        if !has_result {
+            conn.execute("ALTER TABLE audit_log ADD COLUMN result TEXT", [])?;
+        }
+    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS conversations (
             id      TEXT PRIMARY KEY,
@@ -1089,6 +1239,19 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );",
     )?;
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_msg_conv ON chat_messages(conv_id, seq);")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS data_assistants (
+            id                       TEXT PRIMARY KEY,
+            name                     TEXT NOT NULL,
+            avatar                   TEXT,
+            description              TEXT NOT NULL DEFAULT '',
+            system_prompt            TEXT NOT NULL DEFAULT '',
+            bound_db_connection_ids  TEXT NOT NULL DEFAULT '[]',
+            bound_knowledge_base_ids TEXT NOT NULL DEFAULT '[]',
+            created                  INTEGER NOT NULL,
+            updated                  INTEGER NOT NULL
+        );",
+    )?;
     Ok(())
 }
 
@@ -1215,16 +1378,28 @@ mod tests {
             Some("mydb"),
             "DELETE FROM t",
             "write-approved",
+            Some("影响 1 行"),
         )
         .unwrap();
-        s.add_audit("c1", "demo", None, "DROP TABLE t", "deny")
-            .unwrap();
+        s.add_audit(
+            "c1",
+            "demo",
+            None,
+            "DROP TABLE t",
+            "deny",
+            Some("护栏拦截：破坏性 DDL"),
+        )
+        .unwrap();
         let rows = s.list_audits(10).unwrap();
         assert_eq!(rows.len(), 2);
         // Both decisions recorded (don't assert order — ts is second-granular).
         let decisions: Vec<&str> = rows.iter().map(|r| r.3.as_str()).collect();
         assert!(decisions.contains(&"deny"));
         assert!(decisions.contains(&"write-approved"));
+        // results captured
+        let results: Vec<Option<String>> = rows.iter().map(|r| r.4.clone()).collect();
+        assert!(results.contains(&Some("影响 1 行".to_string())));
+        assert!(results.contains(&Some("护栏拦截：破坏性 DDL".to_string())));
         // db binding captured: one whole-connection (None), one specific db.
         let dbs: Vec<Option<String>> = rows.iter().map(|r| r.1.clone()).collect();
         assert!(dbs.contains(&None));
@@ -1534,6 +1709,47 @@ mod tests {
         assert_eq!(contents, vec!["m2", "m3"]);
         // Unknown conversation → None (not an error).
         assert!(s.get_recent_conv("nope", 2).unwrap().is_none());
+    }
+
+    #[test]
+    fn data_assistant_crud() {
+        let s = mem_store();
+        assert!(s.list_data_assistants().unwrap().is_empty());
+
+        let ast = DataAssistant {
+            id: "ast_1".to_string(),
+            name: "电商业务助手".to_string(),
+            avatar: Some("🛒".to_string()),
+            description: "用于分析订单与用户画像".to_string(),
+            system_prompt: "只查询最近30天数据".to_string(),
+            bound_databases: vec![
+                AssistantDbBinding {
+                    conn_id: "c1".to_string(),
+                    database: Some("order_db".to_string()),
+                },
+                AssistantDbBinding {
+                    conn_id: "c2".to_string(),
+                    database: None,
+                },
+            ],
+            bound_knowledge_base_ids: vec!["kb1".to_string()],
+            created: 1000,
+            updated: 1000,
+        };
+        s.save_data_assistant(&ast).unwrap();
+
+        let list = s.list_data_assistants().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "电商业务助手");
+        assert_eq!(list[0].bound_databases.len(), 2);
+        assert_eq!(list[0].bound_databases[0].database, Some("order_db".to_string()));
+        assert_eq!(list[0].bound_knowledge_base_ids, vec!["kb1"]);
+
+        let item = s.get_data_assistant("ast_1").unwrap().expect("found");
+        assert_eq!(item.system_prompt, "只查询最近30天数据");
+
+        s.delete_data_assistant("ast_1").unwrap();
+        assert!(s.list_data_assistants().unwrap().is_empty());
     }
 }
 

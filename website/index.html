@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>智询 ChatQuery · 下一代 AI 原生数据库客户端 (MySQL & Redis)</title>
-  <meta name="description" content="专为工程师打造的现代数据库工作台。Rust 驱动毫秒冷启，桌面端约 60-120MB、终端仅约 20MB；内置多模型 AI Agent，支持多环境管理、跨会话@引用、C3宪法级防全表扫描；支持桌面 GUI、极客终端 TUI 与 MCP 协议。" />
+  <title>智询 ChatQuery · 本地优先的 AI 数据库工作台</title>
+  <meta name="description" content="智询 ChatQuery 是面向开发者的本地优先 AI 数据库工作台，支持 MySQL、Redis、自定义模型端点，并提供桌面 GUI、终端 TUI 与 MCP Server 三种使用入口。" />
   <link rel="icon" type="image/svg+xml" href="assets/logo.svg" />
   <link rel="apple-touch-icon" href="assets/icon.png" />
   <style>
@@ -15,7 +15,7 @@
 
     :root {
       --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "Courier New", monospace;
 
       /* 核心品牌色：严格对齐 style.css */
       --brand: #6366F1;
@@ -292,7 +292,7 @@
     }
 
     [data-theme="light"] .gradient-text {
-      background: linear-gradient(135deg, #0F172A 10%, #4F46E5 50%, #7C3AED 100%);
+      background: linear-gradient(135deg, #0F172A 10%, #4F46E5 50%, rgb(124, 58, 237) 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
@@ -309,119 +309,69 @@
       color: var(--text-primary);
     }
 
-    /* 核心下载行动卡片 */
-    .hero-download-card {
-      max-width: 660px;
-      margin: 0 auto 40px;
-      background: var(--bg-surface);
-      border: 1px solid var(--border-strong);
-      border-radius: var(--radius-xl);
-      padding: 24px 28px;
-      box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-      backdrop-filter: blur(20px);
+    /* 首屏行动与可信能力标签 */
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 28px;
     }
 
-    .btn-hero-download {
+    .btn-hero-primary,
+    .btn-hero-secondary {
+      min-height: 48px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 14px;
-      width: 100%;
-      padding: 16px 28px;
+      gap: 10px;
+      padding: 12px 22px;
       border-radius: var(--radius-lg);
+      font-size: 0.98rem;
+      font-weight: 700;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+    }
+
+    .btn-hero-primary {
       background: var(--brand-grad);
       color: #ffffff;
-      font-size: 1.15rem;
-      font-weight: 700;
       box-shadow: var(--glow-md);
-      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-      position: relative;
-      overflow: hidden;
     }
 
-    .btn-hero-download:hover {
+    .btn-hero-secondary {
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      border: 1px solid var(--border-strong);
+    }
+
+    .btn-hero-primary:hover,
+    .btn-hero-secondary:hover {
       transform: translateY(-2px);
-      box-shadow: var(--glow-lg);
+      box-shadow: var(--glow-md);
     }
 
-    .btn-hero-sub {
-      font-size: 0.8rem;
-      font-weight: 400;
-      opacity: 0.85;
-      display: block;
-    }
-
-    .quick-platforms {
+    .capability-chips {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       justify-content: center;
-      gap: 12px;
-      margin-top: 16px;
-      font-size: 0.85rem;
-      color: var(--text-secondary);
+      gap: 10px;
+      max-width: 820px;
+      margin: 0 auto 44px;
     }
 
-    .quick-chip {
-      padding: 5px 12px;
-      border-radius: var(--radius-full);
-      background: var(--bg-elevated);
-      border: 1px solid var(--border);
-      color: var(--text-secondary);
-      font-size: 0.8rem;
-      transition: all 0.2s;
-    }
-
-    .quick-chip:hover {
-      color: var(--text-primary);
-      border-color: var(--border-strong);
-      background: var(--bg-hover);
-    }
-
-    .hero-cli-bar {
-      margin-top: 18px;
-      padding: 10px 16px;
-      background: var(--bg-inset);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-    }
-
-    .hero-cli-code {
-      font-family: var(--font-mono);
-      font-size: 0.85rem;
-      color: var(--brand-hover);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .btn-copy-chip {
-      padding: 5px 12px;
-      border-radius: var(--radius-sm);
-      background: var(--bg-elevated);
-      border: 1px solid var(--border);
-      color: var(--text-secondary);
-      font-size: 0.75rem;
-      font-weight: 600;
+    .capability-chip {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
-      transition: all 0.2s;
-    }
-
-    .btn-copy-chip:hover {
-      color: var(--text-primary);
-      background: var(--bg-hover);
-    }
-
-    .btn-copy-chip.copied {
-      background: var(--success-500);
-      color: #ffffff;
-      border-color: transparent;
+      gap: 7px;
+      padding: 7px 12px;
+      border-radius: var(--radius-full);
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-size: 0.82rem;
+      font-weight: 600;
     }
 
     .hero-trust-bar {
@@ -746,7 +696,7 @@
     }
 
     /* SQL 代码编辑区 */
-    .monaco-mock-editor {
+    .sql-editor-mock {
       height: 160px;
       background: var(--bg-inset);
       padding: 14px 16px;
@@ -1386,9 +1336,8 @@
       background: var(--bg-surface);
       border: 1px solid var(--border);
       border-radius: var(--radius-lg);
-      padding: 20px 24px;
-      cursor: pointer;
-      transition: all 0.2s;
+      overflow: hidden;
+      transition: border-color 0.2s;
     }
 
     .faq-card:hover {
@@ -1396,9 +1345,14 @@
     }
 
     .faq-q {
+      width: 100%;
+      min-height: 64px;
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 20px;
+      padding: 18px 24px;
+      text-align: left;
       font-weight: 600;
       font-size: 1.05rem;
       color: var(--text-primary);
@@ -1425,8 +1379,8 @@
     }
 
     .faq-card.open .faq-a {
-      max-height: 300px;
-      margin-top: 14px;
+      max-height: 360px;
+      padding: 0 24px 20px;
     }
 
     /* 底部 CTA 与页脚 */
@@ -1461,60 +1415,53 @@
       gap: 20px;
     }
 
-    /* 下载触发弹窗 */
-    .modal-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(10px);
-      z-index: 999;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
+    :focus-visible {
+      outline: 3px solid var(--brand-hover);
+      outline-offset: 3px;
     }
 
-    .modal-overlay.active {
-      display: flex;
-      animation: fadeIn 0.2s ease;
-    }
-
-    .modal-box {
-      background: var(--bg-surface);
-      border: 1px solid var(--border-strong);
-      border-radius: var(--radius-xl);
-      padding: 36px;
-      max-width: 500px;
-      width: 100%;
-      text-align: center;
-      position: relative;
-      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7);
-    }
-
-    .modal-close {
-      position: absolute;
-      top: 18px;
-      right: 20px;
-      font-size: 1.5rem;
-      color: var(--text-tertiary);
-      cursor: pointer;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(6px); }
-      to { opacity: 1; transform: translateY(0); }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
     }
 
     /* 移动端适配 */
     @media (max-width: 992px) {
       .hero-title { font-size: 2.6rem; }
-      .app-viewport { grid-template-columns: 1fr; height: auto; }
+      .app-viewport { grid-template-columns: minmax(0, 1fr); height: auto; }
       .app-sidebar { display: none; }
-      .app-chat-sidebar { border-top: 1px solid var(--border); height: 420px; }
-      .features-grid { grid-template-columns: 1fr; }
-      .download-grid { grid-template-columns: 1fr; }
+      .app-main-pane { min-width: 0; border-right: 0; }
+      .app-chat-sidebar { border-top: 1px solid var(--border); height: 420px; min-width: 0; }
+      .features-grid, .download-grid { grid-template-columns: 1fr; }
       .cli-banner-card { flex-direction: column; align-items: flex-start; }
       .nav-links { display: none; }
+      .showcase-wrapper { overflow-x: auto; }
+      .window-titlebar { min-width: 760px; }
+      .app-viewport { min-width: 760px; }
+    }
+
+    @media (max-width: 480px) {
+      .container { padding: 0 16px; }
+      .navbar-inner { height: 60px; }
+      .brand-text { gap: 5px; font-size: 0.95rem; }
+      .brand-logo { width: 32px; height: 32px; }
+      .brand-pill { display: none; }
+      .btn-nav-download { padding: 8px 12px; font-size: 0.82rem; }
+      .hero-section { padding-top: 52px; }
+      .hero-title { font-size: 2.15rem; }
+      .hero-subtitle { font-size: 1rem; }
+      .hero-actions { align-items: stretch; }
+      .btn-hero-primary, .btn-hero-secondary { width: 100%; }
+      .section { padding: 64px 0; }
+      .section-title { font-size: 2rem; }
+      .feature-card, .dl-card, .compare-container { padding: 22px; }
+      .showcase-wrapper { margin-left: 0; margin-right: 0; max-width: 100%; }
+      .footer-content, .footer-links { align-items: flex-start; flex-direction: column; }
+      .cta-banner { padding: 40px 22px; }
     }
   </style>
 </head>
@@ -1535,16 +1482,16 @@
       </a>
 
       <ul class="nav-links">
-        <li><a href="#workbench" class="nav-link">工作台界面</a></li>
-        <li><a href="#features" class="nav-link">功能特性</a></li>
-        <li><a href="#benchmarks" class="nav-link">对比评测</a></li>
-        <li><a href="#download" class="nav-link">客户端下载</a></li>
-        <li><a href="#faq" class="nav-link">常见问题</a></li>
+        <li><a href="#workbench" class="nav-link">工作台</a></li>
+        <li><a href="#features" class="nav-link">产品能力</a></li>
+        <li><a href="#boundaries" class="nav-link">能力边界</a></li>
+        <li><a href="#release" class="nav-link">发行状态</a></li>
+        <li><a href="#faq" class="nav-link">FAQ</a></li>
       </ul>
 
       <div class="nav-actions">
         <!-- 主题切换 -->
-        <button class="theme-toggle-btn" id="themeToggleBtn" title="切换深色/浅色模式">
+        <button class="theme-toggle-btn" id="themeToggleBtn" title="切换深色/浅色模式" aria-label="切换深色或浅色主题">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="5"></circle>
             <line x1="12" y1="1" x2="12" y2="3"></line>
@@ -1558,90 +1505,49 @@
           </svg>
         </button>
 
-        <!-- 顶部主下载按钮 -->
-        <a href="#download" class="btn-nav-download">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="7 10 12 15 17 10"></polyline>
-            <line x1="12" y1="15" x2="12" y2="3"></line>
+        <a href="#release" class="btn-nav-download">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M12 8v4l2.5 2.5"></path>
           </svg>
-          下载客户端
+          查看发行状态
         </a>
       </div>
     </div>
   </header>
 
-  <!-- 2. Hero 区域与首屏下载行动 -->
+  <!-- 2. Hero 区域 -->
   <section class="hero-section">
     <div class="container">
-      <div class="hero-badge">
-        <span>⚡</span> 纯 Rust 原生单二进制 · 毫秒级冷启动 · 桌面端约 60~120MB (终端 ~20MB)
-      </div>
+      <div class="hero-badge">本地优先 · 面向开发者的 AI 数据库工作台</div>
 
       <h1 class="hero-title">
-        告别笨重，<span class="gradient-text">对话即查询</span>
+        把数据库查询、上下文 AI 与研发工作流，<span class="gradient-text">放进同一个工作台</span>
       </h1>
 
       <p class="hero-subtitle">
-        专为工程师打造的 <b>下一代 AI 原生数据库客户端</b>。<br />
-        原生融合 <b>MySQL</b> 与 <b>Redis</b> 双引擎，基于有界内存架构，连接数再多也保持平稳。集成多会话 AI Agent、跨会话 <code>@</code> 引用与 C3 宪法级防全表扫描。
+        智询 ChatQuery 面向日常研发查询与排障，统一连接 <b>MySQL</b> 与 <b>Redis</b>，支持桌面 GUI、终端 TUI、MCP Server，以及 OpenAI 兼容、Ollama 等自定义模型端点。
       </p>
 
-      <!-- 首屏下载行动中心 -->
-      <div class="hero-download-card">
-        <button class="btn-hero-download" id="smartHeroDownloadBtn" onclick="triggerSmartDownload()">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="7 10 12 15 17 10"></polyline>
-            <line x1="12" y1="15" x2="12" y2="3"></line>
-          </svg>
-          <div style="text-align: left;">
-            <div id="smartDownloadTitle">下载 macOS 版 (Apple Silicon)</div>
-            <span class="btn-hero-sub">v0.1.0 · 原生安装包 (.dmg) · 开源免费</span>
-          </div>
-        </button>
-
-        <!-- 快速平台入口 -->
-        <div class="quick-platforms">
-          <span>支持多平台架构：</span>
-          <a href="#download" class="quick-chip" onclick="openDownloadModal('macOS (Intel)', 'ChatQuery-v0.1.0-x64.dmg')">🍎 macOS (Intel)</a>
-          <a href="#download" class="quick-chip" onclick="openDownloadModal('Windows 64位', 'ChatQuery-v0.1.0-win-x64.msi')">🪟 Windows (x64)</a>
-          <a href="#download" class="quick-chip" onclick="openDownloadModal('Linux', 'ChatQuery-v0.1.0.AppImage')">🐧 Linux (AppImage)</a>
-          <a href="#download" class="quick-chip">💻 极客终端 TUI</a>
-        </div>
-
-        <!-- 极客终端一键命令 -->
-        <div class="hero-cli-bar">
-          <div class="hero-cli-code">
-            <span style="color:var(--text-tertiary);">$</span>
-            <span id="heroCurlCmd">curl -fsSL https://get.chatquery.app | sh</span>
-          </div>
-          <button class="btn-copy-chip" onclick="copyCliText('heroCurlCmd', this)">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-            <span>复制命令</span>
-          </button>
-        </div>
+      <div class="hero-actions" aria-label="首屏导航">
+        <a href="#workbench" class="btn-hero-primary">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M8 9l3 3-3 3M13 15h3"></path></svg>
+          查看工作台
+        </a>
+        <a href="#features" class="btn-hero-secondary">了解核心能力</a>
+        <a href="#release" class="btn-hero-secondary">查看发行状态</a>
       </div>
 
-      <!-- 安全与架构承诺 -->
-      <div class="hero-trust-bar">
-        <div class="trust-item">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-          本地 AES-GCM 凭证加密
-        </div>
-        <div class="trust-item">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
-          C3 宪法级防全表扫描与回查
-        </div>
-        <div class="trust-item">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line></svg>
-          零业务数据云端留存
-        </div>
+      <div class="capability-chips" aria-label="可信能力概览">
+        <span class="capability-chip">MySQL + Redis</span>
+        <span class="capability-chip">GUI / TUI / MCP</span>
+        <span class="capability-chip">自定义模型端点</span>
+        <span class="capability-chip">本地凭据加密</span>
       </div>
     </div>
   </section>
 
-  <!-- 3. 真实软件界面 1:1 交互还原 (Showcase) -->
+  <!-- 3. 工作台交互演示 -->
   <section class="container" id="workbench">
     <div class="showcase-wrapper">
       <!-- 窗口标题栏 -->
@@ -1760,7 +1666,7 @@
               </div>
 
               <div class="editor-action-group">
-                <button class="btn-ref-chat" onclick="alert('已将当前 SQL 注入 Chat 引用上下文！可在对话中直接讨论。')">
+                <button class="btn-ref-chat" onclick="alert('已将当前 SQL 片段加入 Chat 上下文，可在对话中继续讨论。')">
                   @ 引用至 Chat
                 </button>
                 <button class="btn-run-query" onclick="handleRunSqlClick()">
@@ -1769,8 +1675,8 @@
               </div>
             </div>
 
-            <!-- Monaco 代码编辑器区域 -->
-            <div class="monaco-mock-editor" id="monacoEditorMock">
+            <!-- 专业 SQL 编辑器区域 -->
+            <div class="sql-editor-mock" id="sqlEditorMock">
               <div><span class="code-line-no">1</span><span class="kw">SELECT</span> </div>
               <div><span class="code-line-no">2</span>    o.user_id, </div>
               <div><span class="code-line-no">3</span>    <span class="fn">COUNT</span>(o.id) <span class="kw">AS</span> total_orders, </div>
@@ -1823,7 +1729,7 @@
 
               <!-- 底部状态条 -->
               <div class="table-footer-status">
-                <span>就绪 · 5 行记录 (耗时: 12ms) · 结果已验证安全 (零全表扫描)</span>
+                <span>就绪 · 当前加载 5 行示例记录 · 可查看执行计划</span>
                 <span>● prod-order-db · ▦ mall_orders</span>
               </div>
             </div>
@@ -1907,7 +1813,7 @@
                   <button class="seg-btn active">Formatted (JSON 格式化)</button>
                   <button class="seg-btn">Hex (十六进制)</button>
                 </div>
-                <span style="font-size:0.75rem; color:var(--text-tertiary);">可直接编辑并保存</span>
+                <span style="font-size:0.75rem; color:var(--text-tertiary);">支持 Raw / 格式化 / Hex 查看</span>
               </div>
 
               <div style="background:var(--bg-inset); border:1px solid var(--border); border-radius:6px; padding:16px; font-family:var(--font-mono); font-size:0.8rem; color:#A5B4FC; flex:1; overflow:auto;">
@@ -1945,7 +1851,7 @@
 │ └────────────────────────┴───────────────┘                                                      │
 │ 3 rows in set (0.014 sec)                                                                       │
 │                                                                                                 │
-│ [AI]: 已根据当前工作区状态自动识别 3,842 笔已支付订单，退款率处于 0.46% 正常安全区间。         │
+│ [AI]: 基于当前示例结果：已支付订单 3,842 笔，退款订单 18 笔。         │
 ├─────────────────────────────────────────────────────────────────────────────────────────────────┤
 │ [F1] Help  [F2] Connect  [F5] Execute Query  [^C] Chat Prompt  [^Q] Exit                        │
 └─────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -1970,16 +1876,16 @@
             <div class="chat-log-body">
               <!-- 用户提问 -->
               <div class="bubble-user">
-                @t_orders 查出最近3天复购率最高的用户，统计他们的总支付金额
+                基于当前 SQL，整理最近 3 天复购用户及总支付金额
               </div>
 
               <!-- AI 回复 -->
               <div class="bubble-ai">
                 <!-- 真实的 ExecutionBlock 独立折叠步骤模块 -->
                 <div class="real-exec-block">
-                  <div class="exec-step done">✓ 步骤 1: 校验 t_orders 索引定义</div>
-                  <div class="exec-step done">✓ 步骤 2: 注入 C3 宪法级防全表扫描护栏</div>
-                  <div class="exec-step done">✓ 步骤 3: 运行聚合查询并验证受影响行数</div>
+                  <div class="exec-step done">✓ 步骤 1: 读取当前 SQL 与表结构上下文</div>
+                  <div class="exec-step done">✓ 步骤 2: 生成带范围条件的聚合 SQL</div>
+                  <div class="exec-step done">✓ 步骤 3: 调用查询工具并整理返回结果</div>
                 </div>
 
                 <!-- 工具调用与 SQL 前置气泡 -->
@@ -1992,7 +1898,7 @@
                     SELECT user_id, COUNT(id), SUM(pay_amount) ... LIMIT 5;
                   </div>
                   <div class="tool-btn-row">
-                    <button class="btn-import-editor" onclick="handleImportToMonaco()">
+                    <button class="btn-import-editor" onclick="handleImportToEditor()">
                       📋 导入到编辑器
                     </button>
                     <button class="btn-import-editor" style="background:transparent;" onclick="alert('已重新执行该段 SQL。')">
@@ -2003,7 +1909,7 @@
 
                 <!-- 综合结论 -->
                 <div class="ai-summary-text">
-                  💡 <b>分析结论：</b>近3天最高复购用户 <b>90214810</b> 共下单 5 次，总支付 ¥12,840.00；前 5 名复购用户贡献了 28.5% 的活跃营业额。
+                  💡 <b>示例结论：</b>当前结果中，用户 <b>90214810</b> 近 3 天共下单 5 次，总支付 ¥12,840.00；可继续调整时间范围或筛选条件。
                 </div>
               </div>
             </div>
@@ -2012,7 +1918,7 @@
           <!-- 输入栏 -->
           <div class="chat-bottom-input">
             <div class="chat-input-wrap">
-              <input type="text" placeholder="输入 @ 可引用当前 Tab 或 SQL 片段..." value="对比上周同一时段的复购变化" />
+              <input type="text" placeholder="输入 @ 可引用 SQL 或历史会话..." value="对比上周同一时段的复购变化" />
               <span style="color:var(--brand-hover); font-size:0.75rem; cursor:pointer; font-weight:700;">发送 ↵</span>
             </div>
           </div>
@@ -2021,317 +1927,121 @@
     </div>
   </section>
 
-  <!-- 4. 真实技术支柱 (Why ChatQuery) -->
+  <!-- 4. 核心能力 -->
   <section class="section" id="features">
     <div class="container">
       <div class="section-header">
-        <span class="section-subtitle">Real Architecture</span>
-        <h2 class="section-title">为现代研发打造的数据库利器</h2>
-        <p class="section-desc">抛弃传统客户端几十年前陈旧的代码包袱，重构速度、安全与智能体验。</p>
+        <span class="section-subtitle">Product Capabilities</span>
+        <h2 class="section-title">围绕研发查询，而不是堆叠宣传指标</h2>
+        <p class="section-desc">连接、编辑、结果分析与 AI 协作共享上下文，同时保留清晰的安全边界。</p>
       </div>
 
       <div class="features-grid">
-        <!-- 1. 性能 -->
-        <div class="feature-card">
-          <div class="feature-icon-box icon-rust">🦀</div>
-          <h3 class="feature-title">Rust 驱动 · 毫秒级冷启 · 内存平稳有界</h3>
-          <p class="feature-desc">
-            采用 Rust 编写的无 GC 单二进制内核与 Tauri 架构，启动耗时仅需约 50ms。通过 ADR-006 惰性加载与 LRU 有界缓存，桌面端常驻约 60~120MB（终端仅 ~20MB），连接数增加时内存依然平稳，告别 Java/Electron 动辄 GB 级的内存膨胀。
-          </p>
+        <article class="feature-card">
+          <div class="feature-icon-box icon-db" aria-hidden="true">DB</div>
+          <h3 class="feature-title">MySQL + Redis 一体化</h3>
+          <p class="feature-desc">在同一连接树与工作区管理 MySQL 查询和 Redis 键空间浏览，按环境、分组与连接组织日常研发数据源。</p>
           <div class="feature-tag-list">
-            <span class="feature-tag">单二进制发行</span>
-            <span class="feature-tag">50ms 冷启动</span>
-            <span class="feature-tag">桌面约 60~120MB</span>
-            <span class="feature-tag">终端仅 ~20MB</span>
-            <span class="feature-tag">多连接不膨胀</span>
+            <span class="feature-tag">MySQL 查询与结构查看</span><span class="feature-tag">Redis 键空间浏览</span><span class="feature-tag">环境与连接分组</span>
           </div>
-        </div>
+        </article>
 
-        <!-- 2. AI 原生智能 -->
-        <div class="feature-card">
-          <div class="feature-icon-box icon-ai">🤖</div>
-          <h3 class="feature-title">AI 原生智能体 · 跨会话 @ 深度引用</h3>
-          <p class="feature-desc">
-            会话持久化与上下文感知，词首输入 <code>@</code> 即可把正在编辑的 SQL、查询结果或历史对话注入 Prompt。内置 ExecutionBlock 步骤折叠与 SQL 前置可审计机制。
-          </p>
+        <article class="feature-card">
+          <div class="feature-icon-box icon-ai" aria-hidden="true">AI</div>
+          <h3 class="feature-title">上下文 AI</h3>
+          <p class="feature-desc">支持流式对话，引用 SQL 与历史会话，并将知识库片段、文本附件作为必要上下文；工具调用过程与生成的 SQL 可在界面中查看。</p>
           <div class="feature-tag-list">
-            <span class="feature-tag">跨会话 @ 引用</span>
-            <span class="feature-tag">ExecutionBlock 折叠</span>
-            <span class="feature-tag">SQL 前置一键导入</span>
-            <span class="feature-tag">多模型自主配置</span>
+            <span class="feature-tag">流式对话</span><span class="feature-tag">SQL / 历史会话引用</span><span class="feature-tag">知识库与文本附件</span><span class="feature-tag">真实工具调用</span>
           </div>
-        </div>
+        </article>
 
-        <!-- 3. 双引擎兼备 -->
-        <div class="feature-card">
-          <div class="feature-icon-box icon-db">🐬</div>
-          <h3 class="feature-title">MySQL & Redis 双引擎 · 多环境拓扑</h3>
-          <p class="feature-desc">
-            支持生产、测试等「环境 / 组 / 连接」树形拓扑结构。MySQL 提供 Monaco 语法高亮、表结构设计与大容量结果集虚拟滚动；Redis 提供直观的 Key 树、TTL 管理与 Hex/Raw/JSON 三模视图。
-          </p>
+        <article class="feature-card">
+          <div class="feature-icon-box icon-rust" aria-hidden="true">SQL</div>
+          <h3 class="feature-title">研发查询体验</h3>
+          <p class="feature-desc">以多标签和多结果承载并行查询，提供 SQL 补全与格式化、历史片段、EXPLAIN、当前页筛选，以及当前已加载结果导出。</p>
           <div class="feature-tag-list">
-            <span class="feature-tag">环境与分组管理</span>
-            <span class="feature-tag">Monaco SQL 编辑器</span>
-            <span class="feature-tag">Redis 树形键空间</span>
-            <span class="feature-tag">虚拟滚动表格</span>
+            <span class="feature-tag">多标签 / 多结果</span><span class="feature-tag">补全与格式化</span><span class="feature-tag">历史片段</span><span class="feature-tag">EXPLAIN</span><span class="feature-tag">CSV / XLSX / JSON</span>
           </div>
-        </div>
+        </article>
 
-        <!-- 4. 安全防护 -->
-        <div class="feature-card">
-          <div class="feature-icon-box icon-sec">🛡️</div>
-          <h3 class="feature-title">C3 宪法级防全表扫描 · 敏感信息脱敏</h3>
-          <p class="feature-desc">
-            内置防灾护栏机制：对于生产环境无索引的大表扫描与无 WHERE 的修改强制拦截确认。写操作提供完整审计日志（🛡），密码与连接串采用本地 AES-GCM 高强度加密，绝不上云。
-          </p>
+        <article class="feature-card">
+          <div class="feature-icon-box icon-sec" aria-hidden="true">SEC</div>
+          <h3 class="feature-title">本地优先与可控接入</h3>
+          <p class="feature-desc">连接信息与 API Key 在本地加密保存，数据库由本机直连；可接入 OpenAI 兼容端点或 Ollama。AI 查询结果默认按规则脱敏，写操作带确认与审计边界。</p>
           <div class="feature-tag-list">
-            <span class="feature-tag">C3 宪法防护</span>
-            <span class="feature-tag">AES-GCM 本地加密</span>
-            <span class="feature-tag">写操作审计日志</span>
-            <span class="feature-tag">全端 TUI/MCP 生态</span>
+            <span class="feature-tag">连接 / API Key 加密</span><span class="feature-tag">本机直连</span><span class="feature-tag">自定义端点</span><span class="feature-tag">默认规则脱敏</span><span class="feature-tag">写操作确认 / 审计</span>
           </div>
-        </div>
+        </article>
       </div>
     </div>
   </section>
 
-  <!-- 5. 真实竞品与性能评测对比 (Benchmarks) -->
-  <section class="section" id="benchmarks">
+  <!-- 5. 研发工作流与能力边界 -->
+  <section class="section" id="boundaries">
     <div class="container">
       <div class="section-header">
-        <span class="section-subtitle">Benchmarks</span>
-        <h2 class="section-title">指标对比：为什么从传统工具迁移？</h2>
-        <p class="section-desc">不堆砌无用功能，用严谨的真实数据见证新一代工具的轻盈体验。</p>
+        <span class="section-subtitle">Workflow Fit</span>
+        <h2 class="section-title">为什么适合研发工作流</h2>
+        <p class="section-desc">三种入口共享 Rust 核心，但服务不同场景；能力重点是查询与协作，不替代数据库治理体系。</p>
       </div>
 
       <div class="compare-container">
         <table class="compare-table">
-          <thead>
-            <tr>
-              <th>核心维度</th>
-              <th class="col-highlight">✨ 智询 ChatQuery</th>
-              <th>Navicat Premium</th>
-              <th>DBeaver (Community)</th>
-              <th>DataGrip (JetBrains)</th>
-            </tr>
-          </thead>
+          <thead><tr><th>使用入口</th><th class="col-highlight">适用场景</th><th>边界说明</th></tr></thead>
           <tbody>
-            <tr>
-              <td>底层架构</td>
-              <td class="col-highlight"><span class="badge-win">Rust 原生编译 (Tauri / Ratatui)</span></td>
-              <td class="badge-lose">C++ / 专有闭源</td>
-              <td class="badge-lose">Java / Eclipse RCP</td>
-              <td class="badge-lose">Java / IntelliJ 平台</td>
-            </tr>
-            <tr>
-              <td>冷启动耗时</td>
-              <td class="col-highlight"><span class="badge-win">~0.05 秒 (开机即点即用)</span></td>
-              <td class="badge-lose">~3.5 秒</td>
-              <td class="badge-lose">~8.2 秒</td>
-              <td class="badge-lose">~12 秒 (建立索引)</td>
-            </tr>
-            <tr>
-              <td>日常常驻内存 (RSS)</td>
-              <td class="col-highlight"><span class="badge-win">桌面约 60~120 MB (TUI 仅 ~20MB)</span></td>
-              <td class="badge-lose">~400 MB - 800 MB (多连接暴涨)</td>
-              <td class="badge-lose">~800 MB - 1.5 GB</td>
-              <td class="badge-lose">~1.2 GB - 2.5 GB</td>
-            </tr>
-            <tr>
-              <td>AI 深度融合能力</td>
-              <td class="col-highlight"><span class="badge-win">原生多轮 Agent + 跨会话 @ 引用</span></td>
-              <td class="badge-lose">无</td>
-              <td class="badge-lose">仅简单 SQL 提示插件</td>
-              <td class="badge-lose">外挂付费订阅</td>
-            </tr>
-            <tr>
-              <td>生产安全护栏</td>
-              <td class="col-highlight"><span class="badge-win">C3 宪法级防全表扫描 + 审计日志</span></td>
-              <td class="badge-lose">仅有简单只读限制</td>
-              <td class="badge-lose">基础确认弹窗</td>
-              <td class="badge-lose">基础警告</td>
-            </tr>
-            <tr>
-              <td>极客终端 TUI 模式</td>
-              <td class="col-highlight"><span class="badge-win">提供原生 Ratatui 终端模式</span></td>
-              <td class="badge-lose">无 (必须 GUI 桌面)</td>
-              <td class="badge-lose">无 (必须 GUI 桌面)</td>
-              <td class="badge-lose">无 (必须 GUI 桌面)</td>
-            </tr>
-            <tr>
-              <td>商业模式与授权</td>
-              <td class="col-highlight"><span class="badge-win">免费开源 · 本地安全加密</span></td>
-              <td class="badge-lose">高昂商业年费授权</td>
-              <td class="badge-lose">高级功能需商业版</td>
-              <td class="badge-lose">高昂商业年费授权</td>
-            </tr>
+            <tr><td>桌面 GUI</td><td class="col-highlight">可视化连接管理、SQL 编辑、多结果查看、Redis 浏览与 AI 对话</td><td>面向交互式研发查询，不是整库备份或数据库运维平台</td></tr>
+            <tr><td>终端 TUI</td><td class="col-highlight">SSH、终端优先环境和轻量查询工作流</td><td>强调键盘操作；部分复杂可视化更适合 GUI</td></tr>
+            <tr><td>MCP Server</td><td class="col-highlight">让支持 MCP 的 AI 客户端调用数据库工具</td><td>调用仍受连接权限、写操作确认和安全规则约束</td></tr>
+            <tr><td>模型接入</td><td class="col-highlight">OpenAI 兼容、Ollama、自定义端点；Anthropic 协议支持</td><td>第三方模型的可用性、数据策略与响应质量由对应服务商及配置决定</td></tr>
           </tbody>
         </table>
       </div>
     </div>
   </section>
 
-  <!-- 6. 全平台多版本下载专区 (Download Center) -->
-  <section class="section download-section-wrap" id="download">
+  <!-- 6. 发行与使用方式 -->
+  <section class="section download-section-wrap" id="release">
     <div class="container">
       <div class="section-header">
-        <span class="section-subtitle">Downloads</span>
-        <h2 class="section-title">下载 ChatQuery 客户端</h2>
-        <p class="section-desc">单二进制绿色原生构建，无外部运行库依赖。选择适合您系统架构的版本即可开始使用。</p>
+        <span class="section-subtitle">Release Status</span>
+        <h2 class="section-title">发行与使用方式</h2>
+        <p class="section-desc">当前仓库尚未接入公开安装包。发行版准备中；如需从源码构建，请以仓库内现有说明为准。</p>
       </div>
 
       <div class="download-grid">
-        <!-- 平台 1: macOS -->
-        <div class="dl-card" id="macDlCard">
-          <div class="rec-tag" id="macRecTag">推荐</div>
+        <article class="dl-card recommended">
+          <div class="rec-tag">发行版准备中</div>
           <div>
             <div class="dl-platform-head">
-              <div class="dl-logo-icon">🍎</div>
-              <div>
-                <h3 style="font-size:1.25rem; font-weight:700;">macOS</h3>
-                <span style="font-size:0.8rem; color:var(--text-tertiary);">macOS 11.0 Big Sur 或更高</span>
-              </div>
+              <div class="dl-logo-icon" aria-hidden="true">GUI</div>
+              <div><h3 style="font-size:1.25rem; font-weight:700;">桌面 GUI</h3><span style="font-size:0.8rem; color:var(--text-tertiary);">完整可视化工作台</span></div>
             </div>
-
-            <div class="dl-btn-stack">
-              <!-- Apple Silicon -->
-              <button class="btn-download-file primary-file-btn" onclick="openDownloadModal('macOS Apple Silicon (M系列)', 'ChatQuery-v0.1.0-aarch64.dmg')">
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                  <span>Apple Silicon (M1/M2/M3/M4)</span>
-                </div>
-                <span class="file-meta-tag">.dmg · 18MB</span>
-              </button>
-
-              <!-- Intel -->
-              <button class="btn-download-file" onclick="openDownloadModal('macOS Intel x64', 'ChatQuery-v0.1.0-x64.dmg')">
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                  <span>Intel x64 架构</span>
-                </div>
-                <span class="file-meta-tag">.dmg · 20MB</span>
-              </button>
-            </div>
+            <p class="feature-desc">适合连接管理、SQL 编辑、多结果分析、Redis 浏览与上下文 AI 对话。</p>
           </div>
+          <div class="dl-card-footer">当前不提供公开安装包或下载链接。</div>
+        </article>
 
-          <div class="dl-card-footer">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <code style="font-family:var(--font-mono); color:var(--brand-hover); font-size:0.75rem;" id="brewInstallCmd">brew install chatquery</code>
-              <button style="color:var(--brand-hover); font-size:0.75rem; font-weight:600;" onclick="copyCliText('brewInstallCmd', this)">复制</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- 平台 2: Windows -->
-        <div class="dl-card" id="winDlCard">
-          <div class="rec-tag" id="winRecTag" style="display:none;">推荐</div>
+        <article class="dl-card">
           <div>
             <div class="dl-platform-head">
-              <div class="dl-logo-icon">🪟</div>
-              <div>
-                <h3 style="font-size:1.25rem; font-weight:700;">Windows</h3>
-                <span style="font-size:0.8rem; color:var(--text-tertiary);">Windows 10 / 11 64位</span>
-              </div>
+              <div class="dl-logo-icon" aria-hidden="true">TUI</div>
+              <div><h3 style="font-size:1.25rem; font-weight:700;">终端 TUI</h3><span style="font-size:0.8rem; color:var(--text-tertiary);">终端优先的查询入口</span></div>
             </div>
-
-            <div class="dl-btn-stack">
-              <!-- 安装包 -->
-              <button class="btn-download-file" onclick="openDownloadModal('Windows 安装包', 'ChatQuery-v0.1.0-x64-setup.exe')">
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                  <span>Windows 快速安装包</span>
-                </div>
-                <span class="file-meta-tag">.exe · 16MB</span>
-              </button>
-
-              <!-- 便携版 -->
-              <button class="btn-download-file" onclick="openDownloadModal('Windows 免安装便携版', 'ChatQuery-v0.1.0-portable.zip')">
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                  <span>免安装便携版 (ZIP)</span>
-                </div>
-                <span class="file-meta-tag">.zip · 15MB</span>
-              </button>
-            </div>
+            <p class="feature-desc">适合 SSH、远程开发和偏好键盘工作流的研发人员。</p>
           </div>
+          <div class="dl-card-footer">源码构建需按仓库说明进行。</div>
+        </article>
 
-          <div class="dl-card-footer">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <code style="font-family:var(--font-mono); color:var(--brand-hover); font-size:0.75rem;" id="wingetInstallCmd">winget install chatquery</code>
-              <button style="color:var(--brand-hover); font-size:0.75rem; font-weight:600;" onclick="copyCliText('wingetInstallCmd', this)">复制</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- 平台 3: Linux -->
-        <div class="dl-card" id="linuxDlCard">
-          <div class="rec-tag" id="linuxRecTag" style="display:none;">推荐</div>
+        <article class="dl-card">
           <div>
             <div class="dl-platform-head">
-              <div class="dl-logo-icon">🐧</div>
-              <div>
-                <h3 style="font-size:1.25rem; font-weight:700;">Linux</h3>
-                <span style="font-size:0.8rem; color:var(--text-tertiary);">Ubuntu, Debian, Fedora, Arch</span>
-              </div>
+              <div class="dl-logo-icon" aria-hidden="true">MCP</div>
+              <div><h3 style="font-size:1.25rem; font-weight:700;">MCP Server</h3><span style="font-size:0.8rem; color:var(--text-tertiary);">面向 AI 工具调用</span></div>
             </div>
-
-            <div class="dl-btn-stack">
-              <!-- AppImage -->
-              <button class="btn-download-file" onclick="openDownloadModal('Linux 通用版', 'ChatQuery-v0.1.0.AppImage')">
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                  <span>AppImage (单文件即开)</span>
-                </div>
-                <span class="file-meta-tag">.AppImage · 19MB</span>
-              </button>
-
-              <!-- DEB -->
-              <button class="btn-download-file" onclick="openDownloadModal('Debian / Ubuntu 软件包', 'chatquery_0.1.0_amd64.deb')">
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                  <span>Debian / Ubuntu 安装包</span>
-                </div>
-                <span class="file-meta-tag">.deb · 17MB</span>
-              </button>
-            </div>
+            <p class="feature-desc">适合将数据库查询能力接入支持 MCP 的开发工具与 AI 客户端。</p>
           </div>
-
-          <div class="dl-card-footer">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <span>SHA256 签名完整校验</span>
-              <a href="https://github.com" target="_blank" style="color:var(--brand-hover); font-size:0.75rem;">GitHub Releases</a>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 极客终端与 Cargo 安装 -->
-      <div class="cli-banner-card">
-        <div class="cli-meta-left">
-          <div class="cli-icon-box">⌨️</div>
-          <div>
-            <h4 style="font-size:1.15rem; margin-bottom:4px; font-weight:700;">终端模式 (TUI) 与 Rust 编译构建</h4>
-            <p style="font-size:0.85rem; color:var(--text-secondary);">适用于无图形桌面的生产云服务器、堡垒机或极简 Linux 开发者环境。</p>
-          </div>
-        </div>
-
-        <div style="flex:1; max-width:580px; display:flex; flex-direction:column; gap:8px;">
-          <div class="hero-cli-bar" style="margin:0;">
-            <div class="hero-cli-code">
-              <span style="color:var(--text-tertiary);"># 一键脚本安装</span>
-              <span id="tuiScriptCmd">curl -fsSL https://get.chatquery.app | sh</span>
-            </div>
-            <button class="btn-copy-chip" onclick="copyCliText('tuiScriptCmd', this)">复制</button>
-          </div>
-
-          <div class="hero-cli-bar" style="margin:0;">
-            <div class="hero-cli-code">
-              <span style="color:var(--text-tertiary);"># 通过 Cargo 编译安装</span>
-              <span id="cargoCmd">cargo install chatquery</span>
-            </div>
-            <button class="btn-copy-chip" onclick="copyCliText('cargoCmd', this)">复制</button>
-          </div>
-        </div>
+          <div class="dl-card-footer">使用前请配置连接权限与写操作护栏。</div>
+        </article>
       </div>
     </div>
   </section>
@@ -2341,207 +2051,65 @@
     <div class="container">
       <div class="section-header">
         <span class="section-subtitle">FAQ</span>
-        <h2 class="section-title">常见问题解答</h2>
-        <p class="section-desc">关于安全性、环境支持与大模型接入的疑问解答。</p>
+        <h2 class="section-title">常见问题</h2>
+        <p class="section-desc">说明当前数据源、模型接入、安全护栏与使用边界。</p>
       </div>
 
       <div class="faq-wrapper">
-        <div class="faq-card" onclick="toggleFaqCard(this)">
-          <div class="faq-q">
-            <span>ChatQuery 支持哪些数据库和版本？</span>
-            <span class="faq-toggle">+</span>
-          </div>
-          <div class="faq-a">
-            ChatQuery 原生支持 MySQL 5.7、8.0、8.4 以及兼容协议的 MariaDB、Tidb 等；Redis 全面支持 4.x 到 7.2+ 及最新 8.0，覆盖 String、Hash、List、Set、ZSet 等所有原生数据结构，提供 TTL 可视化调整与 Raw / Formatted JSON / Hex 视图。
-          </div>
-        </div>
-
-        <div class="faq-card" onclick="toggleFaqCard(this)">
-          <div class="faq-q">
-            <span>使用 AI 对话查询时，我的业务敏感数据安全吗？</span>
-            <span class="faq-toggle">+</span>
-          </div>
-          <div class="faq-a">
-            非常安全。ChatQuery 秉持本地优先（Local-First）原则：所有连接配置与密码均通过本地 AES-256-GCM 高强度加密，网络连接直接直连数据库。在向大模型发起对话时，仅将必要的 Schema 表结构（可开启脱敏）或用户明确 @ 引用的上下文发送给您配置的 API 端点，绝不会在任何外部云端持久化您的真实数据。
-          </div>
-        </div>
-
-        <div class="faq-card" onclick="toggleFaqCard(this)">
-          <div class="faq-q">
-            <span>什么是 C3 宪法级防全表扫描？</span>
-            <span class="faq-toggle">+</span>
-          </div>
-          <div class="faq-a">
-            这是 ChatQuery 内置的生产防灾护栏机制：对于缺少主键或索引过滤的大表扫描、无 WHERE 条件的 UPDATE/DELETE，客户端会主动预警并拦截。AI Agent 在写后验证时也严格禁止全表扫描拉取，强制通过执行返回状态或主键单条精确回查，避免大表性能灾难。
-          </div>
-        </div>
-
-        <div class="faq-card" onclick="toggleFaqCard(this)">
-          <div class="faq-q">
-            <span>可以在无桌面的 Linux 服务器或 SSH 跳板机上运行吗？</span>
-            <span class="faq-toggle">+</span>
-          </div>
-          <div class="faq-a">
-            完全可以。ChatQuery 基于模块化架构构建，除桌面 GUI 之外，同一个二进制程序支持 <code>chatquery --tui</code> 极客交互模式，在 SSH 会话中即开即用，无需任何 X11 或图形界面支持。
-          </div>
-        </div>
-
-        <div class="faq-card" onclick="toggleFaqCard(this)">
-          <div class="faq-q">
-            <span>如何配置我自己的大模型 API Key？</span>
-            <span class="faq-toggle">+</span>
-          </div>
-          <div class="faq-a">
-            点击界面左上角的设置图标（⚙），进入 LLM 模型设置页面。您可以填入任意支持 OpenAI 兼容格式的 API 基础地址（Base URL）和您的专属 Key（如 DeepSeek-V3、GPT-4o、Claude 3.5 Sonnet、Qwen 或本地部署的 Ollama），完全由您自主掌控。
-          </div>
-        </div>
+        <article class="faq-card">
+          <button class="faq-q" type="button" aria-expanded="false" aria-controls="faq-data" onclick="toggleFaqCard(this)"><span>目前支持哪些数据源？</span><span class="faq-toggle" aria-hidden="true">+</span></button>
+          <div class="faq-a" id="faq-data">当前核心数据源为 MySQL 与 Redis。页面不承诺未经验证的兼容数据库版本或全部 Redis 管理能力。</div>
+        </article>
+        <article class="faq-card">
+          <button class="faq-q" type="button" aria-expanded="false" aria-controls="faq-model" onclick="toggleFaqCard(this)"><span>可以接入哪些模型？</span><span class="faq-toggle" aria-hidden="true">+</span></button>
+          <div class="faq-a" id="faq-model">支持 OpenAI 兼容接口、Ollama 与自定义模型端点；同时提供 Anthropic 协议支持。具体模型可用性取决于端点配置与服务商实现。</div>
+        </article>
+        <article class="faq-card">
+          <button class="faq-q" type="button" aria-expanded="false" aria-controls="faq-context" onclick="toggleFaqCard(this)"><span>哪些数据可能会发往模型？</span><span class="faq-toggle" aria-hidden="true">+</span></button>
+          <div class="faq-a" id="faq-context">使用云模型时，为完成请求，端点可能收到用户问题、SQL、Schema、查询结果、知识库片段、文本附件等必要上下文。AI 查询结果默认按规则脱敏；第三方如何处理或留存数据，由对应服务商策略决定。使用本地 Ollama 或自托管端点可进一步控制数据路径。</div>
+        </article>
+        <article class="faq-card">
+          <button class="faq-q" type="button" aria-expanded="false" aria-controls="faq-write" onclick="toggleFaqCard(this)"><span>写操作有哪些护栏？</span><span class="faq-toggle" aria-hidden="true">+</span></button>
+          <div class="faq-a" id="faq-write">手动执行不带 WHERE 或 LIMIT 的 UPDATE / DELETE 时需要确认；AI 发起的写操作同样需要确认，破坏性 DDL 默认拒绝。审计记录用于帮助回看操作，但不能替代数据库自身的权限、备份和审批制度。</div>
+        </article>
+        <article class="faq-card">
+          <button class="faq-q" type="button" aria-expanded="false" aria-controls="faq-export" onclick="toggleFaqCard(this)"><span>结果导出覆盖什么范围？</span><span class="faq-toggle" aria-hidden="true">+</span></button>
+          <div class="faq-a" id="faq-export">可将当前已经加载到工作台的查询结果导出为 CSV、XLSX 或 JSON。它不是整库导出、迁移或备份能力。</div>
+        </article>
+        <article class="faq-card">
+          <button class="faq-q" type="button" aria-expanded="false" aria-controls="faq-entry" onclick="toggleFaqCard(this)"><span>GUI、TUI 与 MCP 是什么关系？</span><span class="faq-toggle" aria-hidden="true">+</span></button>
+          <div class="faq-a" id="faq-entry">三种入口共享 Rust 核心，但面向不同工作流：GUI 适合可视化操作，TUI 适合终端与 SSH，MCP Server 用于让支持 MCP 的 AI 客户端调用受控数据库工具。</div>
+        </article>
       </div>
     </div>
   </section>
 
-  <!-- 8. 底部召唤卡与页脚 -->
+  <!-- 8. 底部引导与页脚 -->
   <section class="container">
     <div class="cta-banner">
-      <h3>让数据库探查回归轻盈与敏捷</h3>
-      <p style="color:#CBD5E1; font-size:1.05rem; margin-bottom:28px;">立即下载 ChatQuery 客户端，告别传统重型工具的假死与风扇狂转。</p>
-      <a href="#download" class="btn-hero-download" style="max-width:300px; margin:0 auto;">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-        免费下载 ChatQuery
-      </a>
+      <h3>先了解能力边界，再选择适合的入口</h3>
+      <p style="color:#CBD5E1; font-size:1.05rem; margin-bottom:28px;">查看工作台交互与发行状态，按实际研发场景评估 ChatQuery。</p>
+      <div class="hero-actions" style="margin-bottom:0;">
+        <a href="#workbench" class="btn-hero-primary">查看工作台</a>
+        <a href="#release" class="btn-hero-secondary">查看发行状态</a>
+      </div>
     </div>
   </section>
 
-  <!-- 页脚 -->
   <footer class="footer">
     <div class="container footer-content">
       <div style="display:flex; align-items:center; gap:12px;">
         <img src="assets/logo.svg" alt="ChatQuery" style="width:26px; height:26px; border-radius:6px;" />
-        <span>© 2026 ChatQuery 智询 · 下一代 AI 原生数据库客户端</span>
+        <span>© 2026 ChatQuery 智询 · 本地优先的 AI 数据库工作台</span>
       </div>
-
-      <div style="display:flex; gap:20px;">
-        <a href="#workbench">工作台实景</a>
-        <a href="#features">功能架构</a>
-        <a href="#download">下载中心</a>
-        <a href="https://github.com" target="_blank">GitHub 仓库</a>
-      </div>
+      <nav class="footer-links" aria-label="页脚导航" style="display:flex; gap:20px; flex-wrap:wrap;">
+        <a href="#features">产品能力</a><a href="#boundaries">安全说明</a><a href="#release">发行状态</a><a href="#faq">FAQ</a>
+      </nav>
     </div>
   </footer>
 
-  <!-- 9. 下载触发交互弹窗 (Modal) -->
-  <div class="modal-overlay" id="downloadModal" onclick="handleOverlayClick(event)">
-    <div class="modal-box">
-      <span class="modal-close" onclick="closeDownloadModal()">&times;</span>
-      <div style="width:60px; height:60px; border-radius:14px; background:var(--brand-soft); color:var(--brand-hover); display:flex; align-items:center; justify-content:center; font-size:1.8rem; margin:0 auto 16px;">
-        ⬇️
-      </div>
-      <h3 style="font-size:1.35rem; font-weight:700; margin-bottom:8px;" id="modalTitle">开始下载 ChatQuery</h3>
-      <p style="font-size:0.9rem; color:var(--text-secondary); margin-bottom:20px;" id="modalSub">
-        正在为你准备安装包：<b id="modalFileText" style="color:var(--brand-hover);">ChatQuery-v0.1.0.dmg</b>
-      </p>
-
-      <div style="background:var(--bg-inset); border:1px solid var(--border); border-radius:6px; padding:10px 14px; font-family:var(--font-mono); font-size:0.75rem; color:var(--text-tertiary); text-align:left; word-break:break-all; margin-bottom:24px;">
-        <div style="color:var(--text-secondary); font-weight:600; margin-bottom:4px;">SHA-256 完整性校验和：</div>
-        <div>9b28fa5261df0924cbb38e21a418de0291e0a9d8213b185497210986518a213e</div>
-      </div>
-
-      <div style="display:flex; gap:12px; justify-content:center;">
-        <button class="btn-hero-download" style="padding:10px 22px; font-size:0.9rem;" onclick="simulateDownloadSuccess()">
-          确认下载安装包
-        </button>
-        <button class="btn-download-file" style="padding:10px 18px;" onclick="closeDownloadModal()">
-          关闭
-        </button>
-      </div>
-    </div>
-  </div>
-
   <!-- JavaScript 交互 -->
   <script>
-    // 1. 系统智能检测
-    let userOS = "macOS";
-    let defaultFile = "ChatQuery-v0.1.0-aarch64.dmg";
-
-    function autoDetectOS() {
-      const ua = navigator.userAgent.toLowerCase();
-      const plat = navigator.platform ? navigator.platform.toLowerCase() : "";
-
-      const smartTitle = document.getElementById("smartDownloadTitle");
-      const macRec = document.getElementById("macRecTag");
-      const winRec = document.getElementById("winRecTag");
-      const linuxRec = document.getElementById("linuxRecTag");
-      const macCard = document.getElementById("macDlCard");
-      const winCard = document.getElementById("winDlCard");
-      const linuxCard = document.getElementById("linuxDlCard");
-
-      if (ua.indexOf("win") !== -1 || plat.indexOf("win") !== -1) {
-        userOS = "Windows";
-        defaultFile = "ChatQuery-v0.1.0-x64-setup.exe";
-        smartTitle.innerText = "下载 Windows 版 (64-bit)";
-        
-        macRec.style.display = "none";
-        macCard.classList.remove("recommended");
-        winRec.style.display = "block";
-        winCard.classList.add("recommended");
-      } else if (ua.indexOf("linux") !== -1 || plat.indexOf("linux") !== -1) {
-        userOS = "Linux";
-        defaultFile = "ChatQuery-v0.1.0.AppImage";
-        smartTitle.innerText = "下载 Linux 版 (AppImage)";
-
-        macRec.style.display = "none";
-        macCard.classList.remove("recommended");
-        linuxRec.style.display = "block";
-        linuxCard.classList.add("recommended");
-      } else {
-        userOS = "macOS";
-        defaultFile = "ChatQuery-v0.1.0-aarch64.dmg";
-        smartTitle.innerText = "下载 macOS 版 (Apple Silicon / Intel)";
-        macRec.style.display = "block";
-        macCard.classList.add("recommended");
-      }
-    }
-
-    function triggerSmartDownload() {
-      openDownloadModal(userOS, defaultFile);
-    }
-
-    // 2. 弹窗控制
-    function openDownloadModal(platformName, fileName) {
-      document.getElementById("modalTitle").innerText = `下载 ChatQuery · ${platformName}`;
-      document.getElementById("modalFileText").innerText = fileName;
-      document.getElementById("downloadModal").classList.add("active");
-    }
-
-    function closeDownloadModal() {
-      document.getElementById("downloadModal").classList.remove("active");
-    }
-
-    function handleOverlayClick(e) {
-      if (e.target.id === "downloadModal") {
-        closeDownloadModal();
-      }
-    }
-
-    function simulateDownloadSuccess() {
-      alert("✅ 已为您拉起安装包下载！\n（在生产发布部署中，该链接将直接请求 GitHub Releases 或 CDN 镜像资源）");
-      closeDownloadModal();
-    }
-
-    // 3. 复制代码
-    function copyCliText(id, btn) {
-      const text = document.getElementById(id).innerText.trim();
-      navigator.clipboard.writeText(text).then(() => {
-        const orig = btn.innerHTML;
-        btn.classList.add("copied");
-        btn.innerHTML = "<span>✓ 已复制</span>";
-        setTimeout(() => {
-          btn.classList.remove("copied");
-          btn.innerHTML = orig;
-        }, 2000);
-      });
-    }
-
-    // 4. 工作台三模切换 (MySQL / Redis / TUI)
     function switchWorkbenchView(view, btn) {
       document.querySelectorAll(".win-switch-tab").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
@@ -2549,67 +2117,49 @@
       const mysqlArea = document.getElementById("mysqlWorkArea");
       const redisArea = document.getElementById("redisWorkArea");
       const tuiArea = document.getElementById("tuiWorkArea");
-
       const treeMysql = document.getElementById("treeConnMysql");
       const treeRedis = document.getElementById("treeConnRedis");
       const tabMysql = document.getElementById("tabLabelMysql");
       const tabRedis = document.getElementById("tabLabelRedis");
 
-      if (view === "mysql") {
-        mysqlArea.style.display = "flex";
-        redisArea.style.display = "none";
-        tuiArea.style.display = "none";
-        treeMysql.classList.add("active");
-        treeRedis.classList.remove("active");
-        tabMysql.classList.add("active");
-        tabRedis.classList.remove("active");
-      } else if (view === "redis") {
-        mysqlArea.style.display = "none";
-        redisArea.style.display = "grid";
-        tuiArea.style.display = "none";
-        treeMysql.classList.remove("active");
-        treeRedis.classList.add("active");
-        tabMysql.classList.remove("active");
-        tabRedis.classList.add("active");
-      } else if (view === "tui") {
-        mysqlArea.style.display = "none";
-        redisArea.style.display = "none";
-        tuiArea.style.display = "block";
-      }
+      mysqlArea.style.display = view === "mysql" ? "flex" : "none";
+      redisArea.style.display = view === "redis" ? "grid" : "none";
+      tuiArea.style.display = view === "tui" ? "block" : "none";
+      treeMysql.classList.toggle("active", view === "mysql");
+      treeRedis.classList.toggle("active", view === "redis");
+      tabMysql.classList.toggle("active", view === "mysql");
+      tabRedis.classList.toggle("active", view === "redis");
     }
 
-    // 5. 交互：导入到 Monaco 编辑器
-    function handleImportToMonaco() {
-      const editor = document.getElementById("monacoEditorMock");
-      editor.style.transition = "background 0.3s";
+    function handleImportToEditor() {
+      const editor = document.getElementById("sqlEditorMock");
       editor.style.background = "rgba(99, 102, 241, 0.25)";
       setTimeout(() => {
         editor.style.background = "var(--bg-inset)";
-        alert("✨ 已将 AI 生成的优化 SQL 成功导入主查询编辑器！按 ⌘+Enter 即可执行。");
+        alert("已将 AI 生成的 SQL 导入主查询编辑器，请检查后再执行。");
       }, 300);
     }
 
     function handleRunSqlClick() {
-      alert("▶ 查询执行完毕：耗时 12ms，受影响行数 5 行，已应用 C3 宪法级防全表扫描校验。");
+      alert("示例查询执行完毕：当前加载 5 行结果，可继续查看执行计划或导出当前结果。");
     }
 
-    // 6. FAQ 展开
-    function toggleFaqCard(card) {
-      const isOpen = card.classList.contains("open");
-      document.querySelectorAll(".faq-card").forEach(c => c.classList.remove("open"));
-      if (!isOpen) {
+    function toggleFaqCard(button) {
+      const card = button.closest(".faq-card");
+      const willOpen = !card.classList.contains("open");
+      document.querySelectorAll(".faq-card").forEach(item => {
+        item.classList.remove("open");
+        item.querySelector(".faq-q").setAttribute("aria-expanded", "false");
+      });
+      if (willOpen) {
         card.classList.add("open");
+        button.setAttribute("aria-expanded", "true");
       }
     }
 
-    // 7. 主题切换
     document.getElementById("themeToggleBtn").addEventListener("click", () => {
-      const curr = document.documentElement.getAttribute("data-theme");
-      document.documentElement.setAttribute("data-theme", curr === "light" ? "dark" : "light");
-    });
-
-    window.addEventListener("DOMContentLoaded", () => {
-      autoDetectOS();
+      const current = document.documentElement.getAttribute("data-theme");
+      document.documentElement.setAttribute("data-theme", current === "light" ? "dark" : "light");
     });
   </script>
 </body>
