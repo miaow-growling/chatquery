@@ -1,9 +1,11 @@
 # Azure DevOps Pipeline for Tauri Windows App
+# 默认关闭分支推送自动触发（避免随意提交浪费构建时长），仅支持：
+# 1. 在 Azure 网页上手动点击「Run pipeline」触发
+# 2. 推送版本标签（如 git push azure v0.1.0）时触发
 trigger:
   branches:
-    include:
-      - main
-      - feat/*
+    exclude:
+      - '*'
   tags:
     include:
       - 'v*'
@@ -35,20 +37,20 @@ steps:
 
   # 4. 安装前端依赖
   - powershell: |
-      Set-Location -Path "frontend"
+      Set-Location -Path "$(System.DefaultWorkingDirectory)\frontend"
       npm install --registry=https://registry.npmjs.org
     displayName: '安装前端依赖 (npm install)'
 
   # 5. 构建前端
   - powershell: |
-      Set-Location -Path "frontend"
+      Set-Location -Path "$(System.DefaultWorkingDirectory)\frontend"
       npm run build
     displayName: '构建前端静态资源 (Vite)'
 
-  # 6. 打包 Tauri Windows 应用 (EXE & MSI)
+  # 6. 打包 Tauri Windows 应用 (在根目录执行，以便识别 src-tauri/tauri.conf.json)
   - powershell: |
-      Set-Location -Path "frontend"
-      npx tauri build
+      Set-Location -Path "$(System.DefaultWorkingDirectory)"
+      npx --prefix frontend tauri build
     displayName: '打包 Tauri Windows 应用'
 
   # 7. 发布构建产物供网页下载
