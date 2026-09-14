@@ -1025,6 +1025,12 @@ impl Storage {
         }
         Ok(out)
     }
+
+    /// 释放 SQLite 引擎未使用的内部内存缓存（PRAGMA shrink_memory）。
+    pub fn shrink_memory(&self) -> Result<()> {
+        let _ = self.conn.execute_batch("PRAGMA shrink_memory;");
+        Ok(())
+    }
 }
 
 fn parse_assistant_db_bindings(raw: &str) -> Vec<AssistantDbBinding> {

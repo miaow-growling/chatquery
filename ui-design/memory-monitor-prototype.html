@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>智询 ChatQuery · 内存监控与清理缓存设计原型 (4大方案对比)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #090B10;
+      --bg-surface: #11141E;
+      --bg-elevated: #181D2C;
+      --bg-elevated-hover: #22293E;
+      --bg-input: #0E121B;
+      --bg-hover: rgba(255, 255, 255, 0.04);
+      --bg-active: rgba(99, 102, 241, 0.12);
+
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-default: #232A3D;
+      --border-strong: #333C57;
+      --border-focus: #6366F1;
+
+      --text-primary: #F8FAFC;
+      --text-secondary: #94A3B8;
+      --text-tertiary: #64748B;
+      --text-disabled: #475569;
+
+      --brand-indigo: #6366F1;
+      --brand-purple: #8B5CF6;
+      --brand-glow: 0 0 16px rgba(99, 102, 241, 0.28);
+
+      --run-green: #10B981;
+      --warn-amber: #F59E0B;
+      --danger-red: #EF4444;
+
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+      --font-mono: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* 顶部原型控制条 */
+    .prototype-controller {
+      background: #0C0F17;
+      border-bottom: 1px solid var(--border-default);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      z-index: 100;
+      flex-shrink: 0;
+    }
+
+    .proto-title-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .proto-badge {
+      background: linear-gradient(135deg, var(--brand-indigo), var(--brand-purple));
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      letter-spacing: 0.5px;
+    }
+    .proto-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .pos-tabs {
+      display: flex;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-radius: 8px;
+      padding: 3px;
+      gap: 2px;
+    }
+    .pos-tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+    .pos-tab-btn:hover {
+      color: var(--text-primary);
+      background: var(--bg-hover);
+    }
+    .pos-tab-btn.active {
+      background: var(--brand-indigo);
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+    }
+
+    /* 原型模拟视口 */
+    .app-viewport {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      position: relative;
+      background: var(--bg-base);
+    }
+
+    /* 左侧边栏 */
+    .sidebar {
+      width: 250px;
+      background: #0B0E15;
+      border-right: 1px solid var(--border-default);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .sidebar-head {
+      height: 38px;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+    .head-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .icon-btn {
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-tertiary);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .icon-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .tree-toolbar {
+      display: flex;
+      align-items: center;
+      padding: 6px 10px;
+      gap: 6px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(255,255,255,0.01);
+    }
+    .tb-btn {
+      font-size: 11px;
+      color: var(--text-secondary);
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border-subtle);
+      padding: 3px 7px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .tb-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .tree-search-bar {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .tree-search-input {
+      width: 100%;
+      height: 26px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-radius: 4px;
+      padding: 0 8px;
+      font-size: 11px;
+      color: var(--text-primary);
+      outline: none;
+    }
+
+    .tree-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px 4px;
+      font-size: 12px;
+    }
+    .tree-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+    .tree-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .tree-item.active { background: var(--bg-active); color: var(--brand-indigo); font-weight: 500; }
+
+    /* 主内容区 */
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg-surface);
+    }
+
+    /* 顶部 Tab 栏 */
+    .tab-bar {
+      height: 38px;
+      background: #0C0F17;
+      border-bottom: 1px solid var(--border-default);
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      gap: 4px;
+    }
+    .tab-item {
+      height: 28px;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      border-radius: 5px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      border: 1px solid transparent;
+      user-select: none;
+    }
+    .tab-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .tab-item.active {
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      font-weight: 500;
+      border-color: var(--border-default);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+    }
+    .tab-close {
+      opacity: 0.6;
+      font-size: 12px;
+      margin-left: 2px;
+      border-radius: 3px;
+      padding: 1px 3px;
+    }
+    .tab-close:hover { opacity: 1; background: rgba(255,255,255,0.1); }
+    .tab-add {
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    .tab-add:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    .tab-spacer { flex: 1; }
+
+    /* 数据子栏 (数据/结构/关系/执行计划) */
+    .sub-tabs-bar {
+      height: 36px;
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--bg-surface);
+      font-size: 12px;
+    }
+    .sub-tabs-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .sub-tab-item {
+      color: var(--text-tertiary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 0;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s;
+    }
+    .sub-tab-item:hover { color: var(--text-primary); }
+    .sub-tab-item.active {
+      color: var(--brand-indigo);
+      font-weight: 600;
+      border-bottom-color: var(--brand-indigo);
+    }
+    .sub-tabs-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .sub-search-box {
+      height: 24px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-radius: 4px;
+      padding: 0 8px;
+      font-size: 11px;
+      color: var(--text-primary);
+      width: 140px;
+    }
+
+    /* 数据表格区域 */
+    .data-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .where-bar {
+      height: 32px;
+      background: #0E121C;
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 11px;
+    }
+    .run-info-strip {
+      height: 26px;
+      background: rgba(16, 185, 129, 0.06);
+      border-bottom: 1px solid rgba(16, 185, 129, 0.15);
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      font-size: 11px;
+      color: var(--run-green);
+      font-family: var(--font-mono);
+    }
+
+    .mock-grid {
+      flex: 1;
+      overflow: auto;
+      padding: 0;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .grid-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+    }
+    .grid-table th {
+      background: var(--bg-input);
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--border-default);
+      font-weight: 600;
+      position: sticky;
+      top: 0;
+    }
+    .grid-table td {
+      padding: 7px 12px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-primary);
+    }
+    .grid-table tr:hover { background: var(--bg-hover); }
+
+    /* 底部全局状态栏 */
+    .global-status-bar {
+      height: 26px;
+      background: #0A0D14;
+      border-top: 1px solid var(--border-default);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      font-size: 11px;
+      color: var(--text-tertiary);
+    }
+    .status-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .status-dot-ok {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--run-green);
+      display: inline-block;
+    }
+
+    /* ==========================================================================
+       核心组件：内存监控与清理缓存 (Memory Monitor & Clear Cache Capsule)
+       ========================================================================== */
+
+    /* 核心灵动胶囊组件样式 */
+    .memory-widget {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-default);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+      user-select: none;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .memory-widget:hover {
+      background: rgba(255, 255, 255, 0.07);
+      border-color: var(--border-strong);
+    }
+
+    .mem-gauge {
+      width: 14px;
+      height: 14px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .mem-gauge svg {
+      width: 100%;
+      height: 100%;
+      transform: rotate(-90deg);
+    }
+    .mem-gauge circle {
+      fill: none;
+      stroke-width: 2.2;
+      stroke-linecap: round;
+    }
+    .mem-gauge .bg-circle { stroke: rgba(255, 255, 255, 0.12); }
+    .mem-gauge .val-circle {
+      stroke: var(--brand-indigo);
+      stroke-dasharray: 38;
+      stroke-dashoffset: 22; /* 动态绑定 */
+      transition: stroke-dashoffset 0.6s ease, stroke 0.3s;
+    }
+
+    .mem-text {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .mem-val {
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    .mem-sep {
+      width: 1px;
+      height: 10px;
+      background: var(--border-strong);
+      margin: 0 2px;
+    }
+
+    .mem-clean-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 10.5px;
+      font-family: var(--font-sans);
+      transition: all 0.15s ease;
+    }
+    .mem-clean-btn:hover {
+      background: rgba(99, 102, 241, 0.2);
+      color: #A5B4FC;
+    }
+    .mem-clean-btn:active {
+      transform: scale(0.94);
+    }
+
+    /* 方案特殊样式适配 */
+    /* 方案 A: 顶部 Tab 栏右侧 */
+    .pos-a-container {
+      margin-right: 8px;
+    }
+
+    /* 方案 B: 侧边栏底部固定面板 */
+    .sidebar-footer {
+      padding: 8px 10px;
+      border-top: 1px solid var(--border-default);
+      background: #090B10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .sidebar-footer .memory-widget {
+      width: 100%;
+      justify-content: space-between;
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+
+    /* 方案 C: 全局状态栏右侧 */
+    .pos-c-container {
+      display: flex;
+      align-items: center;
+    }
+    .pos-c-container .memory-widget {
+      background: transparent;
+      border: none;
+      box-shadow: none;
+      padding: 0 4px;
+      gap: 8px;
+    }
+
+    /* 方案 D: 侧边栏工具栏右侧 */
+    .pos-d-container {
+      margin-left: auto;
+    }
+
+    /* 飘起的释放内存 Toast 动效 */
+    .toast-bubble {
+      position: absolute;
+      bottom: 40px;
+      right: 24px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--brand-indigo);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 20px rgba(99, 102, 241, 0.25);
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      pointer-events: none;
+      z-index: 1000;
+    }
+    .toast-bubble.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* 方案对比浮层面板 */
+    .plan-detail-card {
+      background: #131722;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      padding: 12px 18px;
+      margin: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    }
+    .plan-desc-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 2px;
+    }
+    .plan-desc-sub {
+      font-size: 11.5px;
+      color: var(--text-secondary);
+    }
+    .plan-pros-cons {
+      display: flex;
+      gap: 20px;
+      font-size: 11px;
+    }
+    .pro-tag { color: var(--run-green); }
+    .con-tag { color: var(--warn-amber); }
+  </style>
+</head>
+<body>
+
+  <!-- 顶部交互控制器：让用户随时切换 4 种摆放位置 -->
+  <div class="prototype-controller">
+    <div class="proto-title-group">
+      <span class="proto-badge">交互原型</span>
+      <span class="proto-title">内存监控与清理缓存 · 4 大摆放位置实时预览</span>
+    </div>
+
+    <div class="pos-tabs">
+      <button class="pos-tab-btn active" onclick="switchPosition('A')">
+        <span>👑 方案 A: 顶部 Tab 栏右侧 (推荐)</span>
+      </button>
+      <button class="pos-tab-btn" onclick="switchPosition('B')">
+        <span>方案 B: 侧边栏底部固定条</span>
+      </button>
+      <button class="pos-tab-btn" onclick="switchPosition('C')">
+        <span>方案 C: 全局状态栏右下角 (IDE经典)</span>
+      </button>
+      <button class="pos-tab-btn" onclick="switchPosition('D')">
+        <span>方案 D: 导出/导入工具栏右侧</span>
+      </button>
+    </div>
+
+    <div style="font-size: 11.5px; color: var(--text-tertiary);">
+      💡 提示：点击控件中的 <b style="color: #A5B4FC;">[🧹 清理缓存]</b> 可体验真实模拟降内存动效
+    </div>
+  </div>
+
+  <!-- 方案特性与优缺点解读卡片 -->
+  <div class="plan-detail-card" id="planDetailCard">
+    <div>
+      <div class="plan-desc-title" id="planTitle">方案 A：顶部主标签栏最右侧 (Top Tab-Bar Right)</div>
+      <div class="plan-desc-sub" id="planDesc">常驻在 `[查询1 ✕] [kt_chat_message ✕] [+]` 标签栏最右端的大片空白区域，视野开阔且不侵占数据视图。</div>
+    </div>
+    <div class="plan-pros-cons">
+      <div class="pro-tag" id="planPros">✓ 优点：任何页面/Tab 均常驻可见，空间极充裕，手势最顺畅</div>
+      <div class="con-tag" id="planCons">✓ 适合：高频排查内存泄露、实时关注系统健康</div>
+    </div>
+  </div>
+
+  <!-- 模拟真实 App 视口 -->
+  <div class="app-viewport">
+    
+    <!-- 左侧边栏 -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <span>连接</span>
+        <div class="head-actions">
+          <button class="icon-btn" title="设置">⚙</button>
+          <button class="icon-btn" title="主题">🌙</button>
+          <button class="icon-btn" title="新建">＋</button>
+        </div>
+      </div>
+
+      <!-- 侧边栏小工具栏 -->
+      <div class="tree-toolbar">
+        <button class="tb-btn">⬇ 导出 ▾</button>
+        <button class="tb-btn">⬆ 导入</button>
+        <button class="tb-btn">📄 模板</button>
+        <!-- 方案 D 插槽 -->
+        <div class="pos-d-container" id="slotD" style="display: none;"></div>
+      </div>
+
+      <div class="tree-search-bar">
+        <input class="tree-search-input" placeholder="搜索已加载的环境、实例、库、表..." />
+      </div>
+
+      <div class="tree-list">
+        <div class="tree-item">📁 开发环境 (MySQL 8.0)</div>
+        <div class="tree-item" style="padding-left: 20px;">🗄️ ares_extension</div>
+        <div class="tree-item" style="padding-left: 20px;">🗄️ auto_operation</div>
+        <div class="tree-item" style="padding-left: 20px;">🗄️ cc_app</div>
+        <div class="tree-item active" style="padding-left: 20px;">🗄️ data_sync</div>
+        <div class="tree-item" style="padding-left: 36px;">▦ kt_chat_message (8035行)</div>
+        <div class="tree-item" style="padding-left: 36px;">▦ kt_session_log</div>
+        <div class="tree-item" style="padding-left: 20px;">🗄️ datasync_config</div>
+        <div class="tree-item">📁 生产环境只读副本</div>
+      </div>
+
+      <!-- 方案 B 插槽：侧边栏底部固定条 -->
+      <div class="sidebar-footer" id="slotB" style="display: none;"></div>
+    </aside>
+
+    <!-- 主工作区 -->
+    <main class="main-content">
+      <!-- 顶部标签栏 -->
+      <div class="tab-bar">
+        <div class="tab-item">
+          <span>查询 1</span>
+          <span class="tab-close">×</span>
+        </div>
+        <div class="tab-item active">
+          <span>▦ kt_chat_message</span>
+          <span class="tab-close">×</span>
+        </div>
+        <div class="tab-add" title="新建查询">＋</div>
+
+        <div class="tab-spacer"></div>
+
+        <!-- 方案 A 插槽：顶部标签栏右侧 (默认激活) -->
+        <div class="pos-a-container" id="slotA"></div>
+      </div>
+
+      <!-- 子标签栏 (数据/结构/关系/执行计划) -->
+      <div class="sub-tabs-bar">
+        <div class="sub-tabs-left">
+          <div class="sub-tab-item active">数据 [table rows=200]</div>
+          <div class="sub-tab-item">表结构</div>
+          <div class="sub-tab-item">表关系</div>
+          <div class="sub-tab-item">执行计划</div>
+        </div>
+        <div class="sub-tabs-right">
+          <input class="sub-search-box" placeholder="搜索当前页…" />
+        </div>
+      </div>
+
+      <!-- 数据面板内容 -->
+      <div class="data-panel">
+        <div class="where-bar">
+          <span style="color: var(--brand-indigo); font-weight: 600;">WHERE</span>
+          <span style="color: var(--text-tertiary);">+ 添加过滤条件</span>
+        </div>
+
+        <div class="run-info-strip">
+          ✓ 275ms · 第 1 页 / 共 8035 行 (已缓存 200 条记录)
+        </div>
+
+        <div class="mock-grid">
+          <table class="grid-table">
+            <thead>
+              <tr>
+                <th style="width: 40px;">#</th>
+                <th>id</th>
+                <th>user_id</th>
+                <th>app_code</th>
+                <th>message</th>
+                <th>created_at</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>1</td>
+                <td>008ad3c8-8fe7-46d1-8396-e77d3784dc8f</td>
+                <td>39f50531-b1c0-5d72-ce56-9b40440b4187</td>
+                <td>kefu</td>
+                <td>帮我查一下昨天成交量最大的项目明细...</td>
+                <td>2026-09-14 11:20:04</td>
+              </tr>
+              <tr>
+                <td>2</td>
+                <td>01414ca5-9c69-4b69-9e28-9e77a168a0a0</td>
+                <td>39f50531-b1c0-5d72-ce56-9b40440b4187</td>
+                <td>kefu</td>
+                <td>SELECT * FROM customer_leads WHERE status = 'signed'...</td>
+                <td>2026-09-14 11:21:18</td>
+              </tr>
+              <tr>
+                <td>3</td>
+                <td>01a29c24-a7a3-415e-9472-738a001c3e61</td>
+                <td>39f50531-b1c0-5d72-ce56-9b40440b4187</td>
+                <td>kefu</td>
+                <td>请生成对应的可视化漏斗图表</td>
+                <td>2026-09-14 11:22:45</td>
+              </tr>
+              <tr>
+                <td>4</td>
+                <td>0278e3f2-bdc9-4cb5-b93a-f4818274acde</td>
+                <td>39f50531-b1c0-5d72-ce56-9b40440b4187</td>
+                <td>kefu</td>
+                <td>导出当前数据为 Excel 格式</td>
+                <td>2026-09-14 11:23:02</td>
+              </tr>
+              <tr>
+                <td>5</td>
+                <td>02fed34b-5cc2-4de2-8b13-d97648165c9a</td>
+                <td>39f50531-b1c0-5d72-ce56-9b40440b4187</td>
+                <td>kefu</td>
+                <td>正在为您同步 CRM 客户标签</td>
+                <td>2026-09-14 11:24:50</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 全局状态栏 -->
+      <div class="global-status-bar">
+        <div class="status-left">
+          <span><span class="status-dot-ok"></span> 就绪</span>
+          <span>● 开发环境 (MySQL)</span>
+          <span>▦ data_sync</span>
+          <span>UTF-8</span>
+        </div>
+        <div class="status-right">
+          <!-- 方案 C 插槽：状态栏右下角 -->
+          <div class="pos-c-container" id="slotC" style="display: none;"></div>
+        </div>
+      </div>
+    </main>
+
+  </div>
+
+  <!-- 清理成功气泡动效 -->
+  <div class="toast-bubble" id="toastBubble">
+    <span style="font-size: 15px;">🧹</span>
+    <div>
+      <div style="color: #fff; font-weight: 600;" id="toastTitle">已释放 64.2 MB 缓存</div>
+      <div style="color: var(--text-secondary); font-size: 11px;">清空 WebView 临时渲染数据与连接池空闲资源</div>
+    </div>
+  </div>
+
+  <script>
+    // 状态管理
+    let currentMem = 186.4; // MB
+    let currentPercent = 48; // %
+    let currentPlan = 'A';
+
+    // 方案描述数据
+    const planMeta = {
+      'A': {
+        title: '方案 A：顶部主标签栏最右侧 (Top Tab-Bar Right) — 推荐',
+        desc: '常驻在 `[查询1 ✕] [kt_chat_message ✕] [+]` 标签栏最右端的大片空白区域，视野开阔且不侵占数据视图。',
+        pros: '✓ 优点：任何页面/Tab 均常驻可见，空间极充裕，手势最顺畅',
+        cons: '✓ 适合：高频排查内存泄露、实时关注系统健康'
+      },
+      'B': {
+        title: '方案 B：左侧边栏底部固定条 (Sidebar Bottom Footer)',
+        desc: '固定在左侧连接树最下方（对齐 VS Code 侧栏管理规范），与树状列表自然分离。',
+        pros: '✓ 优点：结构清晰整齐，把应用资源信息规整在系统配置同侧',
+        cons: '⚠️ 注意：侧边栏如果被折叠/收起时会暂时看不到'
+      },
+      'C': {
+        title: '方案 C：全局状态栏右下角 (Global Status-Bar Right) — 经典 IDE',
+        desc: '对齐 DataGrip / IntelliJ IDEA / VS Code 底栏规范，极简微显，不打扰主力视觉。',
+        pros: '✓ 优点：极简低调，最符合数据库管理工具惯例，专业感强',
+        cons: '⚠️ 注意：底栏高度仅 26px，视觉较小需要留意'
+      },
+      'D': {
+        title: '方案 D：导出/导入工具栏右侧 (Tree-Toolbar Right)',
+        desc: '直接嵌入在 `[导出 ▾] [导入] [模板]` 同一行的最右侧。',
+        pros: '✓ 优点：与操作按钮紧邻，触手可及',
+        cons: '⚠️ 注意：侧边栏宽度通常只有 240~260px，空间较紧凑'
+      }
+    };
+
+    // 动态生成组件 HTML
+    function getMemoryWidgetHtml() {
+      // 计算环形进度条 stroke-dashoffset (总周长约 38)
+      const offset = 38 - (38 * (currentPercent / 100));
+      return `
+        <div class="memory-widget" title="当前内存占用: ${currentMem.toFixed(1)} MB (${currentPercent}%)\n点击「清理缓存」可立即释放 WebView 渲染临时缓存与数据库连接池">
+          <div class="mem-gauge">
+            <svg viewBox="0 0 16 16">
+              <circle class="bg-circle" cx="8" cy="8" r="6"></circle>
+              <circle class="val-circle" id="memCircle" cx="8" cy="8" r="6" style="stroke-dashoffset: ${offset}; stroke: ${currentPercent > 70 ? 'var(--danger-red)' : currentPercent > 50 ? 'var(--warn-amber)' : 'var(--brand-indigo)'};"></circle>
+            </svg>
+          </div>
+          <div class="mem-text">
+            <span>内存</span>
+            <span class="mem-val" id="memValText">${currentMem.toFixed(0)} MB</span>
+          </div>
+          <span class="mem-sep"></span>
+          <button class="mem-clean-btn" onclick="handleCleanMemory(event)">
+            <span>🧹</span>
+            <span>清理缓存</span>
+          </button>
+        </div>
+      `;
+    }
+
+    // 切换摆放位置
+    function switchPosition(plan) {
+      currentPlan = plan;
+      
+      // 更新控制条 Tab 激活态
+      document.querySelectorAll('.pos-tab-btn').forEach((btn, idx) => {
+        const letters = ['A', 'B', 'C', 'D'];
+        btn.classList.toggle('active', letters[idx] === plan);
+      });
+
+      // 清除所有插槽内容并隐藏
+      ['A', 'B', 'C', 'D'].forEach(p => {
+        const el = document.getElementById('slot' + p);
+        el.innerHTML = '';
+        el.style.display = 'none';
+      });
+
+      // 填充目标插槽
+      const target = document.getElementById('slot' + plan);
+      target.innerHTML = getMemoryWidgetHtml();
+      target.style.display = (plan === 'B' || plan === 'C') ? 'flex' : 'block';
+
+      // 更新方案解读文字
+      const meta = planMeta[plan];
+      document.getElementById('planTitle').textContent = meta.title;
+      document.getElementById('planDesc').textContent = meta.desc;
+      document.getElementById('planPros').textContent = meta.pros;
+      document.getElementById('planCons').textContent = meta.cons;
+    }
+
+    // 点击清理缓存动效模拟
+    function handleCleanMemory(e) {
+      e.stopPropagation();
+      const oldMem = currentMem;
+      // 模拟降内存到 82~95 MB 左右
+      const released = (oldMem * 0.42).toFixed(1);
+      currentMem = Math.max(68, oldMem - released);
+      currentPercent = Math.round((currentMem / 400) * 100);
+
+      // 局部刷新组件
+      const target = document.getElementById('slot' + currentPlan);
+      target.innerHTML = getMemoryWidgetHtml();
+
+      // 弹出 Toast
+      const toast = document.getElementById('toastBubble');
+      document.getElementById('toastTitle').textContent = `已释放 ${released} MB 内存与磁盘缓存`;
+      toast.classList.add('show');
+      setTimeout(() => {
+        toast.classList.remove('show');
+      }, 2600);
+    }
+
+    // 初始化激活方案 (支持从 URL 参数指定，如 ?plan=B)
+    const urlParams = new URLSearchParams(window.location.search);
+    const initialPlan = (urlParams.get('plan') || 'A').toUpperCase();
+    switchPosition(['A', 'B', 'C', 'D'].includes(initialPlan) ? initialPlan : 'A');
+  </script>
+</body>
+</html>

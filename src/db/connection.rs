@@ -147,6 +147,10 @@ impl ConnectionStore {
         &self.connections
     }
 
+    pub fn storage(&self) -> &Storage {
+        &self.storage
+    }
+
     pub fn get(&self, idx: usize) -> Option<&ConnectionConfig> {
         self.connections.get(idx)
     }

@@ -218,13 +218,15 @@ fn main() {
 	            save_data_assistant,
 	            delete_data_assistant,
 	            list_audit_logs,
-            list_conversations,
-            create_conversation,
-            rename_conversation,
-            delete_conversation,
-            get_conversation,
-            append_chat_messages,
-        ])
+	            list_conversations,
+	            create_conversation,
+	            rename_conversation,
+	            delete_conversation,
+	            get_conversation,
+	            append_chat_messages,
+	            get_memory_usage,
+	            clean_cache,
+	        ])
         .run(tauri::generate_context!())
         .expect("error while running ChatQuery");
 }

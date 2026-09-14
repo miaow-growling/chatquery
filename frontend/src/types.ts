@@ -297,6 +297,16 @@ export interface ChatDbBinding {
   db: string | null;
 }
 
+/// A filter condition for data grid quick filter (Navicat style).
+export interface FilterCondition {
+  id: string;
+  col: string;
+  op: string; // '=', '<>', '>', '>=', '<', '<=', 'LIKE', 'NOT LIKE', 'IN', 'IS NULL', 'IS NOT NULL'
+  val: string;
+  logic?: "AND" | "OR";
+  enabled?: boolean;
+}
+
 /// Token accounting for one finished turn (ADR-AI-4 决策3). Arrives on the
 /// `chat-usage` event just before `chat-done`. Providers that don't report
 /// usage simply never emit it, so treat every field as best-effort.
@@ -344,6 +354,7 @@ export interface ColumnDetail {
   key: string;
   default: string | null;
   extra: string;
+  comment?: string | null;
 }
 
 /// One (index, column) pair. Multi-column indexes produce multiple entries
@@ -360,6 +371,7 @@ export interface TableStructure {
   columns: ColumnDetail[];
   indexes: IndexInfo[];
   create_sql: string;
+  table_comment?: string | null;
 }
 
 /// A foreign-key relationship (ADR-021). Each entry is one column referencing
@@ -533,4 +545,16 @@ export interface DataAssistantInput {
   bound_databases: AssistantDbBinding[];
   bound_knowledge_base_ids: string[];
 }
+
+export interface MemoryStats {
+  resident_bytes: number;
+  resident_mb: number;
+}
+
+export interface CleanCacheResult {
+  before_mb: number;
+  after_mb: number;
+  freed_mb: number;
+}
+
 

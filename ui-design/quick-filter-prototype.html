@@ -1,0 +1,1579 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChatQuery · 独立表浏览与 1+2 双模筛选 (字段与运算符全鼠标点选版)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #090B10;
+      --bg-surface: #11141E;
+      --bg-elevated: #181D2C;
+      --bg-elevated-hover: #22293E;
+      --bg-input: #0E121B;
+      --bg-hover: rgba(255, 255, 255, 0.04);
+      --bg-active: rgba(99, 102, 241, 0.12);
+
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-default: #232A3D;
+      --border-strong: #333C57;
+      --border-focus: #6366F1;
+
+      --text-primary: #F8FAFC;
+      --text-secondary: #94A3B8;
+      --text-tertiary: #64748B;
+      --text-disabled: #475569;
+
+      --brand-indigo: #6366F1;
+      --brand-purple: #8B5CF6;
+      --brand-glow: 0 0 16px rgba(99, 102, 241, 0.28);
+
+      --run-green: #10B981;
+      --warn-amber: #F59E0B;
+      --danger-red: #EF4444;
+
+      --type-null: #64748B;
+      --type-num: #38BDF8;
+      --type-str: #F8FAFC;
+      --type-date: #FB923C;
+      --type-bool: #C084FC;
+
+      --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: "Fira Code", "JetBrains Mono", Menlo, Consolas, monospace;
+      --radius-sm: 4px;
+      --radius-md: 6px;
+      --radius-lg: 10px;
+      --radius-pill: 9999px;
+
+      --shadow-dropdown: 0 12px 30px -5px rgba(0, 0, 0, 0.75), 0 0 0 1px var(--border-strong);
+    }
+
+    :root[data-theme="light"] {
+      --bg-base: #EEF0F4;
+      --bg-surface: #FFFFFF;
+      --bg-elevated: #FFFFFF;
+      --bg-elevated-hover: #F1F5F9;
+      --bg-input: #F8FAFC;
+      --bg-hover: rgba(0, 0, 0, 0.04);
+      --bg-active: rgba(79, 70, 229, 0.12);
+
+      --border-subtle: #E2E8F0;
+      --border-default: #CBD5E1;
+      --border-strong: #94A3B8;
+      --border-focus: #4F46E5;
+
+      --text-primary: #0F172A;
+      --text-secondary: #334155;
+      --text-tertiary: #64748B;
+      --text-disabled: #94A3B8;
+
+      --brand-indigo: #4F46E5;
+      --brand-purple: #7C3AED;
+
+      --run-green: #10B981;
+      --warn-amber: #D97706;
+      --danger-red: #DC2626;
+
+      --type-null: #64748B;
+      --type-num: #0284C7;
+      --type-str: #0F172A;
+      --type-date: #D97706;
+      --type-bool: #7C3AED;
+
+      --shadow-dropdown: 0 12px 30px -5px rgba(15, 23, 42, 0.15), 0 0 0 1px #CBD5E1;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font-ui);
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+    }
+
+    /* 顶部提示横幅 */
+    .prototype-banner {
+      background: linear-gradient(90deg, rgba(99, 102, 241, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%);
+      border-bottom: 1px solid rgba(99, 102, 241, 0.35);
+      padding: 6px 16px;
+      font-size: 12px;
+      color: #C7D2FE;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .prototype-banner b { color: #fff; }
+    .banner-tags { display: flex; gap: 8px; }
+    .banner-tag {
+      background: rgba(99, 102, 241, 0.25);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      padding: 1px 7px;
+      border-radius: var(--radius-pill);
+      font-size: 11px;
+    }
+
+    /* Topbar */
+    .topbar {
+      height: 40px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      flex-shrink: 0;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      font-size: 13.5px;
+    }
+    .logo-badge {
+      background: var(--brand-indigo);
+      color: #fff;
+      font-size: 9.5px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-weight: 600;
+    }
+    .conn-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      padding: 3px 10px;
+      border-radius: var(--radius-md);
+    }
+    .conn-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--run-green);
+      box-shadow: 0 0 6px var(--run-green);
+    }
+
+    /* Main Container */
+    .main-layout {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* 左侧侧边栏 */
+    .sidebar {
+      width: 220px;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-default);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+    .sidebar-title {
+      padding: 10px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .tree-item {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 12px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+    .tree-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .tree-item.active {
+      background: var(--bg-active);
+      color: #fff;
+      font-weight: 500;
+      border-left: 2px solid var(--brand-indigo);
+    }
+
+    /* 右侧工作区 */
+    .workspace {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg-base);
+    }
+
+    /* 顶部标签页 */
+    .tabs-bar {
+      height: 34px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-default);
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .tab {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      background: transparent;
+      border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+      border-top: 2px solid transparent;
+      cursor: pointer;
+      border-right: 1px solid rgba(255,255,255,0.03);
+    }
+    .tab.active {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-weight: 500;
+      border-top-color: var(--brand-indigo);
+    }
+    .tab-close {
+      font-size: 14px;
+      color: var(--text-tertiary);
+      border-radius: 50%;
+      width: 14px;
+      height: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+    }
+    .tab-close:hover {
+      background: rgba(255,255,255,0.1);
+      color: var(--text-primary);
+    }
+
+    /* 结果容器卡片 */
+    .result-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      margin: 8px 10px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+      position: relative;
+    }
+
+    /* 1. 表格顶部工具栏 */
+    .result-toolbar {
+      height: 38px;
+      padding: 0 12px;
+      background: #141824;
+      border-bottom: 1px solid var(--border-default);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .toolbar-left, .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .tool-btn {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      color: var(--text-secondary);
+      font-size: 11.5px;
+      padding: 4px 9px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.15s;
+    }
+    .tool-btn:hover {
+      background: var(--bg-elevated-hover);
+      color: var(--text-primary);
+      border-color: var(--border-strong);
+    }
+    .tool-btn.primary {
+      background: var(--run-green);
+      color: #032514;
+      font-weight: 600;
+      border-color: var(--run-green);
+    }
+    .tool-btn.primary:hover { background: #34D399; }
+    .tool-btn.active {
+      background: rgba(99, 102, 241, 0.2);
+      color: #A5B4FC;
+      border-color: var(--brand-indigo);
+    }
+
+    /* =========================================================================
+       ★ 核心升级：可视化向导式条件栏 (Filter Wizard Bar) - 纯鼠标选择模式
+       ========================================================================= */
+    .where-builder-bar {
+      min-height: 42px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 6px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+      position: relative;
+    }
+    .where-badge {
+      background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+      color: #FFFFFF;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: var(--radius-sm);
+      letter-spacing: 0.05em;
+      flex-shrink: 0;
+    }
+
+    /* 每一个条件项 (积木块) */
+    .condition-pill {
+      display: inline-flex;
+      align-items: center;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      padding: 2px 4px 2px 6px;
+      gap: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      position: relative;
+    }
+    .condition-pill.disabled {
+      opacity: 0.4;
+      filter: grayscale(1);
+    }
+
+    /* 积木内段：字段下拉按钮 */
+    .pill-field-btn {
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      color: #38BDF8;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .pill-field-btn:hover {
+      border-color: #38BDF8;
+      background: rgba(56, 189, 248, 0.1);
+    }
+
+    /* ★★★ 核心诉求：运算符下拉选择按钮 (> = >= = <> like) ★★★ */
+    .pill-operator-btn {
+      background: var(--bg-input);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      color: #FBBF24;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+    .pill-operator-btn:hover {
+      border-color: #F59E0B;
+      background: rgba(245, 158, 11, 0.15);
+      color: #FDE68A;
+    }
+
+    /* 积木内段：值输入框与候选值下拉 */
+    .pill-value-input {
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      color: #34D399;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      padding: 3px 8px;
+      border-radius: var(--radius-sm);
+      outline: none;
+      width: 110px;
+    }
+    .pill-value-input:focus {
+      border-color: var(--brand-indigo);
+      box-shadow: 0 0 0 1px var(--brand-indigo);
+    }
+
+    .pill-del-btn {
+      color: var(--text-tertiary);
+      cursor: pointer;
+      padding: 2px 5px;
+      font-size: 13px;
+      border-radius: 3px;
+      line-height: 1;
+    }
+    .pill-del-btn:hover {
+      background: rgba(239, 68, 68, 0.2);
+      color: var(--danger-red);
+    }
+
+    /* 连接符切换胶囊 AND / OR */
+    .join-logic-btn {
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.35);
+      color: #A5B4FC;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+    }
+    .join-logic-btn:hover {
+      background: rgba(99, 102, 241, 0.3);
+      color: #fff;
+    }
+
+    .btn-add-condition {
+      background: transparent;
+      border: 1px dashed var(--border-strong);
+      color: var(--text-secondary);
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .btn-add-condition:hover {
+      border-color: var(--brand-indigo);
+      color: #A5B4FC;
+      background: rgba(99, 102, 241, 0.08);
+    }
+
+    /* 模式切换按钮 (向导模式 vs 自由 SQL 模式) */
+    .mode-switch-btn {
+      margin-left: auto;
+      background: transparent;
+      border: 1px solid var(--border-default);
+      color: var(--text-secondary);
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .mode-switch-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    /* 手写 SQL 模式容器 (可切换) */
+    .raw-sql-container {
+      display: none;
+      flex: 1;
+      align-items: center;
+      gap: 8px;
+    }
+    .raw-sql-input {
+      flex: 1;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      color: #38BDF8;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      padding: 3px 8px;
+      border-radius: var(--radius-sm);
+      outline: none;
+    }
+    .raw-sql-input:focus {
+      border-color: var(--brand-indigo);
+    }
+
+    /* ★ 核心交互菜单 A: 运算符下拉选择面板 (> = >= = <> like) */
+    .op-dropdown-menu {
+      position: absolute;
+      background: #161B29;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-dropdown);
+      padding: 4px 0;
+      min-width: 175px;
+      z-index: 200;
+      display: none;
+    }
+    .op-menu-header {
+      padding: 4px 10px;
+      font-size: 10px;
+      color: var(--text-tertiary);
+      border-bottom: 1px solid var(--border-subtle);
+      text-transform: uppercase;
+    }
+    .op-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .op-menu-item:hover, .op-menu-item.active {
+      background: var(--bg-hover);
+      color: #FBBF24;
+    }
+    .op-symbol {
+      width: 44px;
+      font-weight: 700;
+      color: #F59E0B;
+    }
+    .op-desc {
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-family: var(--font-ui);
+    }
+
+    /* ★ 核心交互菜单 B: 字段下拉选择面板 */
+    .col-dropdown-menu {
+      position: absolute;
+      background: #161B29;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-dropdown);
+      padding: 4px 0;
+      min-width: 220px;
+      z-index: 200;
+      display: none;
+    }
+    .col-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      cursor: pointer;
+      color: var(--text-primary);
+    }
+    .col-menu-item:hover {
+      background: var(--bg-hover);
+      color: #38BDF8;
+    }
+    .col-type-tag {
+      font-size: 9.5px;
+      color: var(--text-tertiary);
+      margin-left: auto;
+    }
+
+    /* 表格视口 */
+    .table-viewport {
+      flex: 1;
+      overflow: auto;
+      position: relative;
+    }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      text-align: left;
+    }
+    .data-table th {
+      position: sticky;
+      top: 0;
+      background: #141824;
+      color: var(--text-secondary);
+      font-weight: 600;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border-strong);
+      border-right: 1px solid var(--border-subtle);
+      z-index: 10;
+      white-space: nowrap;
+    }
+    .th-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 2px;
+    }
+    .th-name { color: var(--text-primary); }
+    .th-type { font-size: 9.5px; color: var(--text-tertiary); font-weight: normal; }
+
+    /* 表头第 2 行: 行内即时输入过滤行 */
+    .filter-tr {
+      background: var(--bg-base);
+    }
+    .filter-th-cell {
+      position: sticky;
+      top: 29px;
+      background: var(--bg-base);
+      border-bottom: 2px solid var(--border-strong);
+      border-right: 1px solid var(--border-subtle);
+      padding: 3px 6px;
+      z-index: 9;
+    }
+    .inline-filter-input-wrap {
+      display: flex;
+      align-items: center;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      padding: 1px 4px;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+    .inline-filter-input-wrap:focus-within {
+      border-color: var(--brand-indigo);
+      background: var(--bg-surface);
+      box-shadow: 0 0 6px rgba(99, 102, 241, 0.35);
+    }
+    .inline-filter-input-wrap.has-val {
+      border-color: var(--brand-indigo);
+      background: var(--bg-active);
+    }
+
+    /* 行内输入框前面的可点击微型运算符按钮 */
+    .col-op-clickable {
+      color: #F59E0B;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+      padding: 0 3px;
+      border-radius: 2px;
+    }
+    .col-op-clickable:hover {
+      background: rgba(245, 158, 11, 0.2);
+    }
+
+    .inline-filter-input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #38BDF8;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      padding: 2px 0;
+    }
+    .inline-filter-input::placeholder {
+      color: #475569;
+      font-size: 11px;
+    }
+    .clear-col-val {
+      color: var(--text-tertiary);
+      cursor: pointer;
+      font-size: 12px;
+      display: none;
+      line-height: 1;
+    }
+    .inline-filter-input-wrap.has-val .clear-col-val {
+      display: inline-block;
+    }
+    .clear-col-val:hover { color: var(--danger-red); }
+
+    /* 数据行 */
+    .data-table td {
+      padding: 5px 10px;
+      border-bottom: 1px solid var(--border-subtle);
+      border-right: 1px solid var(--border-subtle);
+      white-space: nowrap;
+      color: var(--text-primary);
+      height: 27px;
+      cursor: default;
+    }
+    .data-table tr:hover td { background: rgba(255, 255, 255, 0.025); }
+    .row-num {
+      text-align: center;
+      color: var(--text-tertiary);
+      background: #111420;
+      width: 44px;
+      font-size: 11px;
+    }
+
+    .val-num { color: var(--type-num); }
+    .val-str { color: var(--type-str); }
+    .val-null { color: var(--type-null); font-style: italic; }
+    .val-bool { color: var(--type-bool); }
+    .val-date { color: var(--type-date); }
+
+    .alt-filter-hint {
+      display: inline-block;
+      cursor: pointer;
+      transition: color 0.1s;
+    }
+    .alt-filter-hint:hover {
+      text-decoration: underline;
+      color: #60A5FA;
+    }
+
+    /* 底部状态 */
+    .result-footer {
+      height: 32px;
+      background: #121622;
+      border-top: 1px solid var(--border-default);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      font-size: 11.5px;
+      color: var(--text-secondary);
+      flex-shrink: 0;
+    }
+    .footer-filter-stat {
+      color: #38BDF8;
+      font-weight: 500;
+    }
+
+    /* 右键速筛菜单 */
+    .ctx-menu {
+      position: absolute;
+      background: #181D2C;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-dropdown);
+      padding: 4px 0;
+      min-width: 200px;
+      z-index: 120;
+      display: none;
+    }
+    .ctx-header {
+      padding: 4px 10px;
+      font-size: 10.5px;
+      color: var(--text-tertiary);
+      border-bottom: 1px solid var(--border-subtle);
+      font-family: var(--font-mono);
+    }
+    .ctx-item {
+      padding: 6px 12px;
+      font-size: 12px;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .ctx-item:hover { background: var(--bg-hover); color: #A5B4FC; }
+    .ctx-item.highlight { color: #38BDF8; font-weight: 500; }
+    .ctx-divider { height: 1px; background: var(--border-subtle); margin: 4px 0; }
+  </style>
+</head>
+<body>
+
+  <!-- 顶部提示横幅 -->
+  <div class="prototype-banner">
+    <div>
+      <b>ChatQuery 原型</b> · <b>可视化运算符与字段全鼠标点选</b>：<code>=</code>、<code>&lt;&gt;</code>、<code>&gt;</code>、<code>&gt;=</code>、<code>&lt;</code>、<code>&lt;=</code>、<code>LIKE</code> 均支持鼠标下拉！
+    </div>
+    <div class="banner-tags">
+      <span class="banner-tag">运算符下拉菜单</span>
+      <span class="banner-tag">字段下拉菜单</span>
+      <span class="banner-tag">双模互通</span>
+      <span class="banner-tag">下推全表过滤</span>
+    </div>
+  </div>
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="logo">
+      <span>ChatQuery</span>
+      <span class="logo-badge">PRO DARK</span>
+    </div>
+    <div class="conn-info">
+      <span class="conn-dot"></span>
+      <span>local_mysql_dev / shop_mall_prod</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px;">
+      <span style="font-size: 12px; color: var(--text-tertiary);">提示：点击下方的 <b>[运算符 ▾]</b> 即可鼠标下拉切换 <code>=</code>、<code>&gt;=</code>、<code>&lt;&gt;</code> 等！</span>
+      <button class="tool-btn" onclick="togglePrototypeTheme()" title="切换白天/暗黑模式">☀ / 🌙 切换日间/暗黑</button>
+    </div>
+  </header>
+
+  <!-- 主体工作区 -->
+  <div class="main-layout">
+    <!-- 左侧表树 -->
+    <aside class="sidebar">
+      <div class="sidebar-title">数据表导航</div>
+      <div class="tree-item"><span style="color:#6366F1">▤</span> sys_user</div>
+      <div class="tree-item active"><span style="color:#10B981">▤</span> orders (独立浏览 Tab)</div>
+      <div class="tree-item"><span style="color:#6366F1">▤</span> order_items</div>
+      <div class="tree-item"><span style="color:#6366F1">▤</span> product_spu</div>
+      <div class="tree-item"><span style="color:#6366F1">▤</span> payment_records</div>
+    </aside>
+
+    <!-- 右侧工作区 -->
+    <main class="workspace">
+      <!-- 独立 Tab 栏 -->
+      <div class="tabs-bar">
+        <div class="tab">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>
+          <span>SQL 查询 1</span>
+          <span class="tab-close">&times;</span>
+        </div>
+        <div class="tab active">
+          <span style="color:#10B981">▤</span>
+          <span>表浏览: orders</span>
+          <span class="tab-close">&times;</span>
+        </div>
+        <button class="tool-btn" style="padding: 1px 6px; font-size: 13px;" title="新建 SQL 查询 Tab">+</button>
+      </div>
+
+      <!-- 表浏览全屏卡片 -->
+      <div class="result-container">
+        
+        <!-- 1. 表格顶部工具栏 -->
+        <div class="result-toolbar">
+          <div class="toolbar-left">
+            <button class="tool-btn primary" onclick="alert('新增行')">+ 新增行</button>
+            <button class="tool-btn active" id="btnToggleFilterRow" onclick="toggleFilterRow()" title="显示/隐藏表头行内过滤行">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/></svg>
+              <span>行内过滤行 (⌘⇧F)</span>
+            </button>
+            <button class="tool-btn" onclick="copyFullSql()" title="复制为完整 SELECT SQL">复制完整 SQL</button>
+          </div>
+          <div class="toolbar-right">
+            <button class="tool-btn" onclick="clearAllFilters()">清空筛选 (Esc)</button>
+            <button class="tool-btn">导出 ▾</button>
+          </div>
+        </div>
+
+        <!-- 2. ★ 核心升级：可视化向导式条件构建栏 (支持全鼠标点选字段、点选运算符) -->
+        <div class="where-builder-bar" id="whereBuilderBar">
+          <div class="where-badge">WHERE</div>
+
+          <!-- 积木构建区 (模式 1: 纯鼠标下拉选择) -->
+          <div id="conditionPillList" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <!-- 动态渲染积木卡片 -->
+          </div>
+
+          <!-- 添加条件按钮 -->
+          <button class="btn-add-condition" id="btnAddCondition" onclick="addNewCondition()">+ 添加条件</button>
+
+          <!-- 模式 2: 纯手写 SQL 模式 (通过右侧按钮切换) -->
+          <div class="raw-sql-container" id="rawSqlContainer">
+            <input type="text" class="raw-sql-input" id="rawSqlInput" placeholder="输入原生 WHERE 语句..." onkeydown="handleRawSqlKeydown(event)" />
+            <button class="tool-btn primary" onclick="applyRawSql()">执行</button>
+          </div>
+
+          <!-- 切换模式按钮 -->
+          <button class="mode-switch-btn" id="btnSwitchMode" onclick="toggleFilterMode()">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+            <span id="modeSwitchLabel">切换为手写 SQL</span>
+          </button>
+        </div>
+
+        <!-- 3. 数据网格 (含表头行内即时过滤行，运算符同样可点击下拉！) -->
+        <div class="table-viewport" id="tableViewport">
+          <table class="data-table" id="dataTable">
+            <thead>
+              <!-- 表头第 1 行: 字段名与类型 -->
+              <tr>
+                <th class="row-num">#</th>
+                <th style="min-width: 110px;">
+                  <div class="th-title"><span class="th-name">id</span><span class="th-type">BIGINT</span></div>
+                </th>
+                <th style="min-width: 170px;">
+                  <div class="th-title"><span class="th-name">order_no</span><span class="th-type">VARCHAR</span></div>
+                </th>
+                <th style="min-width: 110px;">
+                  <div class="th-title"><span class="th-name">user_id</span><span class="th-type">BIGINT</span></div>
+                </th>
+                <th style="min-width: 140px;">
+                  <div class="th-title"><span class="th-name">pay_amount</span><span class="th-type">DECIMAL</span></div>
+                </th>
+                <th style="min-width: 120px;">
+                  <div class="th-title"><span class="th-name">status</span><span class="th-type">TINYINT</span></div>
+                </th>
+                <th style="min-width: 110px;">
+                  <div class="th-title"><span class="th-name">platform</span><span class="th-type">VARCHAR</span></div>
+                </th>
+                <th style="min-width: 160px;">
+                  <div class="th-title"><span class="th-name">created_at</span><span class="th-type">DATETIME</span></div>
+                </th>
+              </tr>
+
+              <!-- 表头第 2 行: 行内即时输入过滤行 (左侧符号点击即可鼠标切换运算符) -->
+              <tr class="filter-tr" id="inlineFilterRow">
+                <th class="row-num" style="top:29px; z-index:9; background:#101420; color:var(--brand-indigo); font-size:12px;">⚲</th>
+
+                <!-- id 过滤框 -->
+                <th class="filter-th-cell">
+                  <div class="inline-filter-input-wrap" id="wrap_id">
+                    <span class="col-op-clickable" id="thOp_id" onclick="openOpDropdownForCol(event, 'id')" title="点击切换运算符">=</span >
+                    <input class="inline-filter-input" data-col="id" placeholder="过滤ID..." oninput="onColInput(event, 'id')" />
+                    <span class="clear-col-val" onclick="clearColInput('id')">&times;</span>
+                  </div>
+                </th>
+
+                <!-- order_no 过滤框 -->
+                <th class="filter-th-cell">
+                  <div class="inline-filter-input-wrap" id="wrap_order_no">
+                    <span class="col-op-clickable" id="thOp_order_no" onclick="openOpDropdownForCol(event, 'order_no')" title="点击切换运算符">LIKE</span>
+                    <input class="inline-filter-input" data-col="order_no" placeholder="输入模糊内容..." oninput="onColInput(event, 'order_no')" />
+                    <span class="clear-col-val" onclick="clearColInput('order_no')">&times;</span>
+                  </div>
+                </th>
+
+                <!-- user_id 过滤框 -->
+                <th class="filter-th-cell">
+                  <div class="inline-filter-input-wrap" id="wrap_user_id">
+                    <span class="col-op-clickable" id="thOp_user_id" onclick="openOpDropdownForCol(event, 'user_id')" title="点击切换运算符">=</span >
+                    <input class="inline-filter-input" data-col="user_id" placeholder="用户ID..." oninput="onColInput(event, 'user_id')" />
+                    <span class="clear-col-val" onclick="clearColInput('user_id')">&times;</span>
+                  </div>
+                </th>
+
+                <!-- pay_amount 过滤框 -->
+                <th class="filter-th-cell">
+                  <div class="inline-filter-input-wrap" id="wrap_pay_amount">
+                    <span class="col-op-clickable" id="thOp_pay_amount" onclick="openOpDropdownForCol(event, 'pay_amount')" title="点击切换运算符">&gt;=</span >
+                    <input class="inline-filter-input" data-col="pay_amount" placeholder="输入金额..." oninput="onColInput(event, 'pay_amount')" />
+                    <span class="clear-col-val" onclick="clearColInput('pay_amount')">&times;</span>
+                  </div>
+                </th>
+
+                <!-- status 过滤框 (默认包含状态演示) -->
+                <th class="filter-th-cell">
+                  <div class="inline-filter-input-wrap has-val" id="wrap_status">
+                    <span class="col-op-clickable" id="thOp_status" onclick="openOpDropdownForCol(event, 'status')" title="点击切换运算符">=</span >
+                    <input class="inline-filter-input" data-col="status" value="PAID" placeholder="状态..." oninput="onColInput(event, 'status')" />
+                    <span class="clear-col-val" onclick="clearColInput('status')">&times;</span>
+                  </div>
+                </th>
+
+                <!-- platform 过滤框 -->
+                <th class="filter-th-cell">
+                  <div class="inline-filter-input-wrap" id="wrap_platform">
+                    <span class="col-op-clickable" id="thOp_platform" onclick="openOpDropdownForCol(event, 'platform')" title="点击切换运算符">=</span >
+                    <input class="inline-filter-input" data-col="platform" placeholder="平台..." oninput="onColInput(event, 'platform')" />
+                    <span class="clear-col-val" onclick="clearColInput('platform')">&times;</span>
+                  </div>
+                </th>
+
+                <!-- created_at 过滤框 -->
+                <th class="filter-th-cell">
+                  <div class="inline-filter-input-wrap" id="wrap_created_at">
+                    <span class="col-op-clickable" id="thOp_created_at" onclick="openOpDropdownForCol(event, 'created_at')" title="点击切换运算符">LIKE</span>
+                    <input class="inline-filter-input" data-col="created_at" placeholder="日期过滤..." oninput="onColInput(event, 'created_at')" />
+                    <span class="clear-col-val" onclick="clearColInput('created_at')">&times;</span>
+                  </div>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="tableBody">
+              <!-- 由 JS 渲染 -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 4. 底部状态栏 -->
+        <div class="result-footer">
+          <div>
+            <span>显示 <b id="statVisible">0</b> / 共 <b id="statTotal">0</b> 行记录</span>
+            <span class="footer-filter-stat" id="statFilterDesc"> · WHERE status = 'PAID' (全表已下推过滤)</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:12px;">
+            <span>耗时: 12ms</span>
+            <span>第 1 页 (200 行/页)</span>
+          </div>
+        </div>
+
+        <!-- ★ 核心下拉菜单 1: 运算符下拉选择菜单 (> = >= = <> like) -->
+        <div class="op-dropdown-menu" id="opDropdownMenu">
+          <div class="op-menu-header">选择关系运算符</div>
+          <div class="op-menu-item" onclick="selectOperator('=')">
+            <span class="op-symbol">=</span><span class="op-desc">等于 (Equals)</span>
+          </div>
+          <div class="op-menu-item" onclick="selectOperator('<>')">
+            <span class="op-symbol">&lt;&gt;</span><span class="op-desc">不等于 (Not Equals)</span>
+          </div>
+          <div class="op-menu-item" onclick="selectOperator('>')">
+            <span class="op-symbol">&gt;</span><span class="op-desc">大于 (Greater Than)</span>
+          </div>
+          <div class="op-menu-item" onclick="selectOperator('>=')">
+            <span class="op-symbol">&gt;=</span><span class="op-desc">大于等于 (GTE)</span>
+          </div>
+          <div class="op-menu-item" onclick="selectOperator('<')">
+            <span class="op-symbol">&lt;</span><span class="op-desc">小于 (Less Than)</span>
+          </div>
+          <div class="op-menu-item" onclick="selectOperator('<=')">
+            <span class="op-symbol">&lt;=</span><span class="op-desc">小于等于 (LTE)</span>
+          </div>
+          <div class="op-menu-item" onclick="selectOperator('LIKE')">
+            <span class="op-symbol">LIKE</span><span class="op-desc">包含文本 (%v%)</span>
+          </div>
+          <div class="op-menu-item" onclick="selectOperator('NOT LIKE')">
+            <span class="op-symbol">NOT LIKE</span><span class="op-desc">不包含文本</span>
+          </div>
+          <div class="op-menu-item" onclick="selectOperator('IN')">
+            <span class="op-symbol">IN</span><span class="op-desc">包含在列表中</span>
+          </div>
+          <div class="op-menu-item" onclick="selectOperator('IS NULL')">
+            <span class="op-symbol">IS NULL</span><span class="op-desc">为空值</span>
+          </div>
+          <div class="op-menu-item" onclick="selectOperator('IS NOT NULL')">
+            <span class="op-symbol">NOT NULL</span><span class="op-desc">非空值</span>
+          </div>
+        </div>
+
+        <!-- ★ 核心下拉菜单 2: 字段下拉选择菜单 -->
+        <div class="col-dropdown-menu" id="colDropdownMenu">
+          <div class="op-menu-header">切换目标字段</div>
+          <!-- 动态渲染字段 -->
+        </div>
+
+        <!-- 5. 单元格右键速查菜单 -->
+        <div class="ctx-menu" id="cellContextMenu">
+          <div class="ctx-header" id="ctxMenuHeader">单元格: status = 'PAID'</div>
+          <div class="ctx-item" onclick="copyActiveCell()">复制单元格内容</div>
+          <div class="ctx-divider"></div>
+          <div class="ctx-item highlight" onclick="quickFilterFromCtx('=')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+            <span id="ctxLabelEquals">以此值过滤 (= 'PAID')</span>
+          </div>
+          <div class="ctx-item" onclick="quickFilterFromCtx('<>')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+            <span id="ctxLabelNequals">排除此值 (&lt;&gt; 'PAID')</span>
+          </div>
+        </div>
+
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // 表字段定义
+    const TABLE_COLUMNS = [
+      { name: "id", type: "BIGINT", pk: true, comment: "自增主键" },
+      { name: "order_no", type: "VARCHAR(64)", pk: false, comment: "业务订单号" },
+      { name: "user_id", type: "BIGINT", pk: false, comment: "用户ID" },
+      { name: "pay_amount", type: "DECIMAL(10,2)", pk: false, comment: "支付金额" },
+      { name: "status", type: "TINYINT", pk: false, comment: "支付状态" },
+      { name: "platform", type: "VARCHAR(32)", pk: false, comment: "来源平台" },
+      { name: "created_at", type: "DATETIME", pk: false, comment: "创建时间" }
+    ];
+
+    // 模拟数据源
+    const RAW_DATA = [
+      { id: 9002148191, order_no: "ORD-20260908-1001", user_id: 10042, pay_amount: 1289.00, status: "PAID", platform: "iOS", created_at: "2026-09-08 10:15:20" },
+      { id: 9002148192, order_no: "ORD-20260908-1002", user_id: 10089, pay_amount: 499.50, status: "PAID", platform: "Android", created_at: "2026-09-08 11:20:05" },
+      { id: 9002148193, order_no: "ORD-20260908-1003", user_id: 10211, pay_amount: 89.00, status: "PENDING", platform: "H5", created_at: "2026-09-08 12:45:00" },
+      { id: 9002148194, order_no: "ORD-20260908-1004", user_id: 10042, pay_amount: 2599.00, status: "PAID", platform: "iOS", created_at: "2026-09-08 14:10:33" },
+      { id: 9002148195, order_no: "ORD-20260909-2001", user_id: 10450, pay_amount: 15.00, status: "CANCELLED", platform: "MiniApp", created_at: "2026-09-09 09:05:12" },
+      { id: 9002148196, order_no: "ORD-20260909-2002", user_id: 10089, pay_amount: 680.00, status: "PAID", platform: "Android", created_at: "2026-09-09 10:44:50" },
+      { id: 9002148197, order_no: "ORD-20260909-2003", user_id: 10672, pay_amount: 120.00, status: "REFUNDED", platform: "iOS", created_at: "2026-09-09 13:20:11" },
+      { id: 9002148198, order_no: "ORD-20260909-2004", user_id: 10042, pay_amount: 99.00, status: "PAID", platform: "iOS", created_at: "2026-09-09 15:12:40" },
+      { id: 9002148199, order_no: "ORD-20260909-2005", user_id: 10899, pay_amount: 3450.00, status: "PAID", platform: "Web", created_at: "2026-09-09 16:30:00" },
+      { id: 9002148200, order_no: "ORD-20260909-2006", user_id: 10211, pay_amount: 320.00, status: "PENDING", platform: "Android", created_at: "2026-09-09 18:00:22" }
+    ];
+
+    // 活跃的积木条件列表
+    let conditions = [
+      { id: "c1", col: "status", op: "=", val: "PAID", logic: "AND" }
+    ];
+
+    // 表头各列行内过滤的独立操作符状态
+    let colOperators = {
+      id: "=",
+      order_no: "LIKE",
+      user_id: "=",
+      pay_amount: ">=",
+      status: "=",
+      platform: "=",
+      created_at: "LIKE"
+    };
+
+    // 当前正在选择运算符或字段的目标上下文
+    let activeDropdownTarget = null; // { type: 'condition', id: 'c1' } 或 { type: 'col', col: 'pay_amount' }
+
+    let isRawSqlMode = false;
+    let contextCell = null;
+
+    window.addEventListener("DOMContentLoaded", () => {
+      renderConditions();
+      renderTable();
+      renderColDropdownList();
+
+      document.addEventListener("click", (e) => {
+        const opMenu = document.getElementById("opDropdownMenu");
+        const colMenu = document.getElementById("colDropdownMenu");
+        const ctxMenu = document.getElementById("cellContextMenu");
+
+        if (!opMenu.contains(e.target) && !e.target.closest(".pill-operator-btn") && !e.target.closest(".col-op-clickable")) {
+          opMenu.style.display = "none";
+        }
+        if (!colMenu.contains(e.target) && !e.target.closest(".pill-field-btn")) {
+          colMenu.style.display = "none";
+        }
+        if (!ctxMenu.contains(e.target)) {
+          ctxMenu.style.display = "none";
+        }
+      });
+
+      document.addEventListener("keydown", (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "f") {
+          e.preventDefault();
+          toggleFilterRow();
+        } else if (e.key === "Escape") {
+          document.getElementById("opDropdownMenu").style.display = "none";
+          document.getElementById("colDropdownMenu").style.display = "none";
+          document.getElementById("cellContextMenu").style.display = "none";
+        }
+      });
+    });
+
+    // 渲染积木条件项
+    function renderConditions() {
+      const container = document.getElementById("conditionPillList");
+      container.innerHTML = "";
+
+      conditions.forEach((c, idx) => {
+        // 如果不是第一个，先放一个逻辑连接符 (AND / OR)
+        if (idx > 0) {
+          const joinBtn = document.createElement("button");
+          joinBtn.className = "join-logic-btn";
+          joinBtn.innerText = c.logic || "AND";
+          joinBtn.title = "点击切换 AND / OR";
+          joinBtn.onclick = () => {
+            c.logic = c.logic === "AND" ? "OR" : "AND";
+            renderConditions();
+            applyAllConditions();
+          };
+          container.appendChild(joinBtn);
+        }
+
+        const pill = document.createElement("div");
+        pill.className = "condition-pill";
+        pill.innerHTML = `
+          <!-- 字段选择 (下拉) -->
+          <button class="pill-field-btn" onclick="openColDropdown(event, '${c.id}')" title="点击鼠标切换字段">
+            <span>${c.col}</span>
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+
+          <!-- ★★★ 核心：运算符选择 (纯鼠标下拉选择 > = >= = <> like) ★★★ -->
+          <button class="pill-operator-btn" onclick="openOpDropdown(event, '${c.id}')" title="点击鼠标切换运算符">
+            <span>${c.op}</span>
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+
+          <!-- 值输入框 -->
+          ${c.op === "IS NULL" || c.op === "IS NOT NULL" ? "" : `
+            <input 
+              class="pill-value-input" 
+              value="${c.val}" 
+              placeholder="输入目标值..." 
+              oninput="onConditionValChange(event, '${c.id}')" 
+            />
+          `}
+
+          <!-- 删除该条件 -->
+          <span class="pill-del-btn" onclick="removeCondition('${c.id}')" title="删除条件">&times;</span>
+        `;
+        container.appendChild(pill);
+      });
+
+      if (conditions.length === 0) {
+        container.innerHTML = `<span style="font-size:11.5px; color:var(--text-tertiary); font-style:italic;">暂无条件，点击右侧按钮添加 ➔</span>`;
+      }
+    }
+
+    // 打开积木条件的运算符下拉菜单
+    function openOpDropdown(e, condId) {
+      e.stopPropagation();
+      activeDropdownTarget = { type: "condition", id: condId };
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      const menu = document.getElementById("opDropdownMenu");
+      menu.style.left = `${rect.left}px`;
+      menu.style.top = `${rect.bottom + 4}px`;
+      menu.style.display = "block";
+    }
+
+    // 打开表头行内过滤列的运算符下拉菜单
+    function openOpDropdownForCol(e, col) {
+      e.stopPropagation();
+      activeDropdownTarget = { type: "col", col };
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      const menu = document.getElementById("opDropdownMenu");
+      menu.style.left = `${rect.left}px`;
+      menu.style.top = `${rect.bottom + 4}px`;
+      menu.style.display = "block";
+    }
+
+    // 选中某个运算符
+    function selectOperator(op) {
+      if (!activeDropdownTarget) return;
+
+      if (activeDropdownTarget.type === "condition") {
+        const cond = conditions.find(c => c.id === activeDropdownTarget.id);
+        if (cond) {
+          cond.op = op;
+          renderConditions();
+          applyAllConditions();
+        }
+      } else if (activeDropdownTarget.type === "col") {
+        const col = activeDropdownTarget.col;
+        colOperators[col] = op;
+        const opSpan = document.getElementById(`thOp_${col}`);
+        if (opSpan) opSpan.innerText = op;
+
+        // 同步修改条件或者重新触发过滤
+        const input = document.querySelector(`input[data-col="${col}"]`);
+        syncColInputToConditions(col, input ? input.value.trim() : "");
+      }
+
+      document.getElementById("opDropdownMenu").style.display = "none";
+    }
+
+    // 打开字段选择下拉菜单
+    function openColDropdown(e, condId) {
+      e.stopPropagation();
+      activeDropdownTarget = { type: "condition", id: condId };
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      const menu = document.getElementById("colDropdownMenu");
+      menu.style.left = `${rect.left}px`;
+      menu.style.top = `${rect.bottom + 4}px`;
+      menu.style.display = "block";
+    }
+
+    function renderColDropdownList() {
+      const menu = document.getElementById("colDropdownMenu");
+      menu.innerHTML = `<div class="op-menu-header">切换目标字段</div>`;
+      TABLE_COLUMNS.forEach(c => {
+        const item = document.createElement("div");
+        item.className = "col-menu-item";
+        item.innerHTML = `
+          <span>${c.pk ? "🔑" : "▤"}</span>
+          <span style="font-weight:600; color:#38BDF8;">${c.name}</span>
+          <span class="col-type-tag">${c.type}</span>
+        `;
+        item.onclick = () => {
+          if (activeDropdownTarget && activeDropdownTarget.type === "condition") {
+            const cond = conditions.find(item => item.id === activeDropdownTarget.id);
+            if (cond) {
+              cond.col = c.name;
+              renderConditions();
+              applyAllConditions();
+            }
+          }
+          menu.style.display = "none";
+        };
+        menu.appendChild(item);
+      });
+    }
+
+    function onConditionValChange(e, condId) {
+      const cond = conditions.find(c => c.id === condId);
+      if (cond) {
+        cond.val = e.target.value.trim();
+        applyAllConditions();
+      }
+    }
+
+    function addNewCondition() {
+      const newId = "c_" + Date.now();
+      conditions.push({
+        id: newId,
+        col: "pay_amount",
+        op: ">=",
+        val: "100",
+        logic: "AND"
+      });
+      renderConditions();
+      applyAllConditions();
+    }
+
+    function removeCondition(condId) {
+      conditions = conditions.filter(c => c.id !== condId);
+      renderConditions();
+      applyAllConditions();
+    }
+
+    // 应用所有条件并与下方行内过滤行同步
+    function applyAllConditions() {
+      // 1. 生成 SQL 语句
+      const sqlParts = [];
+      conditions.forEach((c, idx) => {
+        let clause = "";
+        if (c.op === "IS NULL") clause = `${c.col} IS NULL`;
+        else if (c.op === "IS NOT NULL") clause = `${c.col} IS NOT NULL`;
+        else if (c.op === "LIKE") clause = `${c.col} LIKE '%${c.val}%'`;
+        else if (c.op === "NOT LIKE") clause = `${c.col} NOT LIKE '%${c.val}%'`;
+        else if (c.op === "IN") clause = `${c.col} IN (${c.val})`;
+        else if (!isNaN(Number(c.val)) && c.val !== "") clause = `${c.col} ${c.op} ${c.val}`;
+        else clause = `${c.col} ${c.op} '${c.val}'`;
+
+        if (idx === 0) sqlParts.push(clause);
+        else sqlParts.push(`${c.logic || "AND"} ${clause}`);
+      });
+
+      const fullSql = sqlParts.join(" ");
+      document.getElementById("rawSqlInput").value = fullSql;
+      updateStatText(fullSql);
+
+      // 2. 反向同步回表头各列过滤框
+      document.querySelectorAll(".inline-filter-input").forEach(i => {
+        i.value = "";
+        i.parentElement.classList.remove("has-val");
+      });
+
+      conditions.forEach(c => {
+        const input = document.querySelector(`input[data-col="${c.col}"]`);
+        if (input) {
+          input.value = c.val;
+          input.parentElement.classList.add("has-val");
+          const opSpan = document.getElementById(`thOp_${c.col}`);
+          if (opSpan) opSpan.innerText = c.op;
+        }
+      });
+
+      // 3. 执行本地数据过滤并渲染
+      renderTable();
+    }
+
+    // 表头各列输入过滤时的处理
+    function onColInput(e, col) {
+      const val = e.target.value.trim();
+      const wrap = document.getElementById(`wrap_${col}`);
+      if (val) wrap.classList.add("has-val");
+      else wrap.classList.remove("has-val");
+
+      syncColInputToConditions(col, val);
+    }
+
+    function clearColInput(col) {
+      const input = document.querySelector(`input[data-col="${col}"]`);
+      if (input) input.value = "";
+      const wrap = document.getElementById(`wrap_${col}`);
+      if (wrap) wrap.classList.remove("has-val");
+
+      syncColInputToConditions(col, "");
+    }
+
+    function syncColInputToConditions(col, val) {
+      const op = colOperators[col] || "=";
+
+      if (!val) {
+        conditions = conditions.filter(c => c.col !== col);
+      } else {
+        const existing = conditions.find(c => c.col === col);
+        if (existing) {
+          existing.op = op;
+          existing.val = val;
+        } else {
+          conditions.push({
+            id: "c_" + Date.now(),
+            col,
+            op,
+            val,
+            logic: "AND"
+          });
+        }
+      }
+
+      renderConditions();
+      applyAllConditions();
+    }
+
+    // 渲染表格
+    function renderTable() {
+      const tbody = document.getElementById("tableBody");
+      tbody.innerHTML = "";
+
+      const filtered = RAW_DATA.filter((row) => {
+        // 依次测试每个条件
+        for (const c of conditions) {
+          const cell = row[c.col];
+          const strCell = String(cell).toLowerCase();
+          const strVal = String(c.val).toLowerCase();
+          const numCell = Number(cell);
+          const numVal = Number(c.val);
+
+          let pass = true;
+          if (c.op === "=") pass = (strCell === strVal);
+          else if (c.op === "<>") pass = (strCell !== strVal);
+          else if (c.op === ">") pass = (numCell > numVal);
+          else if (c.op === ">=") pass = (numCell >= numVal);
+          else if (c.op === "<") pass = (numCell < numVal);
+          else if (c.op === "<=") pass = (numCell <= numVal);
+          else if (c.op === "LIKE") pass = strCell.includes(strVal);
+          else if (c.op === "NOT LIKE") pass = !strCell.includes(strVal);
+          else if (c.op === "IS NULL") pass = (cell === null || cell === "");
+          else if (c.op === "IS NOT NULL") pass = !(cell === null || cell === "");
+
+          if (!pass) return false;
+        }
+        return true;
+      });
+
+      filtered.forEach((r, idx) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td class="row-num">${idx + 1}</td>
+          <td class="val-num alt-filter-hint" onclick="handleAltClick(event, 'id', '${r.id}')" oncontextmenu="handleCellCtx(event, 'id', '${r.id}')" title="Alt+点击直接以此值过滤">${r.id}</td>
+          <td class="val-str alt-filter-hint" onclick="handleAltClick(event, 'order_no', '${r.order_no}')" oncontextmenu="handleCellCtx(event, 'order_no', '${r.order_no}')" title="Alt+点击直接以此值过滤">${r.order_no}</td>
+          <td class="val-num alt-filter-hint" onclick="handleAltClick(event, 'user_id', '${r.user_id}')" oncontextmenu="handleCellCtx(event, 'user_id', '${r.user_id}')" title="Alt+点击直接以此值过滤">${r.user_id}</td>
+          <td class="val-num alt-filter-hint" onclick="handleAltClick(event, 'pay_amount', '${r.pay_amount.toFixed(2)}')" oncontextmenu="handleCellCtx(event, 'pay_amount', '${r.pay_amount.toFixed(2)}')" title="Alt+点击直接以此值过滤">${r.pay_amount.toFixed(2)}</td>
+          <td class="val-bool alt-filter-hint" onclick="handleAltClick(event, 'status', '${r.status}')" oncontextmenu="handleCellCtx(event, 'status', '${r.status}')" title="Alt+点击直接以此值过滤">${r.status}</td>
+          <td class="val-str alt-filter-hint" onclick="handleAltClick(event, 'platform', '${r.platform}')" oncontextmenu="handleCellCtx(event, 'platform', '${r.platform}')" title="Alt+点击直接以此值过滤">${r.platform}</td>
+          <td class="val-date alt-filter-hint" onclick="handleAltClick(event, 'created_at', '${r.created_at}')" oncontextmenu="handleCellCtx(event, 'created_at', '${r.created_at}')" title="Alt+点击直接以此值过滤">${r.created_at}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      document.getElementById("statVisible").innerText = filtered.length;
+      document.getElementById("statTotal").innerText = RAW_DATA.length;
+    }
+
+    // 模式切换: 向导积木模式 vs 纯手写 SQL 模式
+    function toggleFilterMode() {
+      isRawSqlMode = !isRawSqlMode;
+      const pillBox = document.getElementById("conditionPillList");
+      const addBtn = document.getElementById("btnAddCondition");
+      const rawBox = document.getElementById("rawSqlContainer");
+      const label = document.getElementById("modeSwitchLabel");
+
+      if (isRawSqlMode) {
+        pillBox.style.display = "none";
+        addBtn.style.display = "none";
+        rawBox.style.display = "flex";
+        label.innerText = "切换为向导点选";
+        document.getElementById("rawSqlInput").focus();
+      } else {
+        pillBox.style.display = "flex";
+        addBtn.style.display = "inline-flex";
+        rawBox.style.display = "none";
+        label.innerText = "切换为手写 SQL";
+      }
+    }
+
+    function handleRawSqlKeydown(e) {
+      if (e.key === "Enter") {
+        applyRawSql();
+      }
+    }
+
+    function applyRawSql() {
+      const sql = document.getElementById("rawSqlInput").value.trim();
+      // 这里简易解析回积木并生效
+      alert(`已下推执行自定义 WHERE 语句:\nSELECT * FROM orders WHERE ${sql} LIMIT 200;`);
+    }
+
+    function handleAltClick(e, col, val) {
+      if (e.altKey) {
+        e.preventDefault();
+        syncColInputToConditions(col, val);
+      }
+    }
+
+    function handleCellCtx(e, col, val) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      contextCell = { col, val };
+      const menu = document.getElementById("cellContextMenu");
+      document.getElementById("ctxMenuHeader").innerText = `单元格: ${col} = '${val}'`;
+      document.getElementById("ctxLabelEquals").innerText = `以此值过滤 (= '${val}')`;
+      document.getElementById("ctxLabelNequals").innerText = `排除此值 (<> '${val}')`;
+
+      menu.style.left = `${Math.min(e.pageX, window.innerWidth - 220)}px`;
+      menu.style.top = `${Math.min(e.pageY, window.innerHeight - 150)}px`;
+      menu.style.display = "block";
+    }
+
+    function quickFilterFromCtx(op) {
+      if (!contextCell) return;
+      const { col, val } = contextCell;
+      colOperators[col] = op;
+      syncColInputToConditions(col, val);
+      document.getElementById("cellContextMenu").style.display = "none";
+    }
+
+    function copyActiveCell() {
+      if (contextCell) {
+        navigator.clipboard.writeText(contextCell.val);
+        alert(`已复制: ${contextCell.val}`);
+      }
+      document.getElementById("cellContextMenu").style.display = "none";
+    }
+
+    function toggleFilterRow() {
+      const row = document.getElementById("inlineFilterRow");
+      const btn = document.getElementById("btnToggleFilterRow");
+      if (row.style.display === "none") {
+        row.style.display = "table-row";
+        btn.classList.add("active");
+      } else {
+        row.style.display = "none";
+        btn.classList.remove("active");
+      }
+    }
+
+    function clearAllFilters() {
+      conditions = [];
+      renderConditions();
+      applyAllConditions();
+    }
+
+    function copyFullSql() {
+      const sql = document.getElementById("rawSqlInput").value.trim();
+      const full = sql ? `SELECT * FROM orders WHERE ${sql} LIMIT 200;` : `SELECT * FROM orders LIMIT 200;`;
+      navigator.clipboard.writeText(full);
+      alert(`已复制完整 SQL 到剪贴板:\n${full}`);
+    }
+
+    function updateStatText(sql) {
+      const statDesc = document.getElementById("statFilterDesc");
+      if (sql) {
+        statDesc.innerText = ` · WHERE ${sql} (全表已下推过滤)`;
+        statDesc.style.display = "inline";
+      } else {
+        statDesc.innerText = " · 全量无筛选";
+      }
+    }
+
+    function togglePrototypeTheme() {
+      const html = document.documentElement;
+      const cur = html.getAttribute("data-theme");
+      const next = cur === "light" ? "dark" : "light";
+      html.setAttribute("data-theme", next);
+      const badge = document.querySelector(".logo-badge");
+      if (badge) badge.innerText = next === "light" ? "LIGHT THEME" : "PRO DARK";
+    }
+  </script>
+</body>
+</html>

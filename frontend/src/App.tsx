@@ -54,6 +54,7 @@ import type {
   TokenUsage,
   TreeModel,
   VendorPreset,
+  FilterCondition,
 } from "./types";
 import { createEditor, splitStatements, type EditorHandle } from "./editor-cm6";
 // Redis 面板只在连接 Redis 实例时才需要，懒加载避免 MySQL 用户为它付出解析/内存成本。
@@ -69,6 +70,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { InlineAiBar } from "./InlineAiBar";
 import { DataAssistantEditor } from "./components/DataAssistantEditor";
+import { MemoryWidget } from "./components/MemoryWidget";
+import { TableFilterBar, buildWhereSql } from "./components/TableFilterBar";
+import { InlineFilterRow } from "./components/InlineFilterRow";
 
 /** 表格右键菜单自适应容器（具有视口边缘碰撞检测，自动翻转防止菜单底部被遮挡截断） */
 function TableContextMenuContainer({
@@ -1455,6 +1459,8 @@ interface BrowseCtx {
 interface QueryTab {
   id: string;
   name: string;
+  /// "query" for SQL query editor, "table" for independent full-screen table browse.
+  kind?: "query" | "table";
   sql: string;
   result: QueryOutput | null;
   browseCtx: BrowseCtx | null;
@@ -1465,6 +1471,14 @@ interface QueryTab {
   // 查询的虚拟 ID：作为历史版本组的分组键。同一 tab 里迭代执行的每次
   // 运行都归到同一组，历史面板按组展示（最新一条 + 可展开的历史版本）。
   qid: string;
+  // Per-tab quick filter states
+  filterConditions?: FilterCondition[];
+  inlineFilters?: Record<string, { op: string; val: string }>;
+  filterRowOpen?: boolean;
+  /// Whether this tab is currently loading query/table data asynchronously.
+  loading?: boolean;
+  /// Last execution stats/banner for this specific tab.
+  runInfo?: { kind: "ok" | "err" | "warn" | "info"; text: string } | null;
 }
 
 const genTabId = () => "t" + Math.random().toString(36).slice(2, 9);
@@ -1656,6 +1670,19 @@ export function App() {
   const [jumpPage, setJumpPage] = useState<string>("");
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setFilterRowVisible((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Phase 26: per-tab database picker. The active query tab's DB is changed
   // through this popup (not by clicking the tree) to avoid accidental context
@@ -1843,6 +1870,20 @@ export function App() {
   const [gridSort, setGridSort] = useState<{ col: number; dir: "asc" | "desc" } | null>(null);
   // Per-column filter: op ∈ contains|equals|nequals|empty|notempty|range.
   const [colFilters, setColFilters] = useState<Record<number, { op: string; val: string; val2?: string }>>({});
+  // --- Navicat-style quick filter & inline filter row ---
+  const tabFiltersRef = useRef<
+    Record<
+      string,
+      {
+        conditions: FilterCondition[];
+        inlineFilters: Record<string, { op: string; val: string }>;
+        filterRowOpen: boolean;
+      }
+    >
+  >({});
+  const [filterConditions, setFilterConditions] = useState<FilterCondition[]>([]);
+  const [inlineColFilters, setInlineColFilters] = useState<Record<string, { op: string; val: string }>>({});
+  const [filterRowVisible, setFilterRowVisible] = useState(true);
   // Export dropdown (CSV / Excel / JSON) — replaces single-button CSV export.
   const [exportOpen, setExportOpen] = useState(false);
   // Multi-result-set: when the user runs multiple statements (separated by ;),
@@ -1880,7 +1921,14 @@ export function App() {
   // --- Bottom status bar / console (Phase 18) -----------------------------
   // Last operation feedback: timing, affected/returned rows, errors. Replaces
   // the old "run and hope" silence — DBeaver/TablePlus/DataGrip all have one.
-  const [runInfo, setRunInfo] = useState<{ kind: "ok" | "err" | "warn" | "info"; text: string } | null>(null);
+  const [runInfo, _setRunInfo] = useState<{ kind: "ok" | "err" | "warn" | "info"; text: string } | null>(null);
+  const setRunInfo = useCallback((info: { kind: "ok" | "err" | "warn" | "info"; text: string } | null) => {
+    _setRunInfo(info);
+    const curId = activeTabIdRef.current;
+    setTabs((prev) =>
+      prev.map((t) => (t.id === curId ? { ...t, runInfo: info } : t))
+    );
+  }, []);
   const [running, setRunning] = useState(false);
 
   // --- Collapsible AI panel + theme (Phase 18) ----------------------------
@@ -2457,13 +2505,13 @@ export function App() {
   /// Clear all edit overlays (edits + deletes + inserts + active cell). Called
   /// on tab switch, re-query, page change, save, and undo.
   const clearEditState = useCallback(() => {
-    setEdits({});
-    setDeletes(new Set());
-    setInserts([]);
-    setEditing(null);
-    setStructureView(null);
-    setRelationshipView(null);
-    setResultTab("data");
+    setEdits((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+    setDeletes((prev) => (prev.size === 0 ? prev : new Set()));
+    setInserts((prev) => (prev.length === 0 ? prev : []));
+    setEditing((prev) => (prev === null ? prev : null));
+    setStructureView((prev) => (prev === null ? prev : null));
+    setRelationshipView((prev) => (prev === null ? prev : null));
+    setResultTab((prev) => (prev === "data" ? prev : "data"));
   }, []);
 
   // Apply the chosen theme to <html> (CSS variables) and the CodeMirror editor,
@@ -2495,10 +2543,10 @@ export function App() {
   // --- Row multi-select + copy menu (Phase 20) -----------------------------
   // Drop the selection whenever the result or the active tab changes.
   useEffect(() => {
-    setSelRows(new Set());
-    setSelCols(new Set());
-    setSelCell(null);
-    setCtxMenu(null);
+    setSelRows((prev) => (prev.size === 0 ? prev : new Set()));
+    setSelCols((prev) => (prev.size === 0 ? prev : new Set()));
+    setSelCell((prev) => (prev === null ? prev : null));
+    setCtxMenu((prev) => (prev === null ? prev : null));
   }, [active?.id, result]);
 
   const showToast = (msg: string) => {
@@ -3120,12 +3168,153 @@ export function App() {
     }
   };
 
-  // Whether a row passes ALL active column filters + the global search.
-  const rowMatches = (row: string[]): boolean => {
+  // Test whether a single cell value satisfies a Navicat-style FilterCondition.
+  const testFilterCondition = (
+    c: FilterCondition,
+    row: string[],
+    cols: string[]
+  ): boolean => {
+    if (c.enabled === false) return true;
+    const ci = cols.indexOf(c.col);
+    if (ci === -1 || ci >= row.length) return true;
+    const cell = row[ci] ?? "";
+    const strCell = gridCase ? cell : cell.toLowerCase();
+    const strVal = gridCase ? c.val : c.val.toLowerCase();
+    const numCell = Number(cell);
+    const numVal = Number(c.val);
+
+    switch (c.op) {
+      case "=":
+        return strCell === strVal;
+      case "<>":
+      case "!=":
+        return strCell !== strVal;
+      case ">":
+        return !Number.isNaN(numCell) && !Number.isNaN(numVal) && numCell > numVal;
+      case ">=":
+        return !Number.isNaN(numCell) && !Number.isNaN(numVal) && numCell >= numVal;
+      case "<":
+        return !Number.isNaN(numCell) && !Number.isNaN(numVal) && numCell < numVal;
+      case "<=":
+        return !Number.isNaN(numCell) && !Number.isNaN(numVal) && numCell <= numVal;
+      case "LIKE":
+        return strCell.includes(strVal);
+      case "NOT LIKE":
+        return !strCell.includes(strVal);
+      case "IN": {
+        const items = c.val
+          .replace(/^\(|\)$/g, "")
+          .split(",")
+          .map((s) => (gridCase ? s.trim() : s.trim().toLowerCase()));
+        return items.includes(strCell);
+      }
+      case "IS NULL":
+        return cell === "" || cell === "NULL";
+      case "IS NOT NULL":
+        return !(cell === "" || cell === "NULL");
+      default:
+        return strCell.includes(strVal);
+    }
+  };
+
+  // Synchronize top FilterBar conditions change into inline col filters
+  const handleConditionsChange = (newConds: FilterCondition[]) => {
+    setFilterConditions(newConds);
+    const newInline: Record<string, { op: string; val: string }> = {};
+    for (const c of newConds) {
+      if (c.enabled !== false) {
+        newInline[c.col] = { op: c.op, val: c.val };
+      }
+    }
+    setInlineColFilters(newInline);
+    const currentTabId = activeTabIdRef.current;
+    tabFiltersRef.current[currentTabId] = {
+      conditions: newConds,
+      inlineFilters: newInline,
+      filterRowOpen: filterRowVisible,
+    };
+  };
+
+  // Synchronize inline col filter change into top FilterBar conditions
+  const handleInlineColChange = (col: string, op: string, val: string) => {
+    const isNoVal = op === "IS NULL" || op === "IS NOT NULL";
+    let nextInline: Record<string, { op: string; val: string }> = {};
+    let nextConds: FilterCondition[] = [];
+
+    setInlineColFilters((prev) => {
+      nextInline = { ...prev, [col]: { op, val } };
+      return nextInline;
+    });
+
+    setFilterConditions((prev) => {
+      if (!val.trim() && !isNoVal) {
+        nextConds = prev.filter((c) => c.col !== col);
+      } else {
+        const existingIdx = prev.findIndex((c) => c.col === col);
+        if (existingIdx !== -1) {
+          nextConds = [...prev];
+          nextConds[existingIdx] = { ...nextConds[existingIdx], op, val };
+        } else {
+          nextConds = [
+            ...prev,
+            {
+              id: "c_" + Math.random().toString(36).slice(2, 8),
+              col,
+              op,
+              val,
+              logic: "AND",
+              enabled: true,
+            },
+          ];
+        }
+      }
+      const currentTabId = activeTabIdRef.current;
+      tabFiltersRef.current[currentTabId] = {
+        conditions: nextConds,
+        inlineFilters: nextInline,
+        filterRowOpen: filterRowVisible,
+      };
+      return nextConds;
+    });
+  };
+
+  const handleInlineColClear = (col: string) => {
+    let nextInline: Record<string, { op: string; val: string }> = {};
+    let nextConds: FilterCondition[] = [];
+
+    setInlineColFilters((prev) => {
+      nextInline = { ...prev };
+      delete nextInline[col];
+      return nextInline;
+    });
+    setFilterConditions((prev) => {
+      nextConds = prev.filter((c) => c.col !== col);
+      const currentTabId = activeTabIdRef.current;
+      tabFiltersRef.current[currentTabId] = {
+        conditions: nextConds,
+        inlineFilters: nextInline,
+        filterRowOpen: filterRowVisible,
+      };
+      return nextConds;
+    });
+  };
+
+  // Quick filter from cell context menu or Alt+Click
+  const handleQuickFilterFromCell = (colName: string, op: string, cellVal: string) => {
+    handleInlineColChange(colName, op, cellVal);
+  };
+
+  // Whether a row passes ALL active column filters + filterConditions + the global search.
+  const rowMatches = (row: string[], cols?: string[]): boolean => {
     for (const [ci, f] of Object.entries(colFilters)) {
       const ciN = Number(ci);
       if (ciN >= row.length) continue;
       if (!matchesColFilter(f.op, f.val ?? "", row[ciN], f.val2)) return false;
+    }
+    if (cols && filterConditions.length > 0) {
+      for (const fc of filterConditions) {
+        if (!testFilterCondition(fc, row, cols)) return false;
+      }
     }
     const q = gridSearch.trim();
     if (q) {
@@ -3773,24 +3962,157 @@ export function App() {
       setSelDb(db);
       setMultiResults(null);
       setMultiResultIdx(0);
+
+      const currentTabs = tabsRef.current;
+      const currentActiveId = activeTabIdRef.current;
+      const currentActive = currentTabs.find((t) => t.id === currentActiveId);
+      const isAlreadyInThisTableTab =
+        currentActive?.kind === "table" &&
+        currentActive?.browseCtx?.connId === connId &&
+        currentActive?.browseCtx?.db === db &&
+        currentActive?.browseCtx?.table === table;
+
+      const existingTab = currentTabs.find(
+        (t) =>
+          t.kind === "table" &&
+          t.browseCtx?.connId === connId &&
+          t.browseCtx?.db === db &&
+          t.browseCtx?.table === table
+      );
+
+      // Save current tab filter state before switching
+      if (!isAlreadyInThisTableTab) {
+        tabFiltersRef.current[currentActiveId] = {
+          conditions: filterConditions,
+          inlineFilters: inlineColFilters,
+          filterRowOpen: filterRowVisible,
+        };
+      }
+
+      let targetTabId: string;
+
+      if (isAlreadyInThisTableTab) {
+        targetTabId = currentActiveId;
+        setActiveTab((t) => ({ ...t, loading: true }));
+      } else if (existingTab) {
+        targetTabId = existingTab.id;
+        activeTabIdRef.current = existingTab.id;
+        setActiveTabId(existingTab.id);
+        const saved = tabFiltersRef.current[existingTab.id];
+        if (saved) {
+          setFilterConditions(saved.conditions || []);
+          setInlineColFilters(saved.inlineFilters || {});
+          setFilterRowVisible(saved.filterRowOpen !== false);
+        } else {
+          setFilterConditions([]);
+          setInlineColFilters({});
+          setFilterRowVisible(true);
+        }
+        setTabs((prev) =>
+          prev.map((t) => (t.id === existingTab.id ? { ...t, loading: true } : t))
+        );
+      } else {
+        // ★ 核心改进：双击表时 0ms 立即创建并激活 Tab，带 loading 状态！
+        targetTabId = genTabId();
+        const placeholderTab: QueryTab = {
+          id: targetTabId,
+          name: table,
+          kind: "table",
+          sql: `SELECT * FROM \`${db}\`.\`${table}\` LIMIT ${pageSize};`,
+          result: null,
+          browseCtx: { connId, db, table, page, pageSize },
+          connId,
+          db,
+          qid: genQid(),
+          loading: true,
+        };
+        tabFiltersRef.current[targetTabId] = {
+          conditions: [],
+          inlineFilters: {},
+          filterRowOpen: true,
+        };
+        setFilterConditions([]);
+        setInlineColFilters({});
+        setFilterRowVisible(true);
+        activeTabIdRef.current = targetTabId;
+        setTabs((prev) => [...prev, placeholderTab]);
+        setActiveTabId(targetTabId);
+      }
+
       const t0 = performance.now();
       try {
         const r = await api.browseTable(connId, db, table, page, pageSize);
         const ms = Math.round(performance.now() - t0);
-        setActiveTab((t) => ({
-          ...t,
-          result: r,
-          browseCtx: { connId, db, table, page, pageSize },
-        }));
+
+        setTabs((prev) =>
+          prev.map((t) =>
+            t.id === targetTabId
+              ? {
+                  ...t,
+                  result: r,
+                  browseCtx: { connId, db, table, page, pageSize },
+                  loading: false,
+                }
+              : t
+          )
+        );
         setRunInfo(runStatFor(r, ms));
       } catch (e) {
         const ms = Math.round(performance.now() - t0);
-        setActiveTab((t) => ({ ...t, result: errOut(String(e)), browseCtx: null }));
+        setTabs((prev) =>
+          prev.map((t) =>
+            t.id === targetTabId
+              ? {
+                  ...t,
+                  result: errOut(String(e)),
+                  loading: false,
+                }
+              : t
+          )
+        );
         setRunInfo({ kind: "err", text: `✗ ${ms}ms · ${String(e)}` });
       }
     },
     []
   );
+
+  // Execute full-table query with WHERE clause pushed down to database
+  const handleFilterApply = async (whereSql: string) => {
+    if (!browseCtx) return;
+    const { connId, db, table, pageSize: ps } = browseCtx;
+    const cleanWhere = whereSql.trim();
+    if (!cleanWhere) {
+      void browseTable(connId, db, table, 0, ps);
+      return;
+    }
+    const whereClause = cleanWhere.replace(/^WHERE\s+/i, "").trim();
+    const fullSql = `SELECT * FROM \`${db}\`.\`${table}\` WHERE ${whereClause} LIMIT ${ps};`;
+    const t0 = performance.now();
+    try {
+      setActiveTab((t) => ({ ...t, loading: true }));
+      const r = await api.executeQuery(
+        connId,
+        fullSql,
+        db,
+        0,
+        ps,
+        false,
+        queryTimeoutSecs
+      );
+      const ms = Math.round(performance.now() - t0);
+      setActiveTab((t) => ({
+        ...t,
+        result: r,
+        browseCtx: { connId, db, table, page: 0, pageSize: ps },
+        loading: false,
+      }));
+      setRunInfo(runStatFor(r, ms));
+    } catch (e) {
+      const ms = Math.round(performance.now() - t0);
+      setActiveTab((t) => ({ ...t, loading: false }));
+      setRunInfo({ kind: "err", text: `✗ ${ms}ms · ${String(e)}` });
+    }
+  };
 
   // Page-size selector in the pager. For ad-hoc results we re-run the displayed
   // SQL at page 0 with the new size; for table browse we re-browse with it.
@@ -4072,7 +4394,19 @@ export function App() {
   // (or Redis lines). Primary-key columns are tagged with a key glyph.
   const renderData = () => {
     const fmt = fmtCell;
-    if (running) return <div className="empty">执行中…</div>;
+    if (active?.loading || running) {
+      return (
+        <div className="table-loading-container">
+          <div className="table-loading-spinner" />
+          <div className="table-loading-text">
+            正在读取 <b>{active?.name || "数据"}</b> 表数据…
+          </div>
+          <div className="table-loading-sub">
+            {active?.browseCtx ? `正在连接数据库执行查询 (第 ${(active.browseCtx.page || 0) + 1} 页)…` : "正在执行查询…"}
+          </div>
+        </div>
+      );
+    }
     if (!result) return <div className="empty">执行查询以查看结果</div>;
     if (result.kind === "redis") {
       // ADR-025 Phase A1: when browsing a single key, `value` is populated with
@@ -4165,8 +4499,8 @@ export function App() {
       origRi: ri,
       row,
     }));
-    if (Object.keys(colFilters).length > 0 || gridSearch.trim()) {
-      viewRows = viewRows.filter(({ row }) => rowMatches(row));
+    if (Object.keys(colFilters).length > 0 || gridSearch.trim() || filterConditions.length > 0) {
+      viewRows = viewRows.filter(({ row }) => rowMatches(row, cols));
     }
     if (gridSort) {
       const ci = gridSort.col;
@@ -4367,6 +4701,21 @@ export function App() {
               );
             })}
           </tr>
+          {filterRowVisible && (
+            <InlineFilterRow
+              columns={cols}
+              editable={editable}
+              colFilters={inlineColFilters}
+              onColChange={handleInlineColChange}
+              onColClear={handleInlineColClear}
+              onApply={() => {
+                if (browseCtx) {
+                  const sql = buildWhereSql(filterConditions);
+                  void handleFilterApply(sql);
+                }
+              }}
+            />
+          )}
         </thead>
         <tbody>
           {viewRows.map(({ origRi: ri, row }, vi) => {
@@ -4420,8 +4769,8 @@ export function App() {
                       }
                       title={
                         editable && !isDeleted
-                          ? "单击选中单元格 · 双击编辑 · 右键复制 · 双击查看完整内容"
-                          : "单击选中单元格 · 右键复制 · 双击查看完整内容"
+                          ? "单击选中单元格 · 双击编辑 · Alt+单击快速过滤 · 右键复制 · 双击查看完整内容"
+                          : "单击选中单元格 · Alt+单击快速过滤 · 右键复制 · 双击查看完整内容"
                       }
                       onMouseEnter={(e) => {
                         const t = e.currentTarget as HTMLTableCellElement;
@@ -4439,7 +4788,19 @@ export function App() {
                         }
                       }}
                       onMouseLeave={() => scheduleCellTipHide()}
-                      onClick={() => onCellClick(ri, ci)}
+                      onClick={(e) => {
+                        if (e.altKey) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const cname = cols[ci];
+                          if (cname) {
+                            handleQuickFilterFromCell(cname, "=", String(ov ?? v ?? ""));
+                            showToast(`已按此值快速过滤: ${cname} = '${String(ov ?? v ?? "")}'`);
+                          }
+                          return;
+                        }
+                        onCellClick(ri, ci);
+                      }}
                       onContextMenu={(e) => onCellCtx(ri, ci, e)}
                       onDoubleClick={() => {
                         if (editable && !isDeleted) {
@@ -4543,11 +4904,20 @@ export function App() {
     return (
       <div className="structure-view">
         <table className="result-table struct-table">
-          <caption>{db}.{table} — 列结构</caption>
+          <caption>
+            {db}.{table}
+            {data.table_comment ? (
+              <span style={{ marginLeft: 8, color: "var(--brand)", fontWeight: 500 }}>
+                （{data.table_comment}）
+              </span>
+            ) : null}
+            {" "}— 列结构
+          </caption>
           <thead>
             <tr>
               <th>Field</th>
               <th>Type</th>
+              <th>说明</th>
               <th>Null</th>
               <th>Key</th>
               <th>Default</th>
@@ -4559,6 +4929,9 @@ export function App() {
               <tr key={i}>
                 <td className="col-name">{c.name}</td>
                 <td className="col-type">{c.column_type}</td>
+                <td className="col-comment" style={{ color: c.comment ? "var(--brand)" : "var(--text-tertiary)", fontWeight: c.comment ? 500 : "normal" }}>
+                  {c.comment || "—"}
+                </td>
                 <td>{c.nullable ? "YES" : "NO"}</td>
                 <td>{c.key || "—"}</td>
                 <td>{c.default ?? "—"}</td>
@@ -4738,17 +5111,47 @@ export function App() {
   // --- Tab management -------------------------------------------------------
   const switchTab = (id: string) => {
     if (id === activeTabId) return;
+    // Save current active tab's filter state into synchronous ref
+    tabFiltersRef.current[activeTabIdRef.current] = {
+      conditions: filterConditions,
+      inlineFilters: inlineColFilters,
+      filterRowOpen: filterRowVisible,
+    };
+
     activeTabIdRef.current = id;
     setActiveTabId(id);
     clearEditState();
+
     const t = tabs.find((x) => x.id === id);
-    if (t) editorRef.current?.replaceValue(t.sql);
+    if (t) {
+      if (t.kind !== "table") {
+        editorRef.current?.replaceValue(t.sql);
+      }
+      _setRunInfo(t.runInfo || null);
+    }
+
+    // Restore target tab's filter state from synchronous ref
+    const saved = tabFiltersRef.current[id];
+    const nextConds = saved?.conditions || [];
+    const nextInline = saved?.inlineFilters || {};
+    const nextRowOpen = saved?.filterRowOpen !== false;
+
+    setFilterConditions((prev) => (prev.length === 0 && nextConds.length === 0 ? prev : nextConds));
+    setInlineColFilters((prev) => (Object.keys(prev).length === 0 && Object.keys(nextInline).length === 0 ? prev : nextInline));
+    setFilterRowVisible((prev) => (prev === nextRowOpen ? prev : nextRowOpen));
   };
 
   // `newTab` accepts an explicit connection/database so a "new query" spawned
   // from a tree node binds to that exact context (Phase 26). Called with no
   // args it inherits the current tree selection (selId / selDb).
   const newTab = (connId?: string, db?: string | null) => {
+    // Save current active tab's filter state first
+    tabFiltersRef.current[activeTabIdRef.current] = {
+      conditions: filterConditions,
+      inlineFilters: inlineColFilters,
+      filterRowOpen: filterRowVisible,
+    };
+
     const id = genTabId();
     const n = tabs.length + 1;
     const cid = connId ?? selId;
@@ -4758,14 +5161,26 @@ export function App() {
       {
         id,
         name: "查询 " + n,
+        kind: "query",
         sql: "",
         result: null,
         browseCtx: null,
         connId: cid,
         db: cdb,
         qid: genQid(),
+        runInfo: null,
       },
     ]);
+    tabFiltersRef.current[id] = {
+      conditions: [],
+      inlineFilters: {},
+      filterRowOpen: true,
+    };
+    setFilterConditions([]);
+    setInlineColFilters({});
+    setFilterRowVisible(true);
+    _setRunInfo(null);
+
     activeTabIdRef.current = id;
     setActiveTabId(id);
     clearEditState();
@@ -4816,6 +5231,7 @@ export function App() {
 
   const closeTab = (id: string) => {
     if (tabs.length <= 1) return;
+    delete tabFiltersRef.current[id];
     const idx = tabs.findIndex((t) => t.id === id);
     setTabs((prev) => prev.filter((t) => t.id !== id));
     if (id === activeTabId) {
@@ -4823,7 +5239,20 @@ export function App() {
       activeTabIdRef.current = next.id;
       setActiveTabId(next.id);
       clearEditState();
-      editorRef.current?.replaceValue(next.sql);
+      if (next.kind !== "table") {
+        editorRef.current?.replaceValue(next.sql);
+      }
+      _setRunInfo(next.runInfo || null);
+      const saved = tabFiltersRef.current[next.id];
+      if (saved) {
+        setFilterConditions(saved.conditions || []);
+        setInlineColFilters(saved.inlineFilters || {});
+        setFilterRowVisible(saved.filterRowOpen !== false);
+      } else {
+        setFilterConditions([]);
+        setInlineColFilters({});
+        setFilterRowVisible(true);
+      }
     }
   };
 
@@ -5934,7 +6363,11 @@ export function App() {
       el,
       (doc) => {
         const id = activeTabIdRef.current;
-        setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, sql: doc } : t)));
+        setTabs((prev) => {
+          const cur = prev.find((t) => t.id === id);
+          if (cur && cur.sql === doc) return prev;
+          return prev.map((t) => (t.id === id ? { ...t, sql: doc } : t));
+        });
       },
       () => runQueryRef.current(),
       () => handleOpenInlineAiRef.current()
@@ -6306,6 +6739,7 @@ export function App() {
           onSelectDb={onSelectDb}
           onNewQuery={onNewQuery}
         />
+        <MemoryWidget showToast={showToast} />
       </aside>
 
       <main className="app-main" ref={appMainRef}>
@@ -6313,11 +6747,20 @@ export function App() {
             {tabs.map((t) => (
               <div
                 key={t.id}
-                className={"tab" + (t.id === activeTabId ? " active" : "")}
+                className={"tab" + (t.id === activeTabId ? " active" : "") + (t.loading ? " is-loading" : "")}
                 onClick={() => switchTab(t.id)}
                 title={t.name}
               >
-                <span className="tab-name">{t.name}</span>
+                <span className="tab-name">
+                  {t.loading ? (
+                    <span className="tab-loading-spinner" title="加载中…" />
+                  ) : t.kind === "table" ? (
+                    "▤ "
+                  ) : (
+                    ""
+                  )}
+                  {t.name}
+                </span>
                 {tabs.length > 1 && (
                   <button
                     className="tab-close"
@@ -6344,7 +6787,10 @@ export function App() {
           <>
           <div
             className={"editor-pane" + (resultCollapsed ? " expanded" : "")}
-            style={resultCollapsed ? undefined : { flex: "0 0 var(--editor-flex, 50%)" }}
+            style={{
+              display: active?.kind === "table" ? "none" : undefined,
+              flex: resultCollapsed ? undefined : "0 0 var(--editor-flex, 50%)",
+            }}
           >
           <div className="pane-head">
             <span className="ctx-conn-wrap">
@@ -6599,7 +7045,7 @@ export function App() {
             </button>
           )}
         </div>
-        {!resultCollapsed && (
+        {!resultCollapsed && active?.kind !== "table" && (
           <div
             className="pane-splitter-v"
             onMouseDown={startVResize}
@@ -6608,10 +7054,12 @@ export function App() {
             <div className="splitter-handle" />
           </div>
         )}
-        {!resultCollapsed && (
+        {(!resultCollapsed || active?.kind === "table") && (
         <div
           className="result-pane"
-          style={{ flex: "1 1 calc(100% - var(--editor-flex, 50%) - 5px)" }}
+          style={{
+            flex: active?.kind === "table" ? "1 1 100%" : "1 1 calc(100% - var(--editor-flex, 50%) - 5px)",
+          }}
         >
           <div className="pane-head">
             <div className="result-tabs">
@@ -6622,7 +7070,9 @@ export function App() {
                 数据
               </button>
               <span className="result-status">
-                [{result?.kind ?? "null"} rows={result?.kind === "table" && Array.isArray(result.rows) ? result.rows.length : "-"}]
+                {active?.loading
+                  ? "[正在读取 ···]"
+                  : `[${result?.kind ?? "null"} rows=${result?.kind === "table" && Array.isArray(result.rows) ? result.rows.length : "-"}]`}
               </span>
               <button
                 className={"rtab" + (resultTab === "structure" ? " active" : "")}
@@ -6694,6 +7144,16 @@ export function App() {
                       </button>
                     )}
                   </span>
+                  {result && result.kind === "table" && Array.isArray(result.columns) && result.columns.length > 0 && (
+                    <button
+                      type="button"
+                      className={"transpose-toggle-btn" + (filterRowVisible ? " active" : "")}
+                      onClick={() => setFilterRowVisible((v) => !v)}
+                      title="显示/隐藏表头第2行行内过滤行 (快捷键: ⌘⇧F)"
+                    >
+                      ⚲ 行内过滤
+                    </button>
+                  )}
                   {result && result.kind === "table" && Array.isArray(result.rows) && result.rows.length > 0 && (
                     <button
                       className={"transpose-toggle-btn" + (isTransposed ? " active" : "")}
@@ -6733,29 +7193,56 @@ export function App() {
                   {result && "truncated" in result && result.truncated && (
                     <span className="warn">已截断，请加 LIMIT</span>
                   )}
-                  <button
-                    className="pane-collapse-btn"
-                    onClick={() => setResultCollapsed(true)}
-                    title="收起结果面板（编辑器将全屏展开，右下角提供悬浮胶囊恢复）"
-                  >
-                    ⌄ 收起
-                  </button>
+                  {active?.kind !== "table" && (
+                    <button
+                      className="pane-collapse-btn"
+                      onClick={() => setResultCollapsed(true)}
+                      title="收起结果面板（编辑器将全屏展开，右下角提供悬浮胶囊恢复）"
+                    >
+                      ⌄ 收起
+                    </button>
+                  )}
                 </>
               ) : (
                 <>
                   <button onClick={() => setResultTab("data")}>返回数据</button>
-                  <button
-                    className="pane-collapse-btn"
-                    onClick={() => setResultCollapsed(true)}
-                    title="收起结果面板（编辑器将全屏展开，右下角提供悬浮胶囊恢复）"
-                  >
-                    ⌄ 收起
-                  </button>
+                  {active?.kind !== "table" && (
+                    <button
+                      className="pane-collapse-btn"
+                      onClick={() => setResultCollapsed(true)}
+                      title="收起结果面板（编辑器将全屏展开，右下角提供悬浮胶囊恢复）"
+                    >
+                      ⌄ 收起
+                    </button>
+                  )}
                 </>
               )}
             </div>
           </div>
-          {runInfo && (
+          {resultTab === "data" && result && result.kind === "table" && Array.isArray(result.columns) && result.columns.length > 0 && (
+            <TableFilterBar
+              columns={result.columns}
+              columnsMeta={structureView?.data?.columns}
+              conditions={filterConditions}
+              onChangeConditions={handleConditionsChange}
+              onApply={(whereSql) => {
+                if (browseCtx) {
+                  void handleFilterApply(whereSql);
+                }
+              }}
+              onClear={() => {
+                setFilterConditions([]);
+                setInlineColFilters({});
+                setGridSearch("");
+              }}
+              onCopySql={(sql) => {
+                navigator.clipboard?.writeText(sql);
+                showToast("已复制完整 SQL 到剪贴板");
+              }}
+              tableName={browseCtx?.table}
+            />
+          )}
+          {runInfo && (result != null || runInfo.kind === "err") && (
             <div className={"run-banner run-" + runInfo.kind}>
               <span className="run-banner-text">{runInfo.text}</span>
               {runInfo.kind === "err" && (
@@ -6822,9 +7309,9 @@ export function App() {
           {resultTab === "data" && pager}
         </div>
         )}
-        <div className={"status-bar" + (runInfo ? " " + runInfo.kind : "")}>
+        <div className={"status-bar" + (runInfo && (result != null || runInfo.kind === "err") ? " " + runInfo.kind : "")}>
           <span className="status-dot" />
-          <span className="status-text">{running ? "执行中…" : runInfo ? runInfo.text : "就绪"}</span>
+          <span className="status-text">{active?.loading ? "正在连接数据库加载表数据…" : running ? "执行中…" : (runInfo && (result != null || runInfo.kind === "err")) ? runInfo.text : "就绪"}</span>
           {active?.connId && findConn(active.connId) && (
             <span className="status-conn">● {findConn(active.connId)!.name}</span>
           )}
@@ -9456,6 +9943,29 @@ export function App() {
                   }
                 >
                   查看完整内容
+                </button>
+                <div className="ctx-sep" />
+                <button
+                  onClick={() => {
+                    const colName = result.columns[ctxMenu.cell!.ci];
+                    const cellVal = result.rows[ctxMenu.cell!.ri]?.[ctxMenu.cell!.ci] ?? "";
+                    handleQuickFilterFromCell(colName, "=", cellVal);
+                    showToast(`已按此值快速过滤: ${colName} = '${cellVal}'`);
+                    setCtxMenu(null);
+                  }}
+                >
+                  ⚲ 按此值筛选 (= '{result.rows[ctxMenu.cell!.ri]?.[ctxMenu.cell!.ci] ?? ""}')
+                </button>
+                <button
+                  onClick={() => {
+                    const colName = result.columns[ctxMenu.cell!.ci];
+                    const cellVal = result.rows[ctxMenu.cell!.ri]?.[ctxMenu.cell!.ci] ?? "";
+                    handleQuickFilterFromCell(colName, "<>", cellVal);
+                    showToast(`已排除此值: ${colName} <> '${cellVal}'`);
+                    setCtxMenu(null);
+                  }}
+                >
+                  ⚲ 排除此值 (&lt;&gt; '{result.rows[ctxMenu.cell!.ri]?.[ctxMenu.cell!.ci] ?? ""}')
                 </button>
                 <div className="ctx-sep" />
               </>

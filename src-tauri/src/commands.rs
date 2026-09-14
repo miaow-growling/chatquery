@@ -2240,3 +2240,72 @@ pub async fn inline_generate_sql(
 
     Ok(())
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryStats {
+    pub resident_bytes: u64,
+    pub resident_mb: f64,
+}
+
+/// 获取当前应用进程占用的物理常驻内存（RSS）。
+#[tauri::command]
+pub fn get_memory_usage() -> Result<MemoryStats, String> {
+    let bytes = chatquery::system::get_process_memory_bytes();
+    let mb = (bytes as f64) / 1024.0 / 1024.0;
+    Ok(MemoryStats {
+        resident_bytes: bytes,
+        resident_mb: (mb * 10.0).round() / 10.0,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanCacheResult {
+    pub before_mb: f64,
+    pub after_mb: f64,
+    pub freed_mb: f64,
+}
+
+/// 清理应用缓存：清空表元数据缓存、回收闲置 MySQL 连接池、收缩本地 SQLite 缓存。
+#[tauri::command]
+pub async fn clean_cache(state: State<'_, AppState>) -> Result<CleanCacheResult, String> {
+    let before_bytes = chatquery::system::get_process_memory_bytes();
+    let before_mb = (before_bytes as f64) / 1024.0 / 1024.0;
+
+    // 1. 清空元数据缓存
+    {
+        let mut cache = state.schema_cache.lock().unwrap();
+        cache.clear();
+    }
+
+    // 2. 清理已结束会话状态
+    {
+        let mut turns = state.turns.lock().unwrap();
+        turns.clear();
+    }
+
+    // 3. 释放 MySQL 缓存连接池
+    chatquery::db::mysql::clear_mysql_pool_cache();
+
+    // 4. 收缩本地 SQLite 内部内存
+    {
+        let store = state.store.lock().unwrap();
+        let _ = store.storage().shrink_memory();
+    }
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    let after_bytes = chatquery::system::get_process_memory_bytes();
+    let after_mb = (after_bytes as f64) / 1024.0 / 1024.0;
+    let freed_mb = if before_mb > after_mb {
+        ((before_mb - after_mb) * 10.0).round() / 10.0
+    } else {
+        0.0
+    };
+
+    Ok(CleanCacheResult {
+        before_mb: (before_mb * 10.0).round() / 10.0,
+        after_mb: (after_mb * 10.0).round() / 10.0,
+        freed_mb,
+    })
+}
+

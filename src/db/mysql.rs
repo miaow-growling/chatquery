@@ -726,6 +726,19 @@ struct PoolCache {
 
 static POOL_CACHE: std::sync::OnceLock<std::sync::Mutex<PoolCache>> = std::sync::OnceLock::new();
 
+/// 清空所有缓存的 MySQL 连接池并异步关闭底层连接，释放套接字与内存资源。
+pub fn clear_mysql_pool_cache() {
+    if let Some(cache_mutex) = POOL_CACHE.get() {
+        let mut g = cache_mutex.lock().unwrap();
+        for (_, pool) in g.pools.drain() {
+            tokio::spawn(async move {
+                pool.close().await;
+            });
+        }
+        g.order.clear();
+    }
+}
+
 fn pool_cache() -> &'static std::sync::Mutex<PoolCache> {
     POOL_CACHE.get_or_init(|| {
         std::sync::Mutex::new(PoolCache {
@@ -1649,6 +1662,8 @@ pub struct ColumnDetail {
     pub default: Option<String>,
     /// `auto_increment`, `on update CURRENT_TIMESTAMP`, `""`, etc.
     pub extra: String,
+    /// Column comment from INFORMATION_SCHEMA.COLUMN_COMMENT
+    pub comment: Option<String>,
 }
 
 /// One index entry — a single (index, column) pair. A multi-column index
@@ -1670,6 +1685,8 @@ pub struct TableStructure {
     pub indexes: Vec<IndexInfo>,
     /// The `SHOW CREATE TABLE` output, verbatim.
     pub create_sql: String,
+    /// Table comment from INFORMATION_SCHEMA.TABLES.TABLE_COMMENT
+    pub table_comment: Option<String>,
 }
 
 /// Fetch the full structure of a table: column details (with full type and
@@ -1684,14 +1701,15 @@ pub async fn describe_table(
     with_stale_retry("mysql.describe_table", cfg, database, |_attempt| async {
         let pool = connect_pool_db(cfg, database).await?;
 
-        // 1. Column details — use COLUMN_TYPE (full) and EXTRA which list_columns
+        // 1. Column details — use COLUMN_TYPE (full), EXTRA and COLUMN_COMMENT which list_columns
         //    doesn't select.
         // CAST every INFORMATION_SCHEMA text column to CHAR so sqlx decodes them as
         // VARCHAR instead of BINARY (binary charset would break String mapping).
         let col_rows = sqlx::query(
             "SELECT CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, CAST(COLUMN_TYPE AS CHAR) AS COLUMN_TYPE, \
                     CAST(IS_NULLABLE AS CHAR) AS IS_NULLABLE, CAST(COLUMN_KEY AS CHAR) AS COLUMN_KEY, \
-                    CAST(COLUMN_DEFAULT AS CHAR) AS COLUMN_DEFAULT, CAST(EXTRA AS CHAR) AS EXTRA \
+                    CAST(COLUMN_DEFAULT AS CHAR) AS COLUMN_DEFAULT, CAST(EXTRA AS CHAR) AS EXTRA, \
+                    CAST(COLUMN_COMMENT AS CHAR) AS COLUMN_COMMENT \
              FROM INFORMATION_SCHEMA.COLUMNS \
              WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
         )
@@ -1708,6 +1726,10 @@ pub async fn describe_table(
             let key: String = row.try_get("COLUMN_KEY").map_err(AppError::Sqlx)?;
             let default: Option<String> = row.try_get("COLUMN_DEFAULT").ok().flatten();
             let extra: String = row.try_get("EXTRA").map_err(AppError::Sqlx)?;
+            let comment: Option<String> = row
+                .try_get::<String, _>("COLUMN_COMMENT")
+                .ok()
+                .filter(|s| !s.trim().is_empty());
             columns.push(ColumnDetail {
                 name,
                 column_type,
@@ -1715,6 +1737,7 @@ pub async fn describe_table(
                 key,
                 default,
                 extra,
+                comment,
             });
         }
 
@@ -1749,10 +1772,23 @@ pub async fn describe_table(
             .try_get::<String, _>(1)
             .map_err(AppError::Sqlx)?;
 
+        // 4. Table Comment from INFORMATION_SCHEMA.TABLES
+        let table_comment: Option<String> = sqlx::query_scalar(
+            "SELECT CAST(TABLE_COMMENT AS CHAR) FROM INFORMATION_SCHEMA.TABLES \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+        )
+        .bind(database)
+        .bind(table)
+        .fetch_optional(&pool)
+        .await
+        .unwrap_or(None)
+        .filter(|s: &String| !s.trim().is_empty());
+
         Ok(TableStructure {
             columns,
             indexes,
             create_sql,
+            table_comment,
         })
     })
     .await

@@ -470,6 +470,133 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .add-item:hover { background: var(--brand-soft); color: var(--brand); }
 
+/* =====================  SIDEBAR MEMORY FOOTER (方案 B)  ===================== */
+.sidebar-memory-footer {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--sidebar-bg);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  display: flex;
+  align-items: center;
+  user-select: none;
+}
+
+.memory-capsule {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  transition: all var(--t-fast);
+}
+
+.memory-capsule:hover {
+  border-color: var(--border-focus, var(--brand));
+}
+
+.mem-gauge {
+  width: 14px;
+  height: 14px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.mem-gauge svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.mem-gauge circle {
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.mem-gauge .bg-circle {
+  stroke: var(--border);
+  opacity: 0.6;
+}
+
+.mem-gauge .val-circle {
+  stroke-dasharray: 37.7;
+  transition: stroke-dashoffset 0.6s ease, stroke 0.3s ease;
+}
+
+.mem-text {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mem-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-family: var(--font-sans);
+}
+
+.mem-val {
+  color: var(--text-primary);
+  font-weight: var(--fw-semibold);
+  font-size: 11px;
+}
+
+.mem-sep {
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.mem-clean-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  font-size: 10.5px;
+  font-family: var(--font-sans);
+  transition: all var(--t-fast);
+  white-space: nowrap;
+}
+
+.mem-clean-btn:hover:not(:disabled) {
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.mem-clean-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.mem-clean-icon.spin {
+  animation: mem-spin 0.6s linear infinite;
+  display: inline-block;
+}
+
+@keyframes mem-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* =====================  TREE (sidebar schema tree)  =====================
    Named `.db-tree` — was a bare `.tree`, which collided with the internal
    <div class="tree"> that Monaco's suggest widget renders (the widget's
@@ -6287,6 +6414,501 @@ select.field-input:disabled {
   padding: 2px 6px;
   border-radius: var(--r-sm);
 }
+
+/* =========================================================================
+   ★ Navicat Style Quick Filter & Dual-Engine Builder (Adaptive Dual-Theme)
+   ========================================================================= */
+.where-builder-bar {
+  min-height: 40px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+  padding: 5px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  position: relative;
+  font-family: var(--font-ui);
+}
+
+.where-badge {
+  background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+  color: #FFFFFF;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: var(--r-xs, 4px);
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+  box-shadow: 0 1px 4px rgba(99, 102, 241, 0.35);
+}
+
+.condition-pill-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.condition-pill {
+  display: inline-flex;
+  align-items: center;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm, 6px);
+  padding: 2px 4px 2px 6px;
+  gap: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  position: relative;
+}
+
+.condition-pill.disabled {
+  opacity: 0.45;
+  filter: grayscale(1);
+}
+
+.pill-field-btn {
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  color: var(--cell-type-num);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: var(--r-xs, 4px);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s;
+}
+.pill-field-btn:hover {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.pill-operator-btn {
+  background: var(--bg-inset);
+  border: 1px solid var(--warning-soft);
+  color: var(--warning-500);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: var(--r-xs, 4px);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s;
+}
+.pill-operator-btn:hover {
+  border-color: var(--warning-500);
+  background: var(--warning-soft);
+}
+
+.pill-value-input {
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  color: var(--success-500);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: var(--r-xs, 4px);
+  outline: none;
+  width: 110px;
+}
+.pill-value-input:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px var(--brand);
+}
+
+.pill-del-btn {
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 2px 5px;
+  font-size: 14px;
+  border-radius: 3px;
+  line-height: 1;
+}
+.pill-del-btn:hover {
+  background: var(--danger-soft);
+  color: var(--danger-500);
+}
+
+.join-logic-btn {
+  background: var(--brand-soft);
+  border: 1px solid var(--brand-border);
+  color: var(--brand);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  cursor: pointer;
+}
+.join-logic-btn:hover {
+  background: var(--brand);
+  color: #fff;
+}
+
+.btn-add-condition {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s;
+}
+.btn-add-condition:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.where-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.mode-switch-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: var(--r-xs, 4px);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s;
+}
+.mode-switch-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.raw-sql-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+.raw-sql-input {
+  flex: 1;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  padding: 4px 10px;
+  border-radius: var(--r-xs, 4px);
+  outline: none;
+}
+.raw-sql-input:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px var(--brand-soft);
+}
+
+/* 智能代码提示浮窗 */
+.intellisense-popup {
+  position: absolute;
+  top: 36px;
+  left: 0;
+  width: 280px;
+  background: var(--modal-bg, var(--bg-elevated));
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm, 6px);
+  box-shadow: var(--modal-shadow);
+  padding: 4px 0;
+  z-index: 140;
+}
+.intellisense-title {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  text-transform: uppercase;
+}
+.intellisense-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: background 0.1s;
+}
+.intellisense-item:hover {
+  background: var(--bg-hover);
+  color: var(--brand);
+}
+.intellisense-tag {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-weight: 600;
+}
+.tag-col { background: var(--info-soft); color: var(--cell-type-num); }
+
+/* 运算符下拉浮窗 */
+.op-dropdown-menu {
+  position: fixed;
+  background: var(--modal-bg, var(--bg-elevated));
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm, 6px);
+  box-shadow: var(--modal-shadow);
+  padding: 4px 0;
+  min-width: 190px;
+  z-index: 9999;
+}
+.op-menu-header {
+  padding: 4px 10px;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border);
+  text-transform: uppercase;
+  font-family: var(--font-ui);
+}
+.op-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.op-menu-item:hover {
+  background: var(--bg-hover);
+  color: var(--warning-500);
+}
+.op-symbol {
+  width: 50px;
+  font-weight: 700;
+  color: var(--warning-500);
+}
+.op-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+}
+
+/* 列选择下拉浮窗 */
+.col-dropdown-menu {
+  position: fixed;
+  background: var(--modal-bg, var(--bg-elevated));
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm, 6px);
+  box-shadow: var(--modal-shadow);
+  padding: 4px 0;
+  min-width: 240px;
+  max-width: 320px;
+  z-index: 9999;
+}
+.col-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 11.5px;
+  padding: 4px 8px;
+  border-radius: var(--r-xs, 4px);
+  outline: none;
+}
+.col-search-input:focus {
+  border-color: var(--brand);
+}
+.col-menu-scroll {
+  max-height: 220px;
+  overflow-y: auto;
+}
+.col-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: background 0.1s;
+}
+.col-menu-item:hover {
+  background: var(--bg-hover);
+  color: var(--brand);
+}
+.col-name-label {
+  font-weight: 600;
+}
+.col-type-tag {
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  margin-left: auto;
+}
+
+/* =========================================================================
+   ★ 表头第 2 行: 行内即时过滤行 (Inline Filter Row)
+   ========================================================================= */
+.filter-tr {
+  background: var(--bg-subtle);
+}
+.filter-th-cell {
+  position: sticky;
+  top: 29px;
+  background: var(--bg-subtle);
+  border-bottom: 2px solid var(--border-strong) !important;
+  border-right: 1px solid var(--grid-line) !important;
+  padding: 2px 5px !important;
+  z-index: 9;
+}
+.filter-th-row-num {
+  top: 29px;
+  z-index: 9;
+  background: var(--bg-subtle) !important;
+  color: var(--brand) !important;
+  font-size: 12px !important;
+  text-align: center;
+}
+.filter-th-action {
+  top: 29px;
+  z-index: 9;
+  background: var(--bg-subtle) !important;
+}
+
+.inline-filter-input-wrap {
+  display: flex;
+  align-items: center;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs, 4px);
+  padding: 1px 4px;
+  gap: 4px;
+  transition: all 0.15s;
+}
+.inline-filter-input-wrap:focus-within {
+  border-color: var(--brand);
+  background: var(--bg-surface);
+  box-shadow: 0 0 0 1px var(--brand-soft);
+}
+.inline-filter-input-wrap.has-val {
+  border-color: var(--brand-border);
+  background: var(--brand-soft);
+}
+
+.col-op-clickable {
+  color: var(--warning-500);
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  user-select: none;
+  padding: 0 3px;
+  border-radius: 2px;
+  transition: background 0.1s;
+}
+.col-op-clickable:hover {
+  background: var(--warning-soft);
+}
+
+.inline-filter-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 2px 0;
+}
+.inline-filter-input::placeholder {
+  color: var(--text-disabled);
+  font-size: 11px;
+}
+
+.clear-col-val {
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.clear-col-val:hover {
+  color: var(--danger-500);
+}
+
+/* =========================================================================
+   ★ Loading Spinner & Loading Container for Asynchronous Table Browse
+   ========================================================================= */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.tab-loading-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+.table-loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  gap: 12px;
+  user-select: none;
+  min-height: 260px;
+}
+
+.table-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 2.5px solid var(--border-soft);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.table-loading-text {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.table-loading-text b {
+  color: var(--brand);
+}
+
+.table-loading-sub {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
 
 /* Arrays and dicts */
 .php-arr { padding-left: 16px; border-left: 2px solid var(--grid-line); }

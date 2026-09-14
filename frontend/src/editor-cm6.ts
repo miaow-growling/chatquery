@@ -662,6 +662,7 @@ export function createEditor(
       view.focus();
     },
     replaceValue(text: string) {
+      if (view.state.doc.toString() === text) return;
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: text },
       });
