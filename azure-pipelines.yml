@@ -47,17 +47,21 @@ steps:
       npm run build
     displayName: '构建前端静态资源 (Vite)'
 
-  # 6. 打包 Tauri Windows 应用 (在根目录执行，以便识别 src-tauri/tauri.conf.json)
+  # 6. 打包 Tauri Windows 应用 (使用现代 NSIS 引擎，生成 .exe 安装包并规避 WiX 3 字符集缺陷)
   - powershell: |
       Set-Location -Path "$(System.DefaultWorkingDirectory)"
-      npx --prefix frontend tauri build
-    displayName: '打包 Tauri Windows 应用'
+      npx --prefix frontend tauri build --bundles nsis
+      # 将编译好的主程序独立复制一份作为绿色便携版，供免安装直接运行
+      if (Test-Path "src-tauri\target\release\chatquery.exe") {
+        Copy-Item -Path "src-tauri\target\release\chatquery.exe" -Destination "src-tauri\target\release\bundle\nsis\智询_免安装绿色版.exe"
+      }
+    displayName: '打包 Tauri Windows 应用 (NSIS .exe)'
 
   # 7. 发布构建产物供网页下载
   - task: PublishBuildArtifacts@1
     displayName: '上传 Windows 安装包'
     inputs:
-      PathtoPublish: 'src-tauri/target/release/bundle'
+      PathtoPublish: 'src-tauri/target/release/bundle/nsis'
       ArtifactName: '智询-Windows安装包'
       publishLocation: 'Container'
 
