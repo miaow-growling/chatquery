@@ -149,7 +149,7 @@ export const DataAssistantEditor: React.FC<DataAssistantEditorProps> = ({
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             <div>
               <label className="kb-label" style={{ marginBottom: "6px" }}>
-                助手名称 & 图标 <span style={{ color: "var(--danger-500, #ef4444)" }}>*</span>
+                助手名称 & 图标 <span className="req" style={{ color: "var(--danger-500, #ef4444)" }}>*</span>
               </label>
               <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                 <button

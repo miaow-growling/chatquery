@@ -52,6 +52,20 @@ export interface EnvNode {
   groups: GroupNode[];
 }
 
+export function getEnvEffectiveType(env: EnvNode): "mysql" | "redis" {
+  let hasRedis = false;
+  let hasMysql = false;
+  for (const g of env.groups || []) {
+    for (const c of g.connections || []) {
+      if (c.db_type === "redis") hasRedis = true;
+      else if (c.db_type === "mysql") hasMysql = true;
+    }
+  }
+  if (hasRedis && !hasMysql) return "redis";
+  if (hasMysql && !hasRedis) return "mysql";
+  return env.db_type === "redis" ? "redis" : "mysql";
+}
+
 export interface GroupNode {
   id: string;
   name: string;
@@ -238,6 +252,16 @@ export interface QueryItem {
   group_id?: string | null;
   /// 同一查询更早的迭代版本（时间倒序，不含本条）。命名片段 / 旧数据为空。
   versions?: QueryItem[];
+}
+
+export interface McpInstallInfo {
+  executable_path: string;
+  symlink_path: string | null;
+  is_symlink_ready: boolean;
+  claude_json: string;
+  cursor_json: string;
+  claude_config_path: string;
+  cursor_config_path: string;
 }
 
 export interface ChatMessage {

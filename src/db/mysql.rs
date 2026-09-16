@@ -52,12 +52,15 @@ pub struct QueryResult {
 /// 把这种错误重试一次能让长闲置后的首次查询自然恢复。
 pub fn is_stale_connection_err(e: &sqlx::Error) -> bool {
     match e {
+        sqlx::Error::PoolTimedOut => true,
+        sqlx::Error::PoolClosed => true,
         sqlx::Error::Io(io) => matches!(
             io.kind(),
             std::io::ErrorKind::UnexpectedEof
                 | std::io::ErrorKind::ConnectionReset
                 | std::io::ErrorKind::ConnectionAborted
                 | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::TimedOut
         ),
         // sqlx 把协议层的错误也包成 IoError(UnexpectedEof)，但有些
         // 版本会归到 Database 里并以 "expected to read N bytes" 形式出现。
@@ -66,6 +69,8 @@ pub fn is_stale_connection_err(e: &sqlx::Error) -> bool {
             m.contains("got 0 bytes at EOF")
                 || m.contains("expected to read")
                 || m.contains("connection reset")
+                || m.contains("Connection lost")
+                || m.contains("server has gone away")
         }
         _ => false,
     }
@@ -131,17 +136,22 @@ where
     unreachable!("every loop branch returns")
 }
 
-/// Drop a connection's cached pool from the LRU table so the next
-/// `get_pool` builds a fresh one. Deliberately does NOT `close()`: pools
-/// still holding in-flight connections from concurrent tasks stay alive
-/// until those finish; idle connections die with the final Arc drop.
-fn invalidate_pool_cache(cfg: &ConnectionConfig, database: &str) {
+/// Drop a connection's cached pool from the LRU table and asynchronously close it
+/// to terminate broken or half-read TCP sockets, preventing dirty connection reuse and deadlocks.
+pub fn invalidate_pool_cache(cfg: &ConnectionConfig, database: &str) {
     let key = pool_key(cfg, database);
-    let mut g = pool_cache().lock().unwrap();
-    if g.pools.remove(&key).is_some() {
+    let removed = {
+        let mut g = pool_cache().lock().unwrap();
+        let p = g.pools.remove(&key);
         if let Some(pos) = g.order.iter().position(|k| k == &key) {
             g.order.remove(pos);
         }
+        p
+    };
+    if let Some(pool) = removed {
+        tokio::spawn(async move {
+            pool.close().await;
+        });
     }
 }
 
@@ -190,6 +200,10 @@ async fn query_once(
     allow_risky: bool,
     text_mode: bool,
 ) -> Result<QueryResult> {
+    let key_db = match database {
+        Some(d) if !d.is_empty() => d,
+        _ => cfg.database.as_str(),
+    };
     let pool = match database {
         Some(db) if !db.is_empty() => connect_pool_db(cfg, db).await?,
         _ => connect_pool(cfg).await?,
@@ -220,12 +234,18 @@ async fn query_once(
             sqlx::raw_sql(sql)
                 .execute(&pool)
                 .await
-                .map_err(AppError::Sqlx)?
+                .map_err(|e| {
+                    invalidate_pool_cache(cfg, key_db);
+                    AppError::Sqlx(e)
+                })?
         } else {
             sqlx::query(sql)
                 .execute(&pool)
                 .await
-                .map_err(AppError::Sqlx)?
+                .map_err(|e| {
+                    invalidate_pool_cache(cfg, key_db);
+                    AppError::Sqlx(e)
+                })?
         };
         return Ok(QueryResult {
             columns: vec![],
@@ -248,7 +268,14 @@ async fn query_once(
     let mut count: usize = 0;
     let mut truncated = false;
 
-    while let Some(row) = stream.try_next().await.map_err(AppError::Sqlx)? {
+    while let Some(row) = match stream.try_next().await {
+        Ok(r) => r,
+        Err(e) => {
+            // 流式读取异常中断，立即作废并物理关闭该连接池，杜绝脏连接复用
+            invalidate_pool_cache(cfg, key_db);
+            return Err(AppError::Sqlx(e));
+        }
+    } {
         if columns.is_empty() {
             for c in row.columns() {
                 columns.push(c.name().to_string());
@@ -258,11 +285,7 @@ async fn query_once(
             rows.push(decode_row(&row).await);
             count += 1;
         } else {
-            // 已达上限：标记截断即可，但**继续排空**剩余结果集。
-            // 一旦 break，MySQL 连接会停在 streaming 脏状态；因为池现在是长生命周期
-            // 缓存（不再 close），脏连接会被复用导致下次查询出错，所以更必须排空——
-            // 慢库/高延迟网络上若不排空会卡住（表现为前端“执行超时”）。读够后继续
-            // 丢弃超出行直至 EOF 才最干净。
+            // 已达上限：标记截断即可，但继续排空剩余结果集
             truncated = true;
         }
     }
@@ -337,18 +360,24 @@ pub async fn query_paged(
             |limit| format!("SELECT COUNT(*) FROM ({} LIMIT {}) AS _cq_sub", base, limit),
         );
         let total: Option<usize> = if text_mode {
-            sqlx::raw_sql(&count_sql)
-                .fetch_one(&pool)
-                .await
-                .ok()
-                .and_then(|r| r.try_get::<i64, _>(0).ok())
-                .map(|n| n.max(0) as usize)
+            tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                sqlx::raw_sql(&count_sql).fetch_one(&pool),
+            )
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .and_then(|r| r.try_get::<i64, _>(0).ok())
+            .map(|n| n.max(0) as usize)
         } else {
-            sqlx::query_scalar::<_, i64>(&count_sql)
-                .fetch_one(&pool)
-                .await
-                .ok()
-                .map(|n| n.max(0) as usize)
+            tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                sqlx::query_scalar::<_, i64>(&count_sql).fetch_one(&pool),
+            )
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .map(|n| n.max(0) as usize)
         };
 
         // If the user supplied a LIMIT, paginate inside a derived table so we never
@@ -381,7 +410,13 @@ pub async fn query_paged(
         };
         let mut columns: Vec<String> = Vec::new();
         let mut rows: Vec<Vec<String>> = Vec::new();
-        while let Some(row) = stream.try_next().await.map_err(AppError::Sqlx)? {
+        while let Some(row) = match stream.try_next().await {
+            Ok(r) => r,
+            Err(e) => {
+                invalidate_pool_cache(cfg, key_db);
+                return Err(AppError::Sqlx(e));
+            }
+        } {
             if columns.is_empty() {
                 for c in row.columns() {
                     columns.push(c.name().to_string());
@@ -830,6 +865,7 @@ async fn connect_raw(cfg: &ConnectionConfig, database: &str) -> Result<MySqlPool
     MySqlPoolOptions::new()
         .max_connections(MAX_CONN_PER_POOL)
         .min_connections(0)
+        .acquire_timeout(std::time::Duration::from_secs(8))
         // 主动在 server 的 wait_timeout 之前回收连接，避免拿到已被 server 静默
         // 关闭的空闲连接去跑查询（典型症状：got 0 bytes at EOF）。
         // 30s 仍偏长——很多 MySQL server wait_timeout 配 60s 甚至更低，
@@ -1387,6 +1423,50 @@ pub async fn search_tables(
     .await
 }
 
+/// Search tables and views matching a keyword (in table name or comment) with SQL LIKE and LIMIT pushdown.
+pub async fn search_tables_direct(
+    cfg: &ConnectionConfig,
+    database: &str,
+    keyword: &str,
+    limit: usize,
+) -> Result<Vec<TableMeta>> {
+    with_stale_retry("mysql.search_tables_direct", cfg, database, |_attempt| async {
+        let pool = connect_pool_db(cfg, database).await?;
+        let pattern = format!("%{}%", keyword.to_lowercase());
+        let rows = sqlx::query(
+            "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, \
+                    CAST(TABLE_TYPE AS CHAR) AS TABLE_TYPE, \
+                    CAST(TABLE_COMMENT AS CHAR) AS TABLE_COMMENT \
+             FROM INFORMATION_SCHEMA.TABLES \
+             WHERE TABLE_SCHEMA = ? \
+               AND (LOWER(TABLE_NAME) LIKE ? OR LOWER(TABLE_COMMENT) LIKE ?) \
+             ORDER BY TABLE_NAME \
+             LIMIT ?",
+        )
+        .bind(database)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(limit as i64)
+        .fetch_all(&pool)
+        .await
+        .map_err(AppError::Sqlx)?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let name: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
+            let ttype: String = row.try_get("TABLE_TYPE").map_err(AppError::Sqlx)?;
+            let comment = extract_table_comment(&row);
+            out.push(TableMeta {
+                name,
+                is_view: ttype.eq_ignore_ascii_case("VIEW"),
+                comment,
+            });
+        }
+        Ok(out)
+    })
+    .await
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogSearchResult {
     pub db: String,
@@ -1519,6 +1599,50 @@ pub async fn list_columns(
                 default,
                 comment,
             });
+        }
+        Ok(out)
+    })
+    .await
+}
+
+/// Search columns across all tables in a database matching a keyword (in column name or comment).
+/// Executes a SINGLE fast SQL query against INFORMATION_SCHEMA.COLUMNS instead of scanning each table serially.
+pub async fn search_columns_in_db(
+    cfg: &ConnectionConfig,
+    database: &str,
+    keyword: &str,
+    limit: usize,
+) -> Result<Vec<(String, String, Option<String>)>> {
+    with_stale_retry("mysql.search_columns_in_db", cfg, database, |_attempt| async {
+        let pool = connect_pool_db(cfg, database).await?;
+        let pattern = format!("%{}%", keyword.to_lowercase());
+        let rows = sqlx::query(
+            "SELECT CAST(TABLE_NAME AS CHAR) AS TABLE_NAME, \
+                    CAST(COLUMN_NAME AS CHAR) AS COLUMN_NAME, \
+                    CAST(COLUMN_COMMENT AS CHAR) AS COLUMN_COMMENT \
+             FROM INFORMATION_SCHEMA.COLUMNS \
+             WHERE TABLE_SCHEMA = ? \
+               AND (LOWER(COLUMN_NAME) LIKE ? OR LOWER(COLUMN_COMMENT) LIKE ?) \
+             ORDER BY TABLE_NAME, ORDINAL_POSITION \
+             LIMIT ?",
+        )
+        .bind(database)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(limit as i64)
+        .fetch_all(&pool)
+        .await
+        .map_err(AppError::Sqlx)?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let table: String = row.try_get("TABLE_NAME").map_err(AppError::Sqlx)?;
+            let column: String = row.try_get("COLUMN_NAME").map_err(AppError::Sqlx)?;
+            let comment: Option<String> = row
+                .try_get::<String, _>("COLUMN_COMMENT")
+                .ok()
+                .filter(|s| !s.trim().is_empty());
+            out.push((table, column, comment));
         }
         Ok(out)
     })

@@ -312,41 +312,8 @@ async fn exec_search_kb(args: &Value, ctx: &ToolContext<'_>) -> (String, String)
         }
     });
     let docs = (ctx.kb_loader)(&cfg.id, db.as_deref());
-    let result = search_kb_content(&docs, &query);
+    let result = crate::store::search_kb_text(&docs, &query);
     ("知识库检索".into(), result)
-}
-
-/// Case-insensitive keyword match over doc contents. Returns each hit doc's
-/// name plus a truncated body, capped so the tool result stays small.
-fn search_kb_content(docs: &[(String, String)], query: &str) -> String {
-    let q = query.to_lowercase();
-    let words: Vec<&str> = q
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|w| !w.is_empty())
-        .collect();
-    if words.is_empty() {
-        return "(查询为空)".into();
-    }
-    let mut out = String::new();
-    let mut total = 0usize;
-    const CAP: usize = 6000;
-    const PER_DOC: usize = 4000;
-    for (name, content) in docs {
-        let lower = content.to_lowercase();
-        if !words.iter().any(|w| lower.contains(w)) {
-            continue;
-        }
-        if total >= CAP {
-            break;
-        }
-        let take: String = content.chars().take(PER_DOC).collect();
-        total += take.chars().count();
-        out.push_str(&format!("### 知识库文档：{}\n{}\n\n", name, take));
-    }
-    if out.is_empty() {
-        out.push_str("(知识库中没有匹配该关键词的内容)");
-    }
-    out
 }
 
 /// Maximum characters per table cell when formatting query results for the LLM.
@@ -399,6 +366,7 @@ fn parse_args(tc: &ToolCall) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::search_kb_text as search_kb_content;
 
     #[test]
     fn empty_query_returns_hint() {

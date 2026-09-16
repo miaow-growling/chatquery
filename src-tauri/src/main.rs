@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     const CLI_COMMANDS: &[&str] = &[
-        "env", "group", "conn", "tree", "meta", "query", "redis", "guard", "mcp", "install",
+        "env", "group", "conn", "tree", "meta", "query", "redis", "guard", "mcp", "memory", "kb", "install",
         "--help", "-h", "--version", "-V",
     ];
     let is_cli = args
@@ -230,9 +230,10 @@ fn main() {
 	            delete_conversation,
 	            get_conversation,
 	            append_chat_messages,
-	            get_memory_usage,
-	            clean_cache,
-	        ])
+		            get_memory_usage,
+		            clean_cache,
+		            get_mcp_install_info,
+		        ])
         .run(tauri::generate_context!())
         .expect("error while running ChatQuery");
 }

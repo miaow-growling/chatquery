@@ -56,6 +56,7 @@ import type {
   VendorPreset,
   FilterCondition,
 } from "./types";
+import { getEnvEffectiveType } from "./types";
 import { createEditor, splitStatements, type EditorHandle } from "./editor-cm6";
 // Redis 面板只在连接 Redis 实例时才需要，懒加载避免 MySQL 用户为它付出解析/内存成本。
 const RedisBrowser = lazy(() =>
@@ -75,6 +76,7 @@ import { TableFilterBar, buildWhereSql } from "./components/TableFilterBar";
 import { InlineFilterRow } from "./components/InlineFilterRow";
 import { QuickOpenModal } from "./components/QuickOpenModal";
 import { DbMemoryModal } from "./components/DbMemoryModal";
+import { McpInstallModal } from "./components/McpInstallModal";
 
 /** 表格右键菜单自适应容器（具有视口边缘碰撞检测，自动翻转防止菜单底部被遮挡截断） */
 function TableContextMenuContainer({
@@ -1774,6 +1776,7 @@ export function App() {
     lockDbType: false,
   });
   const [formTab, setFormTab] = useState<"basic" | "ssl" | "ssh">("basic");
+  const [testingConn, setTestingConn] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const addWrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -1881,6 +1884,7 @@ export function App() {
   // switches between queries.
   const [dbPickerOpen, setDbPickerOpen] = useState(false);
   const [dbMemoryOpen, setDbMemoryOpen] = useState(false);
+  const [mcpInstallOpen, setMcpInstallOpen] = useState(false);
   // Per-opener callback for the db picker. The same modal is used from
   // two places with different intents:
   //   • SQL editor area → wants to update the active tab's context
@@ -2758,11 +2762,18 @@ export function App() {
         title: string;
         resolve: (v: { name: string; dbType: "mysql" | "redis" } | null) => void;
       }
+    | {
+        kind: "groupForm";
+        title: string;
+        resolve: (v: { name: string; envId: string } | null) => void;
+      }
     | null;
   const [dlg, setDlg] = useState<DialogState>(null);
   // Local state for the envType dialog (name + db_type picker).
   const [envDlgName, setEnvDlgName] = useState("");
   const [envDlgType, setEnvDlgType] = useState<"mysql" | "redis">("mysql");
+  const [groupDlgName, setGroupDlgName] = useState("");
+  const [groupDlgEnvId, setGroupDlgEnvId] = useState("");
   const promptAsync = (title: string, def = ""): Promise<string | null> =>
     new Promise((res) => setDlg({ kind: "prompt", title, def, resolve: res }));
   const confirmAsync = (message: string, title = "请确认"): Promise<boolean> =>
@@ -6416,28 +6427,38 @@ export function App() {
     }
   };
 
-  const newGroup = async () => {
-    setAddOpen(false);
-    // Parent env: the selected connection's env if known, else the first
-    // environment, else auto-create a default one.
-    let envId = selectedEnvId();
-    if (!envId) {
-      const envs = tree.environments.filter((e) => e.id !== "__ungrouped");
-      if (envs.length === 0) {
-        try {
-          envId = await api.createEnvironment("默认环境");
-        } catch (e) {
-          showToast("创建环境失败: " + String(e));
-          return;
-        }
-      } else {
-        envId = envs[0].id;
+  const promptGroup = async (
+    targetEnvId?: string
+  ): Promise<{ name: string; envId: string } | null> => {
+    let validEnvs = tree.environments.filter((e) => e.id !== "__ungrouped");
+    if (validEnvs.length === 0) {
+      try {
+        const autoEnvId = await api.createEnvironment("默认环境");
+        await refresh();
+        validEnvs = [{ id: autoEnvId, name: "默认环境", order: 0, groups: [] }];
+      } catch (e) {
+        showToast("创建环境失败: " + String(e));
+        return null;
       }
     }
-    const name = await promptAsync("分组名称", "新分组");
-    if (!name || !name.trim()) return;
+    let initEnvId = targetEnvId;
+    if (!initEnvId || !validEnvs.some((e) => e.id === initEnvId)) {
+      initEnvId = selectedEnvId();
+      if (!initEnvId || !validEnvs.some((e) => e.id === initEnvId)) {
+        initEnvId = validEnvs[0]?.id ?? "";
+      }
+    }
+    setGroupDlgName("新分组");
+    setGroupDlgEnvId(initEnvId);
+    return new Promise((res) => setDlg({ kind: "groupForm", title: "新建分组", resolve: res }));
+  };
+
+  const newGroup = async () => {
+    setAddOpen(false);
+    const r = await promptGroup();
+    if (!r || !r.name.trim() || !r.envId) return;
     try {
-      await api.createGroup(envId, name.trim());
+      await api.createGroup(r.envId, r.name.trim());
       await refresh();
     } catch (e) {
       showToast("创建分组失败: " + String(e));
@@ -6446,10 +6467,10 @@ export function App() {
 
   // Create a group under an explicit environment (right-click "新建组" on an env).
   const newGroupUnder = async (envId: string) => {
-    const name = await promptAsync("分组名称", "新分组");
-    if (!name || !name.trim()) return;
+    const r = await promptGroup(envId);
+    if (!r || !r.name.trim() || !r.envId) return;
     try {
-      await api.createGroup(envId, name.trim());
+      await api.createGroup(r.envId, r.name.trim());
       await refresh();
     } catch (e) {
       showToast("创建分组失败: " + String(e));
@@ -6502,8 +6523,10 @@ export function App() {
 
   /// db_type of the environment a group belongs to (groups don't carry their
   /// own type — the environment binds it, ADR-022).
-  const envTypeOfGroup = (groupId: string): "mysql" | "redis" | undefined =>
-    tree.environments.find((e) => e.groups.some((g) => g.id === groupId))?.db_type;
+  const envTypeOfGroup = (groupId: string): "mysql" | "redis" | undefined => {
+    const env = tree.environments.find((e) => e.groups.some((g) => g.id === groupId));
+    return env ? getEnvEffectiveType(env) : undefined;
+  };
   const saveForm = async () => {
     try {
       if (form.editing) await api.updateConnection(form.cfg);
@@ -6523,11 +6546,14 @@ export function App() {
     await refresh();
   };
   const testForm = async () => {
+    setTestingConn(true);
     try {
       const ok = await api.testConnection(form.cfg);
       showToast(ok ? "连接成功" : "连接失败");
     } catch (e) {
       showToast("连接失败: " + String(e));
+    } finally {
+      setTestingConn(false);
     }
   };
 
@@ -6914,6 +6940,16 @@ export function App() {
                 </button>
                 <button className="add-item" onClick={() => void newEnvironment()}>
                   新建环境
+                </button>
+                <div className="add-menu-sep" />
+                <button
+                  className="add-item"
+                  onClick={() => {
+                    setAddOpen(false);
+                    setMcpInstallOpen(true);
+                  }}
+                >
+                  MCP
                 </button>
               </div>
             )}
@@ -8831,10 +8867,12 @@ export function App() {
             </div>
 
             <div className="modal-actions">
-              <button onClick={testForm}>测试连接</button>
+              <button type="button" onClick={testForm} disabled={testingConn}>
+                {testingConn ? "正在测试…" : "测试连接"}
+              </button>
               <span className="spacer" />
-              <button onClick={() => setForm({ ...form, open: false })}>取消</button>
-              <button className="primary" onClick={saveForm}>
+              <button type="button" onClick={() => setForm({ ...form, open: false })}>取消</button>
+              <button type="button" className="primary" onClick={saveForm}>
                 保存
               </button>
             </div>
@@ -9851,7 +9889,7 @@ export function App() {
                               </div>
                               <div>
                                 <label className="kb-label" style={{ marginBottom: "6px" }}>
-                                  文档名称 <span style={{ color: "var(--danger-500, #ef4444)" }}>*</span>
+                                  文档名称 <span className="req" style={{ color: "var(--danger-500, #ef4444)" }}>*</span>
                                 </label>
                                 <input
                                   className="kb-input"
@@ -10393,6 +10431,11 @@ export function App() {
         }}
       />
 
+      <McpInstallModal
+        open={mcpInstallOpen}
+        onClose={() => setMcpInstallOpen(false)}
+      />
+
       {dlg && (
         <div
           className="modal-mask"
@@ -10440,6 +10483,60 @@ export function App() {
                   </button>
                 </div>
               </>
+            ) : dlg.kind === "groupForm" ? (
+              (() => {
+                const validEnvs = tree.environments.filter((e) => e.id !== "__ungrouped");
+                const mysqlEnvs = validEnvs.filter((e) => getEnvEffectiveType(e) === "mysql");
+                const redisEnvs = validEnvs.filter((e) => getEnvEffectiveType(e) === "redis");
+                return (
+                  <>
+                    <label>
+                      所属环境
+                      <select
+                        className="dlg-select"
+                        value={groupDlgEnvId}
+                        onChange={(e) => setGroupDlgEnvId(e.target.value)}
+                      >
+                        {mysqlEnvs.length > 0 && (
+                          <optgroup label="🐬 MySQL 环境">
+                            {mysqlEnvs.map((env) => (
+                              <option key={env.id} value={env.id}>
+                                🐬 {env.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {redisEnvs.length > 0 && (
+                          <optgroup label="🔴 Redis 环境">
+                            {redisEnvs.map((env) => (
+                              <option key={env.id} value={env.id}>
+                                🔴 {env.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </select>
+                    </label>
+                    <label>
+                      分组名称
+                      <input
+                        id="group-name-input"
+                        value={groupDlgName}
+                        autoFocus
+                        placeholder="请输入分组名称"
+                        onFocus={(e) => e.target.select()}
+                        onChange={(e) => setGroupDlgName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && groupDlgName.trim() && groupDlgEnvId) {
+                            closeDlg({ name: groupDlgName.trim(), envId: groupDlgEnvId });
+                          }
+                          if (e.key === "Escape") closeDlg(null);
+                        }}
+                      />
+                    </label>
+                  </>
+                );
+              })()
             ) : (
               <p className="modal-msg">{dlg.message}</p>
             )}
@@ -10451,12 +10548,17 @@ export function App() {
               </button>
               <button
                 className="primary"
+                disabled={dlg.kind === "groupForm" && (!groupDlgName.trim() || !groupDlgEnvId)}
                 onClick={() => {
                   if (dlg.kind === "prompt") {
                     const el = document.getElementById("dlg-input") as HTMLInputElement | null;
                     closeDlg(el ? el.value : dlg.def);
                   } else if (dlg.kind === "envType") {
                     closeDlg({ name: envDlgName.trim(), dbType: envDlgType });
+                  } else if (dlg.kind === "groupForm") {
+                    if (groupDlgName.trim() && groupDlgEnvId) {
+                      closeDlg({ name: groupDlgName.trim(), envId: groupDlgEnvId });
+                    }
                   } else {
                     closeDlg(true);
                   }

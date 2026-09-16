@@ -469,6 +469,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
   transition: background var(--t-fast);
 }
 .add-item:hover { background: var(--brand-soft); color: var(--brand); }
+.add-menu-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
 
 /* =====================  SIDEBAR MEMORY FOOTER (方案 B)  ===================== */
 .sidebar-memory-footer {
@@ -5100,6 +5105,50 @@ select.field-input:disabled {
   box-shadow: 0 0 0 2px var(--brand-soft);
   background: var(--input-bg-focus);
 }
+.dlg-select {
+  width: 100%;
+  height: 36px;
+  padding: 0 32px 0 12px;
+  border: 1px solid var(--input-border, var(--border));
+  border-radius: var(--r-md, 6px);
+  background-color: var(--input-bg, var(--bg-surface));
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+  box-sizing: border-box;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.dlg-select:hover:not(:disabled) {
+  border-color: var(--input-border-hover, var(--border-strong));
+}
+.dlg-select:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px var(--brand-soft);
+}
+.dlg-select optgroup {
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: var(--bg-surface);
+  padding: 6px 4px;
+}
+.dlg-select option {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--modal-bg);
+  padding: 6px 12px;
+}
 /* Segmented control for the "new environment" db_type picker (ADR-022). */
 /* macOS segmented control: one connected capsule, raised segment inside */
 .seg {
@@ -5176,12 +5225,21 @@ select.field-input:disabled {
   margin: 4px -22px -20px -22px;
   padding: 14px 22px 18px 22px;
 }
-.conn-modal > .modal-actions,
 .import-modal > .modal-actions,
 .cell-view-modal > .modal-actions,
 .dialog-modal > .modal-actions {
   margin: 0 !important;
   padding: 12px 0 0 0 !important;
+}
+.conn-modal > .modal-actions {
+  margin: 0 !important;
+  padding: 14px 20px 16px 20px !important;
+  background: var(--settings-nav-bg);
+  border-top: 1px solid var(--border);
+  box-sizing: border-box;
+}
+.conn-modal > .modal-actions button {
+  border-radius: var(--r-md);
 }
 .modal-actions .spacer { flex: 1; }
 .modal-actions button {
@@ -6426,7 +6484,7 @@ select.field-input:disabled {
 .conn-modal {
   width: 560px;
   max-width: 94vw;
-  height: 640px;
+  min-height: 460px;
   max-height: 88vh;
   padding: 0;
   display: flex;
@@ -8475,8 +8533,8 @@ select.field-input:disabled {
 }
 .kb-label {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 4px;
   font-size: var(--fs-xs);
   font-weight: var(--fw-semibold);
   color: var(--text-secondary);

@@ -25,6 +25,26 @@ pub enum ConnCommands {
     Test(ConnTestArgs),
     /// 删除指定连接
     Rm(ConnRmArgs),
+    /// 导入外部连接配置（支持 Navicat XML/JSON、DataGrip dataSources.xml、URL 列表、YAML/JSON 备份）
+    Import(ConnImportArgs),
+    /// 导出本地连接配置（支持 YAML/JSON 格式，可带密码加密）
+    Export(ConnExportArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ConnImportArgs {
+    /// 待导入的配置文件路径（支持 Navicat XML/JSON、DataGrip dataSources.xml、URL 列表、YAML/JSON 备份）
+    pub file: String,
+}
+
+#[derive(Args, Debug)]
+pub struct ConnExportArgs {
+    /// 导出保存的目标文件路径（若不传则输出至控制台）
+    #[arg(long, short)]
+    pub out: Option<String>,
+    /// 是否以明文导出密码（默认使用 system-key 加密导出）
+    #[arg(long)]
+    pub plaintext: bool,
 }
 
 #[derive(Args, Debug)]
@@ -337,6 +357,67 @@ pub async fn handle(args: ConnArgs, json_output: bool) -> Result<()> {
                 );
             } else {
                 println!("✓ 连接已删除: {} (ID: {})", cfg.name, cfg.id);
+            }
+        }
+        ConnCommands::Import(imp) => {
+            let path = std::path::Path::new(&imp.file);
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("无法读取文件: {}", imp.file))?;
+            let res = crate::db::importexport::import_yaml(&mut store, &content)?;
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": true,
+                        "connections_added": res.connections_added,
+                        "containers_added": res.containers_added,
+                        "passwords_needed": res.passwords_needed,
+                        "skipped": res.skipped,
+                    }))?
+                );
+            } else {
+                println!("✓ 导入成功：");
+                println!("  - 新增连接数: {}", res.connections_added);
+                println!("  - 新增环境/分组数: {}", res.containers_added);
+                if !res.passwords_needed.is_empty() {
+                    println!(
+                        "  - 需补充密码的连接 ({} 个): {}",
+                        res.passwords_needed.len(),
+                        res.passwords_needed.join(", ")
+                    );
+                }
+                if !res.skipped.is_empty() {
+                    println!(
+                        "  - 跳过的条目 ({} 个): {}",
+                        res.skipped.len(),
+                        res.skipped.join(", ")
+                    );
+                }
+            }
+        }
+        ConnCommands::Export(exp) => {
+            let cipher = if exp.plaintext { "none" } else { "system-key" };
+            let yaml_str = crate::db::importexport::export_yaml(&store, cipher)?;
+            if let Some(out_path) = exp.out {
+                std::fs::write(&out_path, &yaml_str)
+                    .with_context(|| format!("写入导出文件失败: {}", out_path))?;
+                if json_output {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "ok": true,
+                            "file": out_path,
+                            "cipher": cipher,
+                        })
+                    );
+                } else {
+                    println!("✓ 成功导出连接配置至: {} (加密模式: {})", out_path, cipher);
+                }
+            } else if json_output {
+                let val: serde_json::Value = serde_yaml::from_str(&yaml_str)?;
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            } else {
+                println!("{}", yaml_str);
             }
         }
     }

@@ -136,6 +136,31 @@ impl ConnectionStore {
                 storage.upsert_connection(c)?;
             }
         }
+        // Heal any environment where db_type is not Redis, but all connections inside it are Redis.
+        let mut redis_env_ids: Vec<String> = Vec::new();
+        for env in containers.iter().filter(|c| c.kind == ContainerKind::Env) {
+            let group_ids: Vec<&str> = containers
+                .iter()
+                .filter(|g| g.kind == ContainerKind::Group && g.parent.as_deref() == Some(&env.id))
+                .map(|g| g.id.as_str())
+                .collect();
+            let env_conns: Vec<&ConnectionConfig> = connections
+                .iter()
+                .filter(|c| c.group_id.as_deref().map_or(false, |gid| group_ids.contains(&gid)))
+                .collect();
+            if !env_conns.is_empty()
+                && env_conns.iter().all(|c| c.db_type == DbType::Redis)
+                && env.db_type != Some(DbType::Redis)
+            {
+                redis_env_ids.push(env.id.clone());
+            }
+        }
+        for env_id in redis_env_ids {
+            if let Some(env) = containers.iter_mut().find(|c| c.id == env_id) {
+                env.db_type = Some(DbType::Redis);
+            }
+            let _ = storage.update_container_db_type(&env_id, Some(DbType::Redis));
+        }
         Ok(Self {
             connections,
             containers,
@@ -274,6 +299,21 @@ impl ConnectionStore {
         db: Option<&str>,
     ) -> Result<Vec<crate::store::KbDoc>> {
         self.storage.get_injected_kb_docs(conn_id, db)
+    }
+    pub fn add_kb_doc_with_binding(
+        &mut self,
+        name: &str,
+        content: &str,
+        conn_id: Option<&str>,
+        db: Option<&str>,
+    ) -> Result<String> {
+        self.storage.add_kb_doc_with_binding(name, content, conn_id, db)
+    }
+    pub fn search_kb_docs(&self, conn_id: &str, db: Option<&str>, query: &str) -> Result<String> {
+        self.storage.search_kb_docs(conn_id, db, query)
+    }
+    pub fn storage_mut(&mut self) -> &mut crate::store::Storage {
+        &mut self.storage
     }
 
     // --- DB Memories 转发 ---

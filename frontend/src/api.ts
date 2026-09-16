@@ -17,6 +17,7 @@ import type {
   ImportResult,
   CleanCacheResult,
   MemoryStats,
+  McpInstallInfo,
   ModelEntryDto,
   VendorProfileDto,
   KeyMeta,
@@ -194,7 +195,7 @@ export const api = {
   // Container (environment / group) CRUD (ADR-016). `dbType` binds the new
   // environment to MySQL/Redis so it lands under the correct root (ADR-022).
   createEnvironment: (name: string, dbType: "mysql" | "redis" = "mysql") =>
-    invoke<string>("create_environment", { name, db_type: dbType }),
+    invoke<string>("create_environment", { name, dbType, db_type: dbType }),
   createGroup: (envId: string, name: string) =>
     invoke<string>("create_group", { envId, name }),
   renameContainer: (id: string, name: string) =>
@@ -336,6 +337,7 @@ export const api = {
     db: string | null | undefined,
     onToken: (delta: string) => void
   ) => inlineGenerateSql(prompt, selectedSql, connId, db, onToken),
+  getMcpInstallInfo: () => invoke<McpInstallInfo>("get_mcp_install_info"),
 };
 
 export function onChatToken(cb: (t: string) => void): Promise<UnlistenFn> {

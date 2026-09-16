@@ -65,6 +65,147 @@ pub fn analyze_write_sql(sql: &str) -> Vec<WriteRisk> {
     risks
 }
 
+/// Validate that a SQL statement is strictly a read-only query for MCP execution.
+/// Rejects all DML (INSERT, UPDATE, DELETE, REPLACE, etc.), all DDL (CREATE, ALTER, DROP, TRUNCATE, etc.),
+/// all DCL/admin commands (GRANT, REVOKE, SET, FLUSH, LOCK, etc.), locking queries (FOR UPDATE),
+/// file writing side-effects (INTO OUTFILE/DUMPFILE), and multi-statement scripts.
+pub fn validate_mcp_query_safety(sql: &str) -> Result<(), String> {
+    let trimmed = sql.trim();
+    if trimmed.is_empty() {
+        return Err("SQL 语句不能为空".to_string());
+    }
+
+    // 1. 检查多语句注入 (多条由分号分隔的语句)
+    let stmts = split_statements(trimmed);
+    let non_empty_stmts: Vec<&String> = stmts.iter().filter(|s| !s.trim().is_empty()).collect();
+    if non_empty_stmts.len() > 1 {
+        return Err("MCP 每次仅允许执行单条 SQL 语句，禁止多语句脚本执行".to_string());
+    }
+    if non_empty_stmts.is_empty() {
+        return Err("SQL 语句不能为空".to_string());
+    }
+
+    let clean = clean_sql(trimmed);
+    let toks = tokens(&clean);
+    if toks.is_empty() {
+        return Err("无法识别有效的 SQL 关键字".to_string());
+    }
+
+    // 2. 确定顶层主动词 (若包含 WITH CTE，需找到 CTE 之后的真正执行动词)
+    let first_tok = &toks[0];
+    let main_verb = if first_tok.word == "WITH" {
+        let mut target_verb = None;
+        for t in &toks[1..] {
+            if t.depth == 0
+                && matches!(
+                    t.word.as_str(),
+                    "SELECT"
+                        | "INSERT"
+                        | "UPDATE"
+                        | "DELETE"
+                        | "REPLACE"
+                        | "CREATE"
+                        | "ALTER"
+                        | "DROP"
+                        | "TRUNCATE"
+                )
+            {
+                target_verb = Some(t.word.clone());
+                break;
+            }
+        }
+        target_verb.unwrap_or_else(|| "WITH".to_string())
+    } else {
+        first_tok.word.clone()
+    };
+
+    // 3. 严格校验主语句动词是否为合法的只读查询动词
+    match main_verb.as_str() {
+        "SELECT" | "SHOW" | "EXPLAIN" | "DESC" | "DESCRIBE" => {
+            // 合法只读查询主词
+        }
+        "INSERT" => return Err("MCP 安全限制：禁止数据新增操作 (INSERT)".to_string()),
+        "UPDATE" => return Err("MCP 安全限制：禁止数据更新操作 (UPDATE)".to_string()),
+        "DELETE" => return Err("MCP 安全限制：禁止数据删除操作 (DELETE)".to_string()),
+        "REPLACE" => return Err("MCP 安全限制：禁止数据替换操作 (REPLACE)".to_string()),
+        "CREATE" => return Err("MCP 安全限制：禁止任何 DDL 操作 (CREATE)".to_string()),
+        "ALTER" => return Err("MCP 安全限制：禁止任何 DDL 操作 (ALTER)".to_string()),
+        "DROP" => return Err("MCP 安全限制：禁止任何 DDL 操作 (DROP)".to_string()),
+        "TRUNCATE" => return Err("MCP 安全限制：禁止任何 DDL 操作 (TRUNCATE)".to_string()),
+        "RENAME" => return Err("MCP 安全限制：禁止任何 DDL 操作 (RENAME)".to_string()),
+        "GRANT" | "REVOKE" => {
+            return Err("MCP 安全限制：禁止权限管理操作 (GRANT/REVOKE)".to_string())
+        }
+        "LOCK" | "UNLOCK" => {
+            return Err("MCP 安全限制：禁止加锁/解锁表操作 (LOCK/UNLOCK)".to_string())
+        }
+        "FLUSH" | "RESET" | "KILL" => {
+            return Err("MCP 安全限制：禁止系统维护与连接控制操作 (FLUSH/RESET/KILL)".to_string())
+        }
+        "SET" => return Err("MCP 安全限制：禁止修改会话或系统变量配置 (SET)".to_string()),
+        "CALL" => return Err("MCP 安全限制：禁止调用存储过程 (CALL)".to_string()),
+        "LOAD" => return Err("MCP 安全限制：禁止数据导入加载操作 (LOAD)".to_string()),
+        "HANDLER" | "DO" => return Err(format!("MCP 安全限制：禁止 {} 语句", main_verb)),
+        other => {
+            return Err(format!(
+                "MCP 安全限制：仅允许数据查询操作，拒绝执行 '{}' 语句",
+                other
+            ))
+        }
+    }
+
+    // 4. 深度扫描：即使是 SELECT，也必须禁止副作用与锁定子句
+    for i in 0..toks.len() {
+        if toks[i].word == "INTO" && i + 1 < toks.len() {
+            let next = &toks[i + 1].word;
+            if next == "OUTFILE" || next == "DUMPFILE" {
+                return Err(
+                    "MCP 安全限制：禁止导出文件到服务器文件系统的操作 (INTO OUTFILE/DUMPFILE)"
+                        .to_string(),
+                );
+            }
+        }
+        if toks[i].word == "FOR" && i + 1 < toks.len() {
+            let next = &toks[i + 1].word;
+            if next == "UPDATE" || next == "SHARE" {
+                return Err(
+                    "MCP 安全限制：禁止加锁查询 (FOR UPDATE / FOR SHARE)，请使用普通无锁 SELECT"
+                        .to_string(),
+                );
+            }
+        }
+        if toks[i].word == "LOCK" && i + 3 < toks.len() {
+            if toks[i + 1].word == "IN" && toks[i + 2].word == "SHARE" && toks[i + 3].word == "MODE"
+            {
+                return Err("MCP 安全限制：禁止锁定查询 (LOCK IN SHARE MODE)".to_string());
+            }
+        }
+    }
+
+    // 5. 扫描是否含有顶层未闭合的 DDL 或写入关键字
+    for t in &toks {
+        if t.depth == 0
+            && matches!(
+                t.word.as_str(),
+                "DROP" | "TRUNCATE" | "ALTER" | "RENAME" | "INSERT" | "DELETE" | "UPDATE"
+            )
+            && main_verb != "EXPLAIN"
+            && main_verb != "SHOW"
+        {
+            if main_verb == "SELECT"
+                && (t.word == "INSERT" || t.word == "DELETE" || t.word == "UPDATE")
+            {
+                return Err(format!(
+                    "MCP 安全限制：SELECT 语句中包含写入操作 '{}'",
+                    t.word
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// True when the statement carries a top-level WHERE or LIMIT — both MySQL
 /// UPDATE and DELETE accept LIMIT, so either one bounds the operation.
 fn has_guard(toks: &[Token]) -> bool {
@@ -375,5 +516,62 @@ mod tests {
         let r = analyze_write_sql("UPDATE\n  very_long_table_name\nSET a = 1").remove(0);
         assert!(r.preview.starts_with("UPDATE very_long_table_name SET a = 1"));
         assert!(r.preview.chars().count() <= 105);
+    }
+
+    #[test]
+    fn mcp_safety_allows_valid_read_queries() {
+        assert!(validate_mcp_query_safety("SELECT * FROM users").is_ok());
+        assert!(validate_mcp_query_safety("SELECT id, name FROM `order` WHERE status = 1 LIMIT 50").is_ok());
+        assert!(validate_mcp_query_safety("SHOW TABLES").is_ok());
+        assert!(validate_mcp_query_safety("SHOW CREATE TABLE users").is_ok());
+        assert!(validate_mcp_query_safety("EXPLAIN SELECT * FROM users").is_ok());
+        assert!(validate_mcp_query_safety("DESCRIBE users").is_ok());
+        assert!(validate_mcp_query_safety("DESC users").is_ok());
+        assert!(validate_mcp_query_safety("WITH t AS (SELECT 1 AS a) SELECT * FROM t").is_ok());
+        assert!(validate_mcp_query_safety("/* comment */ SELECT 1").is_ok());
+        assert!(validate_mcp_query_safety("-- note\nSELECT 1").is_ok());
+    }
+
+    #[test]
+    fn mcp_safety_rejects_dml_writes() {
+        assert!(validate_mcp_query_safety("INSERT INTO users (id) VALUES (1)").is_err());
+        assert!(validate_mcp_query_safety("UPDATE users SET name = 'foo' WHERE id = 1").is_err());
+        assert!(validate_mcp_query_safety("DELETE FROM users WHERE id = 1").is_err());
+        assert!(validate_mcp_query_safety("REPLACE INTO users VALUES (1, 'bar')").is_err());
+        assert!(validate_mcp_query_safety("CALL my_proc()").is_err());
+        assert!(validate_mcp_query_safety("LOAD DATA INFILE 'foo' INTO TABLE t").is_err());
+        assert!(validate_mcp_query_safety("WITH t AS (SELECT 1) DELETE FROM users").is_err());
+        assert!(validate_mcp_query_safety("WITH t AS (SELECT 1) UPDATE users SET a=1").is_err());
+    }
+
+    #[test]
+    fn mcp_safety_rejects_all_ddl() {
+        assert!(validate_mcp_query_safety("DROP TABLE users").is_err());
+        assert!(validate_mcp_query_safety("DROP DATABASE test_db").is_err());
+        assert!(validate_mcp_query_safety("CREATE TABLE users (id int)").is_err());
+        assert!(validate_mcp_query_safety("ALTER TABLE users ADD COLUMN age int").is_err());
+        assert!(validate_mcp_query_safety("TRUNCATE TABLE users").is_err());
+        assert!(validate_mcp_query_safety("RENAME TABLE users TO old_users").is_err());
+        assert!(validate_mcp_query_safety("/* hidden */ DROP TABLE users").is_err());
+    }
+
+    #[test]
+    fn mcp_safety_rejects_admin_and_locks() {
+        assert!(validate_mcp_query_safety("GRANT ALL ON *.* TO root").is_err());
+        assert!(validate_mcp_query_safety("REVOKE ALL ON *.* FROM root").is_err());
+        assert!(validate_mcp_query_safety("SET GLOBAL max_connections = 100").is_err());
+        assert!(validate_mcp_query_safety("FLUSH PRIVILEGES").is_err());
+        assert!(validate_mcp_query_safety("LOCK TABLES users WRITE").is_err());
+    }
+
+    #[test]
+    fn mcp_safety_rejects_side_effects_and_multistatements() {
+        assert!(validate_mcp_query_safety("SELECT * FROM users INTO OUTFILE '/tmp/hack'").is_err());
+        assert!(validate_mcp_query_safety("SELECT * FROM users INTO DUMPFILE '/tmp/hack'").is_err());
+        assert!(validate_mcp_query_safety("SELECT * FROM users FOR UPDATE").is_err());
+        assert!(validate_mcp_query_safety("SELECT * FROM users FOR SHARE").is_err());
+        assert!(validate_mcp_query_safety("SELECT * FROM users LOCK IN SHARE MODE").is_err());
+        assert!(validate_mcp_query_safety("SELECT 1; DROP TABLE users;").is_err());
+        assert!(validate_mcp_query_safety("SELECT 1; DELETE FROM users;").is_err());
     }
 }

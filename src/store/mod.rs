@@ -254,6 +254,18 @@ impl Storage {
         Ok(())
     }
 
+    pub fn update_container_db_type(&self, id: &str, db_type: Option<DbType>) -> Result<()> {
+        let db_type_str = db_type.map(|t| match t {
+            DbType::Mysql => "mysql",
+            DbType::Redis => "redis",
+        });
+        self.conn.execute(
+            "UPDATE containers SET db_type = ?1 WHERE id = ?2",
+            params![db_type_str, id],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_container(&self, id: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM containers WHERE id = ?1", params![id])?;
@@ -603,6 +615,28 @@ impl Storage {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// Add a knowledge-base document and optionally bind it to a connection and optional database.
+    pub fn add_kb_doc_with_binding(
+        &mut self,
+        name: &str,
+        content: &str,
+        conn_id: Option<&str>,
+        db: Option<&str>,
+    ) -> Result<String> {
+        let id = self.add_kb_doc(name, content)?;
+        if let Some(cid) = conn_id {
+            self.set_kb_bindings(&id, &[(cid.to_string(), db.map(|s| s.to_string()))])?;
+        }
+        Ok(id)
+    }
+
+    /// Search knowledge-base docs bound to (conn_id, db) by keyword.
+    pub fn search_kb_docs(&self, conn_id: &str, db: Option<&str>, query: &str) -> Result<String> {
+        let docs = self.get_injected_kb_docs(conn_id, db)?;
+        let pairs: Vec<(String, String)> = docs.into_iter().map(|d| (d.name, d.content)).collect();
+        Ok(search_kb_text(&pairs, query))
     }
 
     /// Record a write-guardrail decision (ADR-AI-1 决策3: audit trail). A
@@ -1240,9 +1274,42 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// First 60 characters of a message, for the conversation-list preview.
-fn preview_of(content: Option<&str>) -> String {
+/// First 60 characters of a message, for preview lists.
+pub fn preview_of(content: Option<&str>) -> String {
     content.unwrap_or_default().chars().take(60).collect()
+}
+
+/// Case-insensitive keyword match over doc contents. Returns each hit doc's
+/// name plus a truncated body, capped so results stay small.
+pub fn search_kb_text(docs: &[(String, String)], query: &str) -> String {
+    let q = query.to_lowercase();
+    let words: Vec<&str> = q
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.is_empty() {
+        return "(查询为空)".into();
+    }
+    let mut out = String::new();
+    let mut total = 0usize;
+    const CAP: usize = 6000;
+    const PER_DOC: usize = 4000;
+    for (name, content) in docs {
+        let lower = content.to_lowercase();
+        if !words.iter().any(|w| lower.contains(w)) {
+            continue;
+        }
+        if total >= CAP {
+            break;
+        }
+        let take: String = content.chars().take(PER_DOC).collect();
+        total += take.chars().count();
+        out.push_str(&format!("### 知识库文档：{}\n{}\n\n", name, take));
+    }
+    if out.is_empty() {
+        out.push_str("(知识库中没有匹配该关键词的内容)");
+    }
+    out
 }
 
 /// 归一化 SQL 并产出用于历史去重的稳定哈希。归一化规则：折叠引号外的
@@ -2001,6 +2068,31 @@ mod tests {
         let after_del = s.get_injected_memories("c1", Some("db_alpha"), 10).unwrap();
         assert_eq!(after_del.len(), 1);
         assert_eq!(after_del[0].id, m2.id);
+    }
+
+    #[test]
+    fn kb_add_with_binding_and_search() {
+        let mut s = mem_store();
+        let id = s
+            .add_kb_doc_with_binding(
+                "支付口径说明",
+                "订单支付成功 status=1 且包含 refund_status=0 的记录视为有效成交。",
+                Some("connA"),
+                Some("trade_db"),
+            )
+            .unwrap();
+        assert!(id.starts_with("kb"));
+
+        // 检索命中
+        let text = s
+            .search_kb_docs("connA", Some("trade_db"), "refund")
+            .unwrap();
+        assert!(text.contains("支付口径说明"));
+        assert!(text.contains("refund_status"));
+
+        // 不匹配连接
+        let text_other = s.search_kb_docs("connB", None, "refund").unwrap();
+        assert!(text_other.contains("没有匹配"));
     }
 }
 

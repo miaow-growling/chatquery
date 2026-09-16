@@ -289,14 +289,23 @@ pub fn list_tree(state: State<AppState>) -> TreeModel {
                 connections: group_conns,
             });
         }
+        let effective_type = match env.db_type {
+            Some(DbType::Redis) => "redis".to_string(),
+            _ => {
+                let has_mysql = groups.iter().any(|g| g.connections.iter().any(|c| c.db_type == "mysql"));
+                let has_redis = groups.iter().any(|g| g.connections.iter().any(|c| c.db_type == "redis"));
+                if has_redis && !has_mysql {
+                    "redis".to_string()
+                } else {
+                    "mysql".to_string()
+                }
+            }
+        };
         environments.push(EnvNode {
             id: env.id.clone(),
             name: env.name.clone(),
             order: env.ord,
-            db_type: match env.db_type {
-                Some(DbType::Redis) => "redis".to_string(),
-                _ => "mysql".to_string(),
-            },
+            db_type: effective_type,
             groups,
         });
     }
@@ -2398,6 +2407,95 @@ pub async fn clean_cache(state: State<'_, AppState>) -> Result<CleanCacheResult,
         before_mb: (before_mb * 10.0).round() / 10.0,
         after_mb: (after_mb * 10.0).round() / 10.0,
         freed_mb,
+    })
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct McpInstallInfo {
+    pub executable_path: String,
+    pub symlink_path: Option<String>,
+    pub is_symlink_ready: bool,
+    pub claude_json: String,
+    pub cursor_json: String,
+    pub claude_config_path: String,
+    pub cursor_config_path: String,
+}
+
+/// 获取用于外部 Agent (Claude Desktop / Cursor / Cline 等) 的 MCP 安装配置与可用程序路径
+#[tauri::command]
+pub fn get_mcp_install_info() -> Result<McpInstallInfo, String> {
+    #[cfg(unix)]
+    let symlink_res = chatquery::cli::install::ensure_cli_symlink().ok().flatten();
+    #[cfg(not(unix))]
+    let symlink_res: Option<std::path::PathBuf> = None;
+
+    let mut exe_path = String::new();
+    let mut symlink_str = None;
+
+    // 1. 优先检查并使用已就绪的 ~/.local/bin/chatquery 软链接
+    #[cfg(unix)]
+    if let Some(home) = std::env::var_os("HOME") {
+        let sym = std::path::PathBuf::from(home).join(".local/bin/chatquery");
+        if sym.exists() {
+            exe_path = sym.display().to_string();
+            symlink_str = Some(sym.display().to_string());
+        }
+    }
+
+    // 2. 若没有软链接，使用当前应用程序运行的真实绝对二进制路径
+    if exe_path.is_empty() {
+        if let Some(ref sym) = symlink_res {
+            exe_path = sym.display().to_string();
+            symlink_str = Some(sym.display().to_string());
+        } else if let Ok(current) = std::env::current_exe() {
+            exe_path = current.display().to_string();
+        } else {
+            exe_path = "chatquery".to_string();
+        }
+    }
+
+    let is_symlink_ready = symlink_str
+        .as_ref()
+        .map(|p| std::path::Path::new(p).exists())
+        .unwrap_or(false);
+
+    let claude_obj = serde_json::json!({
+        "mcpServers": {
+            "chatquery": {
+                "command": exe_path,
+                "args": ["mcp"]
+            }
+        }
+    });
+    let claude_json = serde_json::to_string_pretty(&claude_obj).unwrap_or_default();
+
+    let cursor_obj = serde_json::json!({
+        "mcpServers": {
+            "chatquery": {
+                "command": exe_path,
+                "args": ["mcp"]
+            }
+        }
+    });
+    let cursor_json = serde_json::to_string_pretty(&cursor_obj).unwrap_or_default();
+
+    #[cfg(target_os = "macos")]
+    let claude_config_path = "~/Library/Application Support/Claude/claude_desktop_config.json".to_string();
+    #[cfg(target_os = "windows")]
+    let claude_config_path = "%APPDATA%\\Claude\\claude_desktop_config.json".to_string();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let claude_config_path = "~/.config/Claude/claude_desktop_config.json".to_string();
+
+    let cursor_config_path = ".cursor/mcp.json 或 Cursor Settings -> Features -> MCP".to_string();
+
+    Ok(McpInstallInfo {
+        executable_path: exe_path,
+        symlink_path: symlink_str,
+        is_symlink_ready,
+        claude_json,
+        cursor_json,
+        claude_config_path,
+        cursor_config_path,
     })
 }
 

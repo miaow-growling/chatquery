@@ -3,7 +3,9 @@ pub mod env;
 pub mod group;
 pub mod guard;
 pub mod install;
+pub mod kb;
 pub mod mcp;
+pub mod memory;
 pub mod meta;
 pub mod query;
 pub mod redis;
@@ -55,6 +57,10 @@ pub enum Commands {
     Guard(guard::GuardArgs),
     /// 启动标准 Model Context Protocol (MCP) 服务 (stdio 模式)
     Mcp(mcp::McpArgs),
+    /// 数据库业务记忆与纠错规则管理 (DbMemory)
+    Memory(memory::MemoryArgs),
+    /// 数据库关联业务知识库管理 (KbDoc)
+    Kb(kb::KbArgs),
     /// 命令行快捷工具软链接管理与诊断
     Install,
 }
@@ -101,6 +107,8 @@ pub async fn dispatch(args: Option<Vec<String>>) -> Result<bool> {
         Commands::Redis(a) => redis::handle(a, is_json).await,
         Commands::Guard(a) => guard::handle(a, is_json),
         Commands::Mcp(a) => mcp::run(a).await,
+        Commands::Memory(a) => memory::handle(a, is_json),
+        Commands::Kb(a) => kb::handle(a, is_json),
         Commands::Install => match install::ensure_cli_symlink() {
             Ok(Some(p)) => {
                 println!("✓ 命令行工具软链接已配置: {}", p.display());
