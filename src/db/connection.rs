@@ -276,6 +276,52 @@ impl ConnectionStore {
         self.storage.get_injected_kb_docs(conn_id, db)
     }
 
+    // --- DB Memories 转发 ---
+    pub fn add_memory(
+        &self,
+        conn_id: &str,
+        database: Option<&str>,
+        content: &str,
+        source: &str,
+        user_raw: &str,
+    ) -> Result<crate::store::DbMemory> {
+        self.storage.add_memory(conn_id, database, content, source, user_raw)
+    }
+
+    pub fn get_injected_memories(
+        &self,
+        conn_id: &str,
+        database: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::store::DbMemory>> {
+        self.storage.get_injected_memories(conn_id, database, limit)
+    }
+
+    pub fn list_memories(
+        &self,
+        conn_id: &str,
+        database: Option<&str>,
+    ) -> Result<Vec<crate::store::DbMemory>> {
+        self.storage.list_memories(conn_id, database)
+    }
+
+    pub fn list_all_memories(&self, limit: usize) -> Result<Vec<crate::store::DbMemory>> {
+        self.storage.list_all_memories(limit)
+    }
+
+    pub fn update_memory(
+        &self,
+        id: &str,
+        content: &str,
+        database: Option<&str>,
+    ) -> Result<crate::store::DbMemory> {
+        self.storage.update_memory(id, content, database)
+    }
+
+    pub fn delete_memory(&self, id: &str) -> Result<()> {
+        self.storage.delete_memory(id)
+    }
+
     // --- Data Assistant (数据助手) 转发 ---
     pub fn list_data_assistants(&self) -> Result<Vec<crate::model::DataAssistant>> {
         self.storage.list_data_assistants()

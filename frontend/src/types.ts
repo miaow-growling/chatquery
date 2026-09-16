@@ -307,6 +307,13 @@ export interface FilterCondition {
   enabled?: boolean;
 }
 
+export interface CatalogSearchResult {
+  db: string;
+  table: string | null;
+  is_view: boolean;
+  comment: string | null;
+}
+
 /// Token accounting for one finished turn (ADR-AI-4 决策3). Arrives on the
 /// `chat-usage` event just before `chat-done`. Providers that don't report
 /// usage simply never emit it, so treat every field as best-effort.
@@ -455,6 +462,18 @@ export interface KbDocDto {
 export interface KbBindingInput {
   conn_id: string;
   database: string | null;
+}
+
+/// Learned memory / user-correction rule bound to connection and optional database
+export interface DbMemoryDto {
+  id: string;
+  conn_id: string;
+  database: string | null;
+  content: string;
+  source: string;
+  user_raw: string;
+  created: number;
+  updated: number;
 }
 
 // ---------------------------------------------------------------------------

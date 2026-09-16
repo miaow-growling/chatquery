@@ -45,6 +45,19 @@ pub const RULES: &[ConstitutionRule] = &[
            必须严格指定本次操作的主键或唯一条件并带 LIMIT 1，只精确查回刚刚变动的那一条\
            数据，坚决避免给线上大表带来性能冲击与慢查询。",
     },
+    ConstitutionRule {
+        id: "C4",
+        title: "严禁口头承诺，必须立即行动",
+        body: "如果你决定执行查询，或在多轮对话中接收到追加/过滤条件（如「不要测试项目」「换一个样本」），必须在当前轮次直接发起 execute_query 工具调用；\
+           严禁在文本中仅输出「我正在查询」「现在跑」「这就为您执行」「我过滤掉...再找一个样本」等未来时态的表态与口头承诺；\
+           没有调用工具时直接给出分析或说明无法执行，不得空头承诺。",
+    },
+    ConstitutionRule {
+        id: "C5",
+        title: "严格遵循用户纠错记忆",
+        body: "在编写 SQL、执行查询或作答时，必须优先检索并遵循「用户历史纠错与偏好记忆」中的规则。\
+           严禁重复犯下用户已纠正过的历史错误（如使用废弃字段、漏掉过滤条件或误查测试数据）。",
+    },
 ];
 
 /// 把宪法渲染成系统提示词块。宪法为空时返回空串，注入点因此是无副作用的，
@@ -111,5 +124,23 @@ mod tests {
         assert!(c3.body.contains("受影响行数"));
         assert!(c3.body.contains("全表"));
         assert!(c3.body.contains("LIMIT 1"));
+    }
+
+    /// C4 的核心语义：严禁口头承诺、必须立即行动发起工具调用、不得空头承诺。
+    #[test]
+    fn c4_requires_immediate_action_no_verbal_promise() {
+        let c4 = RULES.iter().find(|r| r.id == "C4").expect("C4 exists");
+        assert!(c4.body.contains("execute_query"));
+        assert!(c4.body.contains("严禁"));
+        assert!(c4.body.contains("口头承诺"));
+    }
+
+    /// C5 的核心语义：严格遵循纠错记忆、优先遵循、禁止重复犯错。
+    #[test]
+    fn c5_requires_following_user_memories() {
+        let c5 = RULES.iter().find(|r| r.id == "C5").expect("C5 exists");
+        assert!(c5.body.contains("纠错"));
+        assert!(c5.body.contains("优先"));
+        assert!(c5.body.contains("严禁"));
     }
 }

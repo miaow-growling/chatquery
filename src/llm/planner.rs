@@ -121,8 +121,8 @@ pub fn render_plan(steps: &[String]) -> String {
         .join("\n")
 }
 
-/// Strip `<think>...</think>` sections so reasoning scratchpads don't turn into steps.
-fn strip_think_tags(text: &str) -> String {
+/// Strip `<think>...</think>` sections so reasoning scratchpads don't turn into steps or pollute context.
+pub(crate) fn strip_think_tags(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find("<think>") {

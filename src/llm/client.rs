@@ -212,6 +212,7 @@ async fn stream_chat_openai(
         "model": cfg.model,
         "messages": msgs,
         "stream": true,
+        "max_tokens": 4096,
         // OpenAI streams omit `usage` by default; this asks the provider to
         // append a final `usage` chunk so the token strip shows real numbers
         // (honoured by OpenAI / DeepSeek / Kimi / Qwen / vLLM / Ollama …;
@@ -242,6 +243,9 @@ async fn stream_chat_openai(
     let mut data_lines: Vec<String> = Vec::new();
     let mut content = String::new();
     let mut is_reasoning = false;
+    let mut finish_reason_length = false;
+    let mut stream_buf = String::new();
+    let mut in_tool_tag = false;
     let mut usage: Option<TokenUsage> = None;
     let mut tool_acc: HashMap<usize, (String, String, String)> = HashMap::new();
 
@@ -260,6 +264,11 @@ async fn stream_chat_openai(
                     .and_then(|c| c.as_array())
                     .and_then(|c| c.first())
                 {
+                    if let Some(fr) = ch.get("finish_reason").and_then(|x| x.as_str()) {
+                        if fr == "length" {
+                            finish_reason_length = true;
+                        }
+                    }
                     if let Some(delta) = ch.get("delta") {
                         // Reasoning/thinking tokens from models like DeepSeek-R1, MiniMax, Qwen
                         let reasoning = delta
@@ -286,7 +295,71 @@ async fn stream_chat_openai(
                                     on_delta("\n</think>\n\n");
                                 }
                                 content.push_str(c);
-                                on_delta(c);
+                                stream_buf.push_str(c);
+
+                                if in_tool_tag {
+                                    if let Some(end_idx) = find_tag_end(&stream_buf) {
+                                        in_tool_tag = false;
+                                        let remaining = stream_buf[end_idx..].to_string();
+                                        stream_buf = remaining;
+                                    } else {
+                                        stream_buf.clear();
+                                    }
+                                }
+
+                                if !in_tool_tag {
+                                    if stream_buf.contains("<<function_calls>>")
+                                        || stream_buf.contains("<invoke")
+                                        || stream_buf.contains("<tool_call>")
+                                    {
+                                        in_tool_tag = true;
+                                        let earliest = [
+                                            stream_buf.find("<<function_calls>>"),
+                                            stream_buf.find("<invoke"),
+                                            stream_buf.find("<tool_call>"),
+                                        ]
+                                        .iter()
+                                        .filter_map(|&x| x)
+                                        .min()
+                                        .unwrap_or(0);
+
+                                        if earliest > 0 {
+                                            on_delta(&stream_buf[..earliest]);
+                                        }
+                                        let remaining = stream_buf[earliest..].to_string();
+                                        stream_buf = remaining;
+                                    } else {
+                                        // Buffer any trailing prefix of a potential tool tag so "<" or "<<" never leaks to UI
+                                        const PREFIXES: &[&str] = &[
+                                            "<<function_calls>", "<<function_calls", "<<function_call",
+                                            "<<function_cal", "<<function_ca", "<<function_c",
+                                            "<<function_", "<<function", "<<functio", "<<functi",
+                                            "<<funct", "<<func", "<<fun", "<<fu", "<<f", "<<",
+                                            "<invoke", "<invok", "<invo", "<inv", "<in", "<i",
+                                            "<tool_call>", "<tool_call", "<tool_cal", "<tool_ca",
+                                            "<tool_c", "<tool_", "<tool", "<too", "<to", "<t",
+                                            "<",
+                                        ];
+                                        let mut hold_len = 0;
+                                        for p in PREFIXES {
+                                            if stream_buf.ends_with(p) && p.len() > hold_len {
+                                                hold_len = p.len();
+                                            }
+                                        }
+
+                                        if hold_len > 0 {
+                                            let emit_len = stream_buf.len() - hold_len;
+                                            if emit_len > 0 {
+                                                on_delta(&stream_buf[..emit_len]);
+                                                let held = stream_buf[emit_len..].to_string();
+                                                stream_buf = held;
+                                            }
+                                        } else {
+                                            on_delta(&stream_buf);
+                                            stream_buf.clear();
+                                        }
+                                    }
+                                }
                             }
                         }
                         if let Some(tcs) = delta.get("tool_calls").and_then(|x| x.as_array()) {
@@ -340,7 +413,17 @@ async fn stream_chat_openai(
         on_delta("\n</think>\n\n");
     }
 
-    let tool_calls = tool_acc
+    if !in_tool_tag && !stream_buf.is_empty() {
+        on_delta(&stream_buf);
+    }
+
+    if finish_reason_length {
+        let warn = "\n\n⚠️ [已达到单次生成 Token 上限截断]";
+        content.push_str(warn);
+        on_delta(warn);
+    }
+
+    let mut tool_calls: Vec<ToolCall> = tool_acc
         .into_iter()
         .map(|(_, (id, name, arguments))| ToolCall {
             id,
@@ -348,6 +431,12 @@ async fn stream_chat_openai(
             arguments,
         })
         .collect();
+
+    // Fallback: models (such as MiniMax-M3) occasionally emit tool calls as text
+    // inside `content` instead of in `delta.tool_calls`. Extract and clean them.
+    if tool_calls.is_empty() {
+        tool_calls = extract_text_tool_calls(&mut content);
+    }
 
     Ok(ChatChoice { content, tool_calls, usage })
 }
@@ -472,6 +561,7 @@ async fn stream_chat_anthropic(
     let mut data_lines: Vec<String> = Vec::new();
     let mut content = String::new();
     let mut is_reasoning = false;
+    let mut finish_reason_length = false;
     // index → (id, name, accumulated partial_json) for in-progress tool blocks.
     let mut tool_blocks: HashMap<usize, (String, String, String)> = HashMap::new();
     // Token usage split across events: input_tokens in `message_start`,
@@ -572,6 +662,15 @@ async fn stream_chat_anthropic(
                             }
                         }
                     }
+                    "message_delta" => {
+                        if let Some(d) = v.get("delta") {
+                            if let Some(sr) = d.get("stop_reason").and_then(|x| x.as_str()) {
+                                if sr == "max_tokens" {
+                                    finish_reason_length = true;
+                                }
+                            }
+                        }
+                    }
                     "content_block_stop" => {
                         let idx = v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
                         // A tool_use block carries an id; a text block does not.
@@ -596,11 +695,21 @@ async fn stream_chat_anthropic(
         on_delta("\n</think>\n\n");
     }
 
+    if finish_reason_length {
+        let warn = "\n\n⚠️ [已达到单次生成 Token 上限截断]";
+        content.push_str(warn);
+        on_delta(warn);
+    }
+
     // Any block still in-flight at stream end (shouldn't happen, but be safe).
     for (_, (id, name, arguments)) in tool_blocks {
         if !id.is_empty() {
             tool_calls.push(ToolCall { id, name, arguments });
         }
+    }
+
+    if tool_calls.is_empty() {
+        tool_calls = extract_text_tool_calls(&mut content);
     }
 
     let usage = if input_tokens > 0 || output_tokens > 0 {
@@ -614,6 +723,164 @@ async fn stream_chat_anthropic(
         None
     };
     Ok(ChatChoice { content, tool_calls, usage })
+}
+
+fn find_tag_end(buf: &str) -> Option<usize> {
+    let ends = [
+        buf.find("</invoke>").map(|i| i + "</invoke>".len()),
+        buf.find("</function_calls>>").map(|i| i + "</function_calls>>".len()),
+        buf.find("</tool_call>").map(|i| i + "</tool_call>".len()),
+    ];
+    ends.iter().filter_map(|&x| x).max()
+}
+
+/// Extract text-based function calls from `content` (such as MiniMax's
+/// `<<function_calls>> <invoke name="...">` or `<tool_call>...` blocks).
+/// When found, builds real `ToolCall` instances and strips the raw tags from `content`.
+pub fn extract_text_tool_calls(content: &mut String) -> Vec<ToolCall> {
+    let mut tool_calls = Vec::new();
+
+    // 1. MiniMax format: <<function_calls>> <invoke name="..."> <parameter name="...">value</parameter> </invoke>
+    if content.contains("<invoke") || content.contains("<<function_calls>>") {
+        let mut rest = content.as_str();
+        while let Some(invoke_start) = rest.find("<invoke") {
+            let after_invoke = &rest[invoke_start..];
+            if let Some(name_start_idx) = after_invoke.find("name=") {
+                let quote_char = after_invoke[name_start_idx + 5..].chars().next().unwrap_or('"');
+                if quote_char == '"' || quote_char == '\'' {
+                    let name_val_start = name_start_idx + 6;
+                    if let Some(name_val_end) = after_invoke[name_val_start..].find(quote_char) {
+                        let tool_name = &after_invoke[name_val_start..name_val_start + name_val_end];
+                        let invoke_end_offset = after_invoke
+                            .find("</invoke>")
+                            .map(|idx| idx + "</invoke>".len())
+                            .or_else(|| after_invoke[7..].find("<invoke").map(|idx| idx + 7))
+                            .unwrap_or(after_invoke.len());
+
+                        let invoke_block = &after_invoke[..invoke_end_offset];
+                        let mut params_map = serde_json::Map::new();
+                        let mut param_rest = invoke_block;
+                        while let Some(param_start) = param_rest.find("<parameter") {
+                            let after_param = &param_rest[param_start..];
+                            if let Some(pname_start) = after_param.find("name=") {
+                                let p_quote = after_param[pname_start + 5..].chars().next().unwrap_or('"');
+                                if p_quote == '"' || p_quote == '\'' {
+                                    let p_start = pname_start + 6;
+                                    if let Some(p_end) = after_param[p_start..].find(p_quote) {
+                                        let param_name = &after_param[p_start..p_start + p_end];
+                                        if let Some(tag_close) = after_param[p_start + p_end..].find('>') {
+                                            let val_start = p_start + p_end + tag_close + 1;
+                                            let val_end = if let Some(pend) = after_param[val_start..].find("</parameter>") {
+                                                val_start + pend
+                                            } else if let Some(next_p) = after_param[val_start..].find("<parameter") {
+                                                val_start + next_p
+                                            } else if let Some(end_inv) = after_param[val_start..].find("</invoke>") {
+                                                val_start + end_inv
+                                            } else {
+                                                after_param.len()
+                                            };
+                                            let param_val = after_param[val_start..val_end].trim();
+                                            params_map.insert(
+                                                param_name.to_string(),
+                                                serde_json::Value::String(param_val.to_string()),
+                                            );
+                                            param_rest = &after_param[val_end..];
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                            param_rest = &after_param[10.min(after_param.len())..];
+                        }
+
+                        if !tool_name.trim().is_empty() {
+                            let nanos = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_nanos();
+                            tool_calls.push(ToolCall {
+                                id: format!("call_txt_{:x}", nanos),
+                                name: tool_name.trim().to_string(),
+                                arguments: serde_json::Value::Object(params_map).to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+            rest = &after_invoke[7.min(after_invoke.len())..];
+        }
+    }
+
+    // 2. Generic <tool_call> {"name": "...", "arguments": {...}} </tool_call>
+    if content.contains("<tool_call>") {
+        let mut rest = content.as_str();
+        while let Some(start) = rest.find("<tool_call>") {
+            let after = &rest[start + "<tool_call>".len()..];
+            if let Some(end) = after.find("</tool_call>") {
+                let json_str = after[..end].trim();
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    if let Some(name) = v.get("name").and_then(|x| x.as_str()) {
+                        let arguments = match v.get("arguments") {
+                            Some(serde_json::Value::String(s)) => s.clone(),
+                            Some(other) => other.to_string(),
+                            None => "{}".to_string(),
+                        };
+                        let nanos = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos();
+                        tool_calls.push(ToolCall {
+                            id: format!("call_json_{:x}", nanos),
+                            name: name.to_string(),
+                            arguments,
+                        });
+                    }
+                }
+                rest = &after[end + "</tool_call>".len()..];
+            } else {
+                break;
+            }
+        }
+    }
+
+    // If any tool calls were parsed, strip the XML/tool tags from content so they don't leak into UI.
+    if !tool_calls.is_empty() {
+        let intermediate = content
+            .replace("<<function_calls>>", "")
+            .replace("</function_calls>>", "")
+            .replace("<function_calls>", "")
+            .replace("</function_calls>", "");
+
+        let mut clean = String::with_capacity(intermediate.len());
+        let mut curr = intermediate.as_str();
+        while let Some(start) = curr.find("<invoke") {
+            clean.push_str(&curr[..start]);
+            if let Some(end) = curr[start..].find("</invoke>") {
+                curr = &curr[start + end + "</invoke>".len()..];
+            } else {
+                curr = "";
+                break;
+            }
+        }
+        clean.push_str(curr);
+
+        let mut clean2 = String::with_capacity(clean.len());
+        let mut curr2 = clean.as_str();
+        while let Some(start) = curr2.find("<tool_call>") {
+            clean2.push_str(&curr2[..start]);
+            if let Some(end) = curr2[start..].find("</tool_call>") {
+                curr2 = &curr2[start + end + "</tool_call>".len()..];
+            } else {
+                curr2 = "";
+                break;
+            }
+        }
+        clean2.push_str(curr2);
+
+        *content = clean2.trim().to_string();
+    }
+
+    tool_calls
 }
 
 /// Append `new_data` to `buffer`, extract any *complete* `data:` SSE lines,
@@ -689,5 +956,32 @@ mod tests {
         // completion of the partial line
         parse_sse(&mut buf, "3}\n", &mut out2);
         assert_eq!(out2, vec!["{\"c\":3}".to_string()]);
+    }
+
+    #[test]
+    fn extracts_minimax_function_calls() {
+        let mut content = "我来帮您查询配置。\n<<function_calls>> <invoke name=\"execute_query\"> <parameter name=\"connection\">华为云租户库01</parameter> <parameter name=\"query\">SELECT * FROM yk_config WHERE code = 'ai_kefu_scope';</parameter> </invoke>".to_string();
+        let tools = extract_text_tool_calls(&mut content);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "execute_query");
+        let args: Value = serde_json::from_str(&tools[0].arguments).unwrap();
+        assert_eq!(args["connection"], "华为云租户库01");
+        assert_eq!(args["query"], "SELECT * FROM yk_config WHERE code = 'ai_kefu_scope';");
+        // Check that raw tags were stripped from content
+        assert!(!content.contains("<<function_calls>>"));
+        assert!(!content.contains("<invoke"));
+        assert_eq!(content, "我来帮您查询配置。");
+    }
+
+    #[test]
+    fn extracts_tool_call_json_block() {
+        let mut content = "准备执行查询：\n<tool_call>\n{\"name\": \"execute_query\", \"arguments\": {\"connection\": \"c1\", \"query\": \"SELECT 1\"}}\n</tool_call>".to_string();
+        let tools = extract_text_tool_calls(&mut content);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "execute_query");
+        let args: Value = serde_json::from_str(&tools[0].arguments).unwrap();
+        assert_eq!(args["connection"], "c1");
+        assert!(!content.contains("<tool_call>"));
+        assert_eq!(content, "准备执行查询：");
     }
 }

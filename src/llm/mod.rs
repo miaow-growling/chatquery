@@ -16,6 +16,16 @@ pub type KbLoader = std::sync::Arc<
     dyn Fn(&str, Option<&str>) -> Vec<(String, String)> + Send + Sync,
 >;
 
+/// Closure injected by the command layer to load persistent memories bound to (conn_id, db).
+pub type MemoryLoader = std::sync::Arc<
+    dyn Fn(&str, Option<&str>) -> Vec<String> + Send + Sync,
+>;
+
+/// Closure injected by the command layer to persist a learned memory bound to (conn_id, db, content, source, user_raw).
+pub type MemorySaver = std::sync::Arc<
+    dyn Fn(&str, Option<&str>, &str, &str, &str) + Send + Sync,
+>;
+
 /// Audit event for a write operation gated by the safety guardrail (ADR-AI-1
 /// 决策3). Emitted by the agent and persisted by the host (Tauri command) via
 /// `AuditSink`. Kept as plain data so it serializes trivially if needed.

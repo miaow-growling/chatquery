@@ -4,8 +4,7 @@ use crate::db::mysql;
 use crate::error::Result;
 use crate::llm::client::{stream_chat, ToolCall};
 use crate::llm::control::TurnControl;
-use crate::llm::KbLoader;
-use crate::llm::{AuditEvent, AuditSink};
+use crate::llm::{AuditEvent, AuditSink, KbLoader, MemoryLoader, MemorySaver};
 use crate::llm::memory::SessionMemory;
 use crate::llm::planner::{needs_planning, plan_task, PlanStep};
 use crate::llm::policy::{check_statement, PolicyDecision};
@@ -64,6 +63,10 @@ pub struct Agent {
     /// Injected knowledge-base loader (ADR-AI-6). Lets the agent read docs
     /// bound to the active connection/db without depending on the store.
     kb: KbLoader,
+    /// Injected memory loader. Reads persistent memories bound to (conn_id, db).
+    mem_loader: MemoryLoader,
+    /// Injected memory saver. Persists a learned memory rule to the store.
+    mem_saver: MemorySaver,
     /// Audit sink for write-operation guardrail events (ADR-AI-1 决策3).
     audit: AuditSink,
     /// Cumulative token usage for the turn (ADR-AI-4 决策3).
@@ -91,6 +94,8 @@ impl Agent {
         db: Option<&str>,
         ctl: TurnControl,
         kb: KbLoader,
+        mem_loader: MemoryLoader,
+        mem_saver: MemorySaver,
         audit: AuditSink,
         assistant: Option<AssistantContext>,
     ) -> Self {
@@ -105,18 +110,15 @@ impl Agent {
             role: WorkerKind::Orchestrator,
             ctl,
             kb,
+            mem_loader,
+            mem_saver,
             audit,
             usage: TokenUsage::default(),
             assistant,
         }
     }
 
-    /// Build a delegated worker with a specific role. It gets its own registry
-    /// (a scoped subset in future) and a fresh working memory, so its tool
-    /// output never bleeds into the Orchestrator's context. The control plane
-    /// is *shared* — one cancel stops every worker. The worker inherits the
-    /// orchestrator's current db so it queries the same schema the user
-    /// picked in the composer.
+    /// Build a delegated worker with a specific role.
     pub async fn build_worker(
         role: WorkerKind,
         cfg: LlmConfig,
@@ -126,6 +128,8 @@ impl Agent {
         db: Option<&str>,
         ctl: TurnControl,
         kb: KbLoader,
+        mem_loader: MemoryLoader,
+        mem_saver: MemorySaver,
         audit: AuditSink,
     ) -> Self {
         let registry = build_registry(mcp.as_deref()).await;
@@ -139,6 +143,8 @@ impl Agent {
             role,
             ctl,
             kb,
+            mem_loader,
+            mem_saver,
             audit,
             usage: TokenUsage::default(),
             assistant: None,
@@ -161,6 +167,44 @@ impl Agent {
             .map(|m| m.content.clone())
             .unwrap_or_default();
 
+        // 自动识别用户纠错与负面指责语气，提炼并沉淀为关联当前库/连接的长期记忆
+        if let Some(signal) = crate::llm::memory::detect_user_correction(&last_user, history) {
+            let conn_id_str = self.memory.current_conn.clone().unwrap_or_default();
+            if !conn_id_str.is_empty() {
+                let db_str = self.memory.current_db.clone();
+                let prior_ast = history
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == ChatRole::Assistant)
+                    .map(|m| m.content.as_str());
+
+                // 优先尝试大模型智能提炼精简硬规则，失败或超时则使用启发式规则候选
+                let distilled = crate::llm::memory::distill_correction_rule(
+                    &self.cfg,
+                    &signal.user_raw,
+                    prior_ast,
+                )
+                .await;
+                let final_rule = distilled.or(signal.rule_candidate);
+
+                if let Some(rule) = final_rule {
+                    let source = if signal.is_harsh {
+                        "harsh_correction"
+                    } else {
+                        "correction"
+                    };
+                    (self.mem_saver)(
+                        &conn_id_str,
+                        db_str.as_deref(),
+                        &rule,
+                        source,
+                        &signal.user_raw,
+                    );
+                    let _ = tx.send(BackendMsg::ChatTool(format!("🧠 已记住：{}", rule)));
+                }
+            }
+        }
+
         // Editor SQL the user attached to this turn, plus the cross-conversation
         // background block (@-mentions). Rendered once and folded into the
         // *last user message* rather than the system prompt: they are per-turn
@@ -175,7 +219,7 @@ impl Agent {
         let last_user = prepend_refs(&last_user, block.as_deref());
 
         if !needs_planning(&planning_seed, history.len()) {
-            let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb, self.assistant.as_ref()).await;
+            let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb, &self.mem_loader, self.assistant.as_ref()).await;
             // Lift prior assistant conclusions into the system prompt so the
             // model can see them as *established facts* instead of just one
             // entry in a long message log. Without this, a multi-turn
@@ -200,7 +244,7 @@ impl Agent {
         let plan: Vec<PlanStep> = match plan_task(&self.cfg, &last_user, history, &self.conns, &self.memory, &self.kb).await {
             Ok(steps) if !steps.is_empty() => steps,
             _ => {
-                let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb, self.assistant.as_ref()).await;
+                let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb, &self.mem_loader, self.assistant.as_ref()).await;
                 let system = inject_prior_assistant(&system, history);
                 let mut messages = Vec::new();
                 if !system.is_empty() {
@@ -258,6 +302,8 @@ impl Agent {
                     self.memory.current_db.as_deref(),
                     self.ctl.clone(),
                     self.kb.clone(),
+                    self.mem_loader.clone(),
+                    self.mem_saver.clone(),
                     self.audit.clone(),
                 ).await;
                 let wsys = build_worker_system(
@@ -269,6 +315,7 @@ impl Agent {
                     &step.description,
                     &shared_context,
                     &self.kb,
+                    &self.mem_loader,
                     history,
                 ).await;
                 let mut wmsg = Vec::new();
@@ -311,6 +358,8 @@ impl Agent {
                     let current_db = self.memory.current_db.clone();
                     let ctl = self.ctl.clone();
                     let kb = self.kb.clone();
+                    let mem_loader = self.mem_loader.clone();
+                    let mem_saver = self.mem_saver.clone();
                     let audit = self.audit.clone();
                     let plan_desc = plan_desc.clone();
                     let shared_ctx = shared_context.clone();
@@ -338,6 +387,8 @@ impl Agent {
                             current_db.as_deref(),
                             ctl.clone(),
                             kb.clone(),
+                            mem_loader.clone(),
+                            mem_saver.clone(),
                             audit,
                         ).await;
                         let wsys = build_worker_system(
@@ -349,6 +400,7 @@ impl Agent {
                             &step.description,
                             &shared_ctx,
                             &kb,
+                            &mem_loader,
                             &history_clone,
                         ).await;
                         let mut wmsg = Vec::new();
@@ -421,6 +473,7 @@ impl Agent {
         let mut last_assistant: Option<String> = None;
         let role = self.role;
         let ctl = self.ctl.clone();
+        let mut reprompted_tool_intent = false;
 
         for _ in 0..MAX_TOOL_ITERS {
             if ctl.is_cancelled() {
@@ -449,6 +502,17 @@ impl Agent {
             self.usage = add_usage(self.usage, choice.usage);
 
             if choice.tool_calls.is_empty() {
+                if !reprompted_tool_intent && detect_unfulfilled_tool_intent(&choice.content) {
+                    reprompted_tool_intent = true;
+                    if !choice.content.trim().is_empty() {
+                        messages.push(ChatMessage::assistant(choice.content.clone()));
+                    }
+                    messages.push(ChatMessage::system(
+                        "系统提示：检测到你表达了查询、过滤或寻找数据的意图，但并未实际生成 execute_query 工具调用。多轮对话中用户的追问或过滤条件（如排除测试项目、换一个样本等）属于取数任务的延续，你必须直接调用 execute_query 工具执行查询并返回真实数据，严禁仅输出表态文本！请立即调用 execute_query。".to_string(),
+                    ));
+                    continue;
+                }
+
                 if !choice.content.trim().is_empty() {
                     last_assistant = Some(choice.content.clone());
                     messages.push(ChatMessage::assistant(choice.content.clone()));
@@ -664,13 +728,15 @@ const PRIOR_SNIPPET_CHARS: usize = 400;
 pub(crate) fn inject_prior_assistant(system: &str, history: &[ChatMessage]) -> String {
     // Take the tail (most recent first), then reverse so the block reads
     // chronologically — same order the model would have produced them.
-    let priors: Vec<&str> = history
+    // Strip `<think>` reasoning tags so scratchpads don't contaminate established facts.
+    let priors: Vec<String> = history
         .iter()
         .filter_map(|m| {
             if m.role != ChatRole::Assistant {
                 return None;
             }
-            let t = m.content.trim();
+            let clean = crate::llm::planner::strip_think_tags(m.content.trim());
+            let t = clean.trim().to_string();
             if t.is_empty() {
                 None
             } else {
@@ -704,6 +770,96 @@ pub(crate) fn inject_prior_assistant(system: &str, history: &[ChatMessage]) -> S
         }
     }
     out
+}
+
+/// Heuristic detection of verbal promises, action acknowledgments, or forward-looking statements
+/// when `choice.tool_calls` is empty. Models (especially reasoning models like R1 / QwQ / MiniMax)
+/// occasionally suffer from thinking-action disconnects where they say "I'll run it now"
+/// or "I will filter out test projects and find another sample", but fail to emit `tool_calls`.
+pub(crate) fn detect_unfulfilled_tool_intent(content: &str) -> bool {
+    let clean = crate::llm::planner::strip_think_tags(content);
+    let trimmed = clean.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    // 1. Explicit acknowledgment of not having called tools
+    if trimmed.contains("没真正调用工具")
+        || trimmed.contains("刚才没真正调用")
+        || trimmed.contains("没有真正调用工具")
+        || trimmed.contains("没调用工具")
+    {
+        return true;
+    }
+
+    // 2. Clear verbal action promise keywords
+    const PROMISE_PATTERNS: &[&str] = &[
+        "现在跑",
+        "这就跑",
+        "我这就跑",
+        "马上跑",
+        "这就为您执行",
+        "这就为您查询",
+        "这就去查",
+        "这就去执行",
+        "现在为您执行",
+        "现在为您查询",
+        "这就开始执行",
+        "马上为您查询",
+        "马上为您执行",
+        "我来为您查询",
+        "我来执行查询",
+        "再找一个",
+        "找一个样本",
+        "找个样本",
+        "再查一个",
+        "再取一个",
+        "重新查",
+        "重新查询",
+        "我过滤掉",
+        "我先过滤",
+        "我这就过滤",
+        "我来排除",
+        "我先排除",
+        "先排除",
+        "让我先看看",
+        "让我查一下",
+        "让我先查",
+        "我先看",
+    ];
+
+    if PROMISE_PATTERNS.iter().any(|p| trimmed.contains(p)) {
+        return true;
+    }
+
+    // 3. Short forward-looking action statements with no data output (<= 80 chars)
+    // e.g. "我过滤掉测试项目，再找一个样本。"
+    if trimmed.chars().count() <= 80
+        && !trimmed.contains('|')
+        && !trimmed.contains("```")
+    {
+        let has_negation = [
+            "无法", "不能", "没有找到", "未找到", "不存在", "没有包含",
+            "不支持", "含义是", "解释如下", "分析如下",
+        ]
+        .iter()
+        .any(|w| trimmed.contains(w));
+
+        if !has_negation {
+            let has_action = ["找", "查", "跑", "过滤", "排除", "取", "选"]
+                .iter()
+                .any(|w| trimmed.contains(w));
+            let has_forward_marker = ["再", "先", "来", "去", "这就", "样本", "稍等", "接下来", "正在"]
+                .iter()
+                .any(|w| trimmed.contains(w));
+
+            if has_action && has_forward_marker {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 /// Render attached editor SQL as one context block, resolving each reference's
@@ -870,10 +1026,25 @@ pub async fn run_turn(
     tx: &UnboundedSender<BackendMsg>,
     ctl: TurnControl,
     kb: KbLoader,
+    mem_loader: MemoryLoader,
+    mem_saver: MemorySaver,
     audit: AuditSink,
     assistant: Option<AssistantContext>,
 ) -> Result<()> {
-    let mut agent = Agent::build(cfg.clone(), conns, mcp, conn_id, db, ctl.clone(), kb, audit, assistant).await;
+    let mut agent = Agent::build(
+        cfg.clone(),
+        conns,
+        mcp,
+        conn_id,
+        db,
+        ctl.clone(),
+        kb,
+        mem_loader,
+        mem_saver,
+        audit,
+        assistant,
+    )
+    .await;
     // ADR-AI-4 决策2: bound a single turn's wall-clock time so a stuck stream
     // or runaway worker can't wedge the turn (and its registry slot) forever.
     let result = tokio::time::timeout(TURN_TIMEOUT, agent.run(history, refs, conv_ctx.as_deref(), tx)).await;
@@ -909,6 +1080,7 @@ async fn context_block(
     conns: &[ConnectionConfig],
     memory: &SessionMemory,
     kb: &KbLoader,
+    mem_loader: &MemoryLoader,
     assistant: Option<&AssistantContext>,
 ) -> String {
     let mut p = String::new();
@@ -1023,6 +1195,14 @@ async fn context_block(
                 p.push_str("(知识库较大，仅注入部分；需要更多片段可用 search_knowledge 工具检索)\n");
             }
         }
+        // ADR-AI-Memory: inject learned memories bound to the active connection/db.
+        let memories = mem_loader(conn_id, db.as_deref());
+        if !memories.is_empty() {
+            p.push_str("\n## 用户历史纠错与偏好记忆（已关联当前连接/库，必须严格遵守，严禁重犯历史错误）：\n");
+            for (i, rule) in memories.iter().enumerate() {
+                p.push_str(&format!("{}. {}\n", i + 1, rule));
+            }
+        }
     }
     // 注入数据助手显式绑定的专属知识库文档
     if let Some(ast) = assistant {
@@ -1052,6 +1232,7 @@ async fn build_system_prompt(
     memory: &SessionMemory,
     plan: Option<&[String]>,
     kb: &KbLoader,
+    mem_loader: &MemoryLoader,
     assistant: Option<&AssistantContext>,
 ) -> String {
     let mut p = String::new();
@@ -1063,7 +1244,7 @@ async fn build_system_prompt(
             p.push_str(&format!("{}\n\n", ast.system_prompt.trim()));
         }
     }
-    p.push_str(&context_block(conns, memory, kb, assistant).await);
+    p.push_str(&context_block(conns, memory, kb, mem_loader, assistant).await);
     // 宪法紧贴上下文之后：模型刚看到表清单/知识库，正是「先取证再写 SQL」
     // 这类硬约束最容易被内化的位置。普通规则段继续保留各自的弱化表述。
     let constitution = crate::llm::constitution::render();
@@ -1073,7 +1254,9 @@ async fn build_system_prompt(
     }
     p.push_str(
         "\n规则：\n\
-         - 按需调用工具（严禁非必要执行）：用户提问如果是「解释 SQL」、「分析 SQL 含义/结构」、「优化建议」、「语法检查」或一般性咨询，请直接基于 SQL 文本及上下文作答，严禁私自调用 execute_query 去运行 SQL 或查询数据；只有当用户明确要求「执行/运行」、「查询具体数据/统计」时才调用 execute_query。\n\
+         - 按需调用工具：\n\
+           * 纯咨询不调用：用户提问如果是「解释 SQL」、「分析 SQL 含义/结构」、「优化建议」、「语法检查」或一般性咨询，请直接基于 SQL 文本及上下文作答，严禁私自调用 execute_query 去运行 SQL。\n\
+           * 取数与多轮追问必须立即调用：用户要求查询具体数据、统计，或在多轮对话中提出过滤/排除/追加条件（如「不要测试项目」、「换一个样本」、「查最新的」、「排除某某」等），属于取数任务的直接延续，必须在当前轮次立即调用 execute_query 执行查询并返回真实数据，严禁仅输出表态文本（如「我过滤掉...再找一个样本」）而不调工具！\n\
          - 只使用 execute_query 工具，并指定已知连接名。\n\
          - 优先只读查询；不要臆造表名或列名。\n\
          - 回答简洁（降噪 2026-08-12）：直接给结论与关键数据，不复述问题、不客套、\
@@ -1102,11 +1285,12 @@ async fn build_worker_system(
     step: &str,
     shared_context: &str,
     kb: &KbLoader,
+    mem_loader: &MemoryLoader,
     history: &[ChatMessage],
 ) -> String {
     let mut p = String::new();
     p.push_str(role.system_prefix());
-    p.push_str(&context_block(conns, memory, kb, None).await);
+    p.push_str(&context_block(conns, memory, kb, mem_loader, None).await);
     // Worker 是复杂任务里真正动手写 SQL 的角色，宪法（如「先拿真实表结构
     // 再写 SQL」）对它们比对 Orchestrator 更关键，注入位置与主提示词保持
     // 一致：紧贴上下文之后。
@@ -1255,15 +1439,31 @@ mod tests {
         std::sync::Arc::new(|_conn: &str, _db: Option<&str>| vec![])
     }
 
+    fn no_mem() -> MemoryLoader {
+        std::sync::Arc::new(|_conn: &str, _db: Option<&str>| vec![])
+    }
+
     /// The constitution must land in the main (single-agent / Orchestrator)
     /// prompt with its header intact, so the SQL-schema rule is visible to
     /// every simple-turn ReAct loop.
     #[tokio::test]
     async fn system_prompt_carries_constitution() {
         let memory = SessionMemory::new(None, None);
-        let prompt = build_system_prompt(&[], &memory, None, &no_kb(), None).await;
+        let prompt = build_system_prompt(&[], &memory, None, &no_kb(), &no_mem(), None).await;
         assert!(prompt.contains("宪法"));
         assert!(prompt.contains("[C1]"));
+        assert!(prompt.contains("[C5]"));
+    }
+
+    #[tokio::test]
+    async fn system_prompt_carries_memories() {
+        let memory = SessionMemory::new(Some("c1".to_string()), Some("db1".to_string()));
+        let mem_loader: MemoryLoader = std::sync::Arc::new(|_conn, _db| {
+            vec!["yk_config 表使用 code 字段作为配置键，而非 key 字段".to_string()]
+        });
+        let prompt = build_system_prompt(&[], &memory, None, &no_kb(), &mem_loader, None).await;
+        assert!(prompt.contains("用户历史纠错与偏好记忆"));
+        assert!(prompt.contains("yk_config 表使用 code 字段作为配置键，而非 key 字段"));
     }
 
     #[tokio::test]
@@ -1285,7 +1485,7 @@ mod tests {
             ],
             bound_kb_docs: vec![("口径规范".to_string(), "GMV统计口径包含已支付未退款".to_string())],
         };
-        let prompt = build_system_prompt(&[], &memory, None, &no_kb(), Some(&ast)).await;
+        let prompt = build_system_prompt(&[], &memory, None, &no_kb(), &no_mem(), Some(&ast)).await;
         assert!(prompt.contains("运营分析助手"));
         assert!(prompt.contains("只用中文回答且输出 Markdown 表格"));
         assert!(prompt.contains("GMV统计口径包含已支付未退款"));
@@ -1306,6 +1506,7 @@ mod tests {
                 "查 user 表结构",
                 "",
                 &no_kb(),
+                &no_mem(),
                 &[],
             )
             .await;
@@ -1330,6 +1531,7 @@ mod tests {
             "根据工单名称查询ID",
             "",
             &no_kb(),
+            &no_mem(),
             &history,
         )
         .await;
@@ -1503,5 +1705,32 @@ mod tests {
         let merged = merge_blocks(Some("A"), Some("B")).unwrap();
         assert!(merged.starts_with("A"));
         assert!(merged.contains("B"));
+    }
+
+    #[test]
+    fn inject_prior_assistant_strips_think_tags() {
+        let history = vec![
+            ChatMessage::user("查一下配置"),
+            ChatMessage::assistant("<think>\n跑两次查询，暂存@val\n让我跑\n</think>\n已为您查明配置项为 enabled。"),
+        ];
+        let injected = inject_prior_assistant("基础系统提示词", &history);
+        assert!(!injected.contains("<think>"));
+        assert!(!injected.contains("暂存@val"));
+        assert!(injected.contains("已为您查明配置项为 enabled"));
+    }
+
+    #[test]
+    fn detect_unfulfilled_tool_intent_matches_verbal_promises() {
+        assert!(detect_unfulfilled_tool_intent("抱歉，刚才没真正调用工具。现在跑。"));
+        assert!(detect_unfulfilled_tool_intent("<think>让我跑</think>\n这就为您执行查询"));
+        assert!(detect_unfulfilled_tool_intent("我这就跑"));
+        assert!(detect_unfulfilled_tool_intent("马上为您执行"));
+        assert!(detect_unfulfilled_tool_intent("我过滤掉测试项目，再找一个样本。"));
+        assert!(detect_unfulfilled_tool_intent("<think>先用LIKE排除</think>\n我过滤掉测试项目，再找一个样本。"));
+        assert!(detect_unfulfilled_tool_intent("让我先查一下这个表的结构"));
+        assert!(!detect_unfulfilled_tool_intent("查询结果如下：共 5 行数据。"));
+        assert!(!detect_unfulfilled_tool_intent("这条 SQL 的含义是统计活跃用户数。"));
+        assert!(!detect_unfulfilled_tool_intent("数据库中没有找到符合条件的房产记录。"));
+        assert!(!detect_unfulfilled_tool_intent("| id | name |\n| 1 | 测试 |"));
     }
 }

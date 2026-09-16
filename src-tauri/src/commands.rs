@@ -1174,6 +1174,19 @@ pub async fn search_tables(
 }
 
 #[tauri::command]
+pub async fn search_catalog(
+    state: State<'_, AppState>,
+    conn_id: String,
+    query: String,
+    limit: usize,
+) -> Result<Vec<chatquery::db::mysql::CatalogSearchResult>, String> {
+    let cfg = resolve_cfg(&state, &conn_id).ok_or_else(|| "连接未找到".to_string())?;
+    chatquery::db::mysql::search_catalog(&cfg, &query, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn list_redis_keys(
     state: State<'_, AppState>,
     conn_id: String,
@@ -1937,6 +1950,23 @@ pub async fn chat_turn(
         }
     });
 
+    let store_mem = Arc::clone(&state.store);
+    let mem_loader: chatquery::llm::MemoryLoader = Arc::new(move |conn_id: &str, db: Option<&str>| {
+        let store = store_mem.lock().unwrap();
+        match store.get_injected_memories(conn_id, db, 10) {
+            Ok(mems) => mems.into_iter().map(|m| m.content).collect(),
+            Err(_) => Vec::new(),
+        }
+    });
+
+    let store_save = Arc::clone(&state.store);
+    let mem_saver: chatquery::llm::MemorySaver = Arc::new(
+        move |conn_id: &str, db: Option<&str>, content: &str, source: &str, user_raw: &str| {
+            let store = store_save.lock().unwrap();
+            let _ = store.add_memory(conn_id, db, content, source, user_raw);
+        },
+    );
+
     // Audit sink (ADR-AI-1 决策3): persist write-guardrail decisions to the
     // store. Mirrors `kb_loader` — the `Arc` keeps it 'static for the future.
     // A TUI turn passes a no-op sink.
@@ -1979,6 +2009,8 @@ pub async fn chat_turn(
             &tx,
             ctl.clone(),
             kb_loader,
+            mem_loader,
+            mem_saver,
             audit,
             assistant_ctx,
         )
@@ -2065,6 +2097,66 @@ pub fn resolve_confirm(state: State<AppState>, turn_id: String, id: String, appr
     if let Some(c) = ctl {
         c.resolve(&id, approved);
     }
+}
+
+// --- DB-associated Memories & User Corrections IPC ---
+
+#[tauri::command]
+pub fn get_db_memories(
+    conn_id: String,
+    db: Option<String>,
+    state: State<AppState>,
+) -> Result<Vec<chatquery::store::DbMemory>, String> {
+    let store = state.store.lock().unwrap();
+    store
+        .list_memories(&conn_id, db.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_db_memory(
+    id: String,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let store = state.store.lock().unwrap();
+    store.delete_memory(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn add_db_memory(
+    conn_id: String,
+    db: Option<String>,
+    content: String,
+    state: State<AppState>,
+) -> Result<chatquery::store::DbMemory, String> {
+    let store = state.store.lock().unwrap();
+    store
+        .add_memory(&conn_id, db.as_deref(), &content, "manual", &content)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_db_memory(
+    id: String,
+    content: String,
+    db: Option<String>,
+    state: State<AppState>,
+) -> Result<chatquery::store::DbMemory, String> {
+    let store = state.store.lock().unwrap();
+    store
+        .update_memory(&id, &content, db.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_all_db_memories(
+    limit: Option<usize>,
+    state: State<AppState>,
+) -> Result<Vec<chatquery::store::DbMemory>, String> {
+    let store = state.store.lock().unwrap();
+    store
+        .list_all_memories(limit.unwrap_or(200))
+        .map_err(|e| e.to_string())
 }
 
 // --- Encryption key management (#0) ----------------------------------------

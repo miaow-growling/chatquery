@@ -6,6 +6,7 @@ use crate::model::{
     AssistantDbBinding, ConversationSummary, DataAssistant, NewChatMessage, StoredChatMessage,
 };
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -45,6 +46,19 @@ pub struct KbDoc {
 pub struct KbBinding {
     pub conn_id: String,
     pub database: Option<String>,
+}
+
+/// A learned memory or user-correction rule associated with a connection and optional database.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DbMemory {
+    pub id: String,
+    pub conn_id: String,
+    pub database: Option<String>,
+    pub content: String,
+    pub source: String,
+    pub user_raw: String,
+    pub created: i64,
+    pub updated: i64,
 }
 
 /// SQLite-backed persistence for connection configs and (later) history.
@@ -636,6 +650,176 @@ impl Storage {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    // --- DB-associated Memories & User Corrections ---
+
+    /// Add or update a learned memory / correction rule.
+    pub fn add_memory(
+        &self,
+        conn_id: &str,
+        database: Option<&str>,
+        content: &str,
+        source: &str,
+        user_raw: &str,
+    ) -> Result<DbMemory> {
+        let now = now_secs();
+        let db_val = database.filter(|s| !s.trim().is_empty());
+        // Check if an identical memory content already exists under this conn + db
+        let mut check = self.conn.prepare(
+            "SELECT id, created FROM db_memories
+             WHERE conn_id = ?1 AND (database IS ?2 OR database = ?2) AND content = ?3",
+        )?;
+        let mut existing = check.query_map(params![conn_id, db_val, content], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+
+        if let Some(row) = existing.next() {
+            let (id, created) = row?;
+            self.conn.execute(
+                "UPDATE db_memories SET updated = ?1, user_raw = ?2, source = ?3 WHERE id = ?4",
+                params![now, user_raw, source, id],
+            )?;
+            return Ok(DbMemory {
+                id,
+                conn_id: conn_id.to_string(),
+                database: db_val.map(|s| s.to_string()),
+                content: content.to_string(),
+                source: source.to_string(),
+                user_raw: user_raw.to_string(),
+                created,
+                updated: now,
+            });
+        }
+
+        let id = gen_id("mem");
+        self.conn.execute(
+            "INSERT INTO db_memories (id, conn_id, database, content, source, user_raw, created, updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![id, conn_id, db_val, content, source, user_raw, now, now],
+        )?;
+
+        Ok(DbMemory {
+            id,
+            conn_id: conn_id.to_string(),
+            database: db_val.map(|s| s.to_string()),
+            content: content.to_string(),
+            source: source.to_string(),
+            user_raw: user_raw.to_string(),
+            created: now,
+            updated: now,
+        })
+    }
+
+    /// Retrieve memories that should be injected for the active (conn_id, database).
+    /// Inherits connection-level memories (database IS NULL) plus any specific to this database.
+    pub fn get_injected_memories(
+        &self,
+        conn_id: &str,
+        database: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<DbMemory>> {
+        let db_val = database.filter(|s| !s.trim().is_empty());
+        let mut stmt = self.conn.prepare(
+            "SELECT id, conn_id, database, content, source, user_raw, created, updated
+             FROM db_memories
+             WHERE (conn_id = ?1 AND database IS NULL)
+                OR (conn_id = ?1 AND database = ?2)
+             ORDER BY updated DESC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![conn_id, db_val, limit as i64], |r| {
+            Ok(DbMemory {
+                id: r.get(0)?,
+                conn_id: r.get(1)?,
+                database: r.get(2)?,
+                content: r.get(3)?,
+                source: r.get(4)?,
+                user_raw: r.get(5)?,
+                created: r.get(6)?,
+                updated: r.get(7)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// List all memories under a connection and optional database filter.
+    pub fn list_memories(&self, conn_id: &str, database: Option<&str>) -> Result<Vec<DbMemory>> {
+        self.get_injected_memories(conn_id, database, 100)
+    }
+
+    /// List all memories across all connections and databases.
+    pub fn list_all_memories(&self, limit: usize) -> Result<Vec<DbMemory>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, conn_id, database, content, source, user_raw, created, updated
+             FROM db_memories
+             ORDER BY updated DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(DbMemory {
+                id: r.get(0)?,
+                conn_id: r.get(1)?,
+                database: r.get(2)?,
+                content: r.get(3)?,
+                source: r.get(4)?,
+                user_raw: r.get(5)?,
+                created: r.get(6)?,
+                updated: r.get(7)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Update an existing memory's content, database scope, or rule text ("纠正记忆").
+    pub fn update_memory(
+        &self,
+        id: &str,
+        content: &str,
+        database: Option<&str>,
+    ) -> Result<DbMemory> {
+        let now = now_secs();
+        let db_val = database.filter(|s| !s.trim().is_empty());
+        self.conn.execute(
+            "UPDATE db_memories SET content = ?1, database = ?2, updated = ?3 WHERE id = ?4",
+            params![content, db_val, now, id],
+        )?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, conn_id, database, content, source, user_raw, created, updated
+             FROM db_memories WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |r| {
+            Ok(DbMemory {
+                id: r.get(0)?,
+                conn_id: r.get(1)?,
+                database: r.get(2)?,
+                content: r.get(3)?,
+                source: r.get(4)?,
+                user_raw: r.get(5)?,
+                created: r.get(6)?,
+                updated: r.get(7)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(row) => Ok(row?),
+            None => Err(AppError::Msg(format!("未找到记忆记录: {}", id))),
+        }
+    }
+
+    /// Delete a memory by id.
+    pub fn delete_memory(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM db_memories WHERE id = ?1", params![id])?;
+        Ok(())
     }
 
     // --- Conversations / chat messages (docs/chat-conversation-design.md) ---
@@ -1258,6 +1442,19 @@ fn init_schema(conn: &Connection) -> Result<()> {
             updated                  INTEGER NOT NULL
         );",
     )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS db_memories (
+            id       TEXT PRIMARY KEY,
+            conn_id  TEXT NOT NULL,
+            database TEXT,
+            content  TEXT NOT NULL,
+            source   TEXT NOT NULL,
+            user_raw TEXT NOT NULL,
+            created  INTEGER NOT NULL,
+            updated  INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_db_memories_conn_db ON db_memories(conn_id, database);",
+    )?;
     Ok(())
 }
 
@@ -1756,6 +1953,54 @@ mod tests {
 
         s.delete_data_assistant("ast_1").unwrap();
         assert!(s.list_data_assistants().unwrap().is_empty());
+    }
+
+    #[test]
+    fn db_memories_crud_and_inheritance() {
+        let s = mem_store();
+        // 1. Add connection-level memory (database = None)
+        let m1 = s
+            .add_memory("c1", None, "全连接必须遵循的规范", "manual", "全局规范")
+            .unwrap();
+        // 2. Add db-specific memory
+        let m2 = s
+            .add_memory("c1", Some("db_alpha"), "db_alpha中yk_config用code字段", "correction", "用code不是key")
+            .unwrap();
+        // 3. Add memory under another db
+        let _m3 = s
+            .add_memory("c1", Some("db_beta"), "db_beta的专属规则", "correction", "beta规则")
+            .unwrap();
+        // 4. Add memory under another conn
+        let _m4 = s
+            .add_memory("c2", None, "c2的规则", "manual", "c2")
+            .unwrap();
+
+        // Querying for (c1, db_alpha) should return m2 and m1, but not m3 or m4
+        let alpha_mems = s.get_injected_memories("c1", Some("db_alpha"), 10).unwrap();
+        let alpha_contents: Vec<&str> = alpha_mems.iter().map(|m| m.content.as_str()).collect();
+        assert!(alpha_contents.contains(&"db_alpha中yk_config用code字段"));
+        assert!(alpha_contents.contains(&"全连接必须遵循的规范"));
+        assert!(!alpha_contents.contains(&"db_beta的专属规则"));
+        assert!(!alpha_contents.contains(&"c2的规则"));
+
+        // Querying for (c1, None) should only return c1 whole-connection memories
+        let c1_global = s.get_injected_memories("c1", None, 10).unwrap();
+        let c1_contents: Vec<&str> = c1_global.iter().map(|m| m.content.as_str()).collect();
+        assert!(c1_contents.contains(&"全连接必须遵循的规范"));
+        assert!(!c1_contents.contains(&"db_alpha中yk_config用code字段"));
+
+        // Deduplication update on identical content
+        let m2_updated = s
+            .add_memory("c1", Some("db_alpha"), "db_alpha中yk_config用code字段", "correction", "再次强调")
+            .unwrap();
+        assert_eq!(m2.id, m2_updated.id);
+        assert_eq!(m2_updated.user_raw, "再次强调");
+
+        // Delete
+        s.delete_memory(&m1.id).unwrap();
+        let after_del = s.get_injected_memories("c1", Some("db_alpha"), 10).unwrap();
+        assert_eq!(after_del.len(), 1);
+        assert_eq!(after_del[0].id, m2.id);
     }
 }
 

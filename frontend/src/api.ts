@@ -23,6 +23,7 @@ import type {
   KeyStatus,
   KbBindingInput,
   KbDocDto,
+  DbMemoryDto,
   LlmConfigDto,
   LlmConfigInput,
   NewChatMessage,
@@ -33,6 +34,7 @@ import type {
   SqlReference,
   StatusInfo,
   TableMeta,
+  CatalogSearchResult,
   TableStructure,
   TokenUsage,
   TreeModel,
@@ -160,6 +162,8 @@ export const api = {
       like: like ?? null,
       limit,
     }),
+  searchCatalog: (connId: string, query: string, limit = 50) =>
+    invoke<CatalogSearchResult[]>("search_catalog", { connId, query, limit }),
   listRedisKeys: (connId: string, db: number, pattern: string, limit: number) =>
     invoke<string[]>("list_redis_keys", { connId, db, pattern, limit }),
   /// List Redis keys with metadata (type, TTL, memory) in one pipeline call
@@ -285,6 +289,17 @@ export const api = {
   deleteKbDoc: (id: string) => invoke("delete_kb_doc", { id }),
   setKbBindings: (kbId: string, bindings: KbBindingInput[]) =>
     invoke("set_kb_bindings", { kbId, bindings }),
+  // --- DB Memories (ADR-AI-Memory: user corrections & learned rules) ---
+  getDbMemories: (connId: string, db?: string | null) =>
+    invoke<DbMemoryDto[]>("get_db_memories", { connId, db: db ?? null }),
+  listAllDbMemories: (limit?: number) =>
+    invoke<DbMemoryDto[]>("list_all_db_memories", { limit: limit ?? 200 }),
+  updateDbMemory: (id: string, content: string, db?: string | null) =>
+    invoke<DbMemoryDto>("update_db_memory", { id, content, db: db ?? null }),
+  deleteDbMemory: (id: string) =>
+    invoke("delete_db_memory", { id }),
+  addDbMemory: (connId: string, content: string, db?: string | null) =>
+    invoke<DbMemoryDto>("add_db_memory", { connId, db: db ?? null, content }),
   // --- Write-guardrail audit trail (ADR-AI-1 决策3) ---
   listAuditLogs: (limit?: number) =>
     invoke<AuditRow[]>("list_audit_logs", { limit: limit ?? null }),

@@ -533,6 +533,8 @@ impl App {
                 &tx,
                 ctl,
                 std::sync::Arc::new(|_, _| Vec::new()),
+                std::sync::Arc::new(|_, _| Vec::new()),
+                std::sync::Arc::new(|_, _, _, _, _| {}),
                 std::sync::Arc::new(|_| {}),
                 None,
             )

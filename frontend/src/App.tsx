@@ -73,6 +73,8 @@ import { DataAssistantEditor } from "./components/DataAssistantEditor";
 import { MemoryWidget } from "./components/MemoryWidget";
 import { TableFilterBar, buildWhereSql } from "./components/TableFilterBar";
 import { InlineFilterRow } from "./components/InlineFilterRow";
+import { QuickOpenModal } from "./components/QuickOpenModal";
+import { DbMemoryModal } from "./components/DbMemoryModal";
 
 /** 表格右键菜单自适应容器（具有视口边缘碰撞检测，自动翻转防止菜单底部被遮挡截断） */
 function TableContextMenuContainer({
@@ -414,6 +416,9 @@ function splitThinkContent(raw: string): ParsedMessage {
     .filter(Boolean)
     .join("\n\n")
     .replace(/<\s*\/?\s*think\s*>/gi, "")
+    .replace(/<<function_calls>>[\s\S]*?(?:<\/invoke>|<\/function_calls>>|$)/gi, "")
+    .replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|$)/gi, "")
+    .replace(/<<\s*$/g, "")
     .trim();
 
   return { thinking, isThinking, content };
@@ -456,12 +461,14 @@ function ExecutionBlock({
   isRunning,
   onImportSql,
   onOpenNewTab,
+  onOpenMemory,
 }: {
   plan?: string[];
   tools?: string[];
   isRunning: boolean;
   onImportSql?: (sql: string) => void;
   onOpenNewTab?: (sql: string) => void;
+  onOpenMemory?: () => void;
 }) {
   const hasPlan = !!(plan && plan.length > 0);
   const hasTools = !!(tools && tools.length > 0);
@@ -529,6 +536,7 @@ function ExecutionBlock({
                     content={toolContent}
                     onImportSql={onImportSql}
                     onOpenNewTab={onOpenNewTab}
+                    onOpenMemory={onOpenMemory}
                   />
                 ))}
               </div>
@@ -591,10 +599,12 @@ function ToolCallCard({
   content,
   onImportSql,
   onOpenNewTab,
+  onOpenMemory,
 }: {
   content: string;
   onImportSql?: (sql: string) => void;
   onOpenNewTab?: (sql: string) => void;
+  onOpenMemory?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -602,10 +612,32 @@ function ToolCallCard({
   // 解析 execute_query「<SQL>」→ <SUMMARY>
   const match = /^execute_query「([\s\S]+?)」→\s*(.*)$/.exec(content);
   if (!match) {
+    const isMemory = content.startsWith("🧠 已记住：");
     return (
-      <div className="chat-tool-chip" title={content}>
-        <span className="chat-tool-icon">⚡</span>
+      <div
+        className={"chat-tool-chip" + (isMemory ? " memory-chip" : "")}
+        title={isMemory ? "点击查看与纠正数据库记忆规则" : content}
+        onClick={isMemory && onOpenMemory ? () => onOpenMemory() : undefined}
+        style={
+          isMemory
+            ? {
+                cursor: "pointer",
+                border: "1px solid rgba(99, 102, 241, 0.35)",
+                background: "rgba(99, 102, 241, 0.12)",
+                color: "var(--color-primary, #818cf8)",
+                padding: "4px 10px",
+                borderRadius: "6px",
+              }
+            : undefined
+        }
+      >
+        <span className="chat-tool-icon">{isMemory ? "🧠" : "⚡"}</span>
         <span className="chat-tool-text">{content}</span>
+        {isMemory && (
+          <span style={{ fontSize: "11px", opacity: 0.8, marginLeft: 6, textDecoration: "underline" }}>
+            管理规则 ↗
+          </span>
+        )}
       </div>
     );
   }
@@ -1133,12 +1165,22 @@ function highlightMatch(text: string, query: string): React.ReactNode {
 function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerProps) {
   const roots = useMemo(() => buildPickerRoots(tree), [tree]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  /// Text filter — matches both the connection name (any depth) and the
-  /// list of databases that have already been loaded for that connection
-  /// (databases are lazy, so a connection's db list is only searchable
-  /// after the user has expanded it at least once — that's an accepted
-  /// trade-off to keep the picker fast on large accounts).
   const [filter, setFilter] = useState("");
+  const [deepSearching, setDeepSearching] = useState(false);
+  const [tableHints, setTableHints] = useState<Record<string, Record<string, string[]>>>({});
+
+  // 收集树上所有连接实例，供跨连接穿透检索
+  const allConns = useMemo(() => {
+    const list: ConnSummary[] = [];
+    for (const env of tree.environments) {
+      for (const g of env.groups) {
+        for (const c of g.connections) {
+          list.push(c);
+        }
+      }
+    }
+    return list;
+  }, [tree]);
 
   // 打开时除当前数据库所在连接及环境外，其他全部收缩到环境那一层
   useEffect(() => {
@@ -1199,11 +1241,93 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
     }
   }, [roots, activeConnId]);
 
+  const [dbs, setDbs] = useState<Record<string, string[]>>({});
+  const [loading, setLoading] = useState<Record<string, boolean>>({});
+
+  // 跨连接穿透检索：输入关键字时，并发向所有 MySQL 连接发起 searchCatalog 检索库名与表名
+  useEffect(() => {
+    const q = filter.trim();
+    if (!q) {
+      setDeepSearching(false);
+      setTableHints({});
+      return;
+    }
+
+    let isCancelled = false;
+    const timer = setTimeout(async () => {
+      setDeepSearching(true);
+      try {
+        const mysqlConns = allConns.filter((c) => c.db_type === "mysql");
+        const tasks = mysqlConns.map(async (conn) => {
+          try {
+            const timeoutPromise = new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("timeout")), 2000)
+            );
+            const res = await Promise.race([
+              api.searchCatalog(conn.id, q, 30),
+              timeoutPromise,
+            ]);
+            return { conn, res };
+          } catch {
+            return { conn, res: [] };
+          }
+        });
+
+        const settled = await Promise.allSettled(tasks);
+        if (isCancelled) return;
+
+        const newDbs: Record<string, string[]> = {};
+        const newHints: Record<string, Record<string, string[]>> = {};
+
+        for (const r of settled) {
+          if (r.status === "fulfilled" && r.value) {
+            const { conn, res } = r.value;
+            if (res.length > 0) {
+              const key = `conn:${conn.id}`;
+              const dbsSet = new Set<string>();
+              const hintsMap: Record<string, string[]> = {};
+
+              for (const item of res) {
+                dbsSet.add(item.db);
+                if (item.table) {
+                  if (!hintsMap[item.db]) hintsMap[item.db] = [];
+                  if (hintsMap[item.db].length < 3) {
+                    hintsMap[item.db].push(item.table);
+                  }
+                }
+              }
+
+              newDbs[key] = Array.from(dbsSet);
+              newHints[key] = hintsMap;
+            }
+          }
+        }
+
+        setDbs((prev) => {
+          const next = { ...prev };
+          for (const [k, v] of Object.entries(newDbs)) {
+            const existing = next[k] || [];
+            next[k] = Array.from(new Set([...existing, ...v]));
+          }
+          return next;
+        });
+        setTableHints((prev) => ({ ...prev, ...newHints }));
+      } catch (err) {
+        console.warn("[DbPicker] searchCatalog error:", err);
+      } finally {
+        if (!isCancelled) {
+          setDeepSearching(false);
+        }
+      }
+    }, 120);
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+    };
+  }, [filter, allConns]);
+
   // Does this node (or any of its descendants) match the active filter?
-  // Used at render time to skip non-matching branches. We don't touch
-  // `expanded` — when a match is found we force `isOpen` in the row
-  // render, which is enough to surface the hit without polluting the
-  // user's manually-collapsed state once they clear the filter.
   const nodeMatches = (n: PickerNode): boolean => {
     const q = filter.trim().toLowerCase();
     if (!q) return true;
@@ -1213,13 +1337,13 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
       const dbsKey = `conn:${n.conn.id}`;
       const list = dbs[dbsKey] ?? [];
       if (list.some((d) => d.toLowerCase().indexOf(q) >= 0)) return true;
+      const hints = tableHints[dbsKey];
+      if (hints && Object.keys(hints).length > 0) return true;
     } else {
       if (n.children.some(nodeMatches)) return true;
     }
     return false;
   };
-  const [dbs, setDbs] = useState<Record<string, string[]>>({});
-  const [loading, setLoading] = useState<Record<string, boolean>>({});
 
   const toggleConn = async (conn: ConnSummary) => {
     const key = `conn:${conn.id}`;
@@ -1317,16 +1441,18 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
         {node.kind === "conn" && isOpen && (() => {
           const q = filter.trim().toLowerCase();
           const allDbs = dbs[`conn:${node.conn.id}`] ?? [];
+          const hintsForConn = tableHints[`conn:${node.conn.id}`] || {};
           const hasDbMatch = q ? allDbs.some((db) => db.toLowerCase().includes(q)) : false;
+          const hasTableMatch = q ? Object.keys(hintsForConn).length > 0 : false;
           const connNameMatches = q ? node.conn.name.toLowerCase().includes(q) : false;
 
-          // 筛选可见数据库：若有明确匹配搜索词的数据库，仅展示匹配项；若仅连接名命中，则展示全部
-          const visibleDbs = q && hasDbMatch
-            ? allDbs.filter((db) => db.toLowerCase().includes(q))
+          // 筛选可见数据库：若有明确匹配搜索词的数据库或表，展示匹配项；若仅连接名命中，则展示全部
+          const visibleDbs = q && (hasDbMatch || hasTableMatch)
+            ? allDbs.filter((db) => db.toLowerCase().includes(q) || !!hintsForConn[db])
             : allDbs;
 
           const showDefaultDb =
-            !q || (!hasDbMatch && connNameMatches) || "连接默认库".includes(q) || "default".includes(q);
+            !q || (!hasDbMatch && !hasTableMatch && connNameMatches) || "连接默认库".includes(q) || "default".includes(q);
 
           return (
             <div>
@@ -1346,21 +1472,38 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
                   </span>
                 </div>
               )}
-              {visibleDbs.map((db) => (
-                <div
-                  key={db}
-                  className={
-                    "tree-row db-pick-item" +
-                    (node.conn.id === activeConnId && activeDb === db ? " active" : "")
-                  }
-                  style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
-                  onClick={() => onSelect(node.conn.id, db)}
-                >
-                  <span className="tw leaf" />
-                  <span className="badge">🗄</span>
-                  <span className="tree-label">{highlightMatch(db, filter)}</span>
-                </div>
-              ))}
+              {visibleDbs.map((db) => {
+                const matchedTables = hintsForConn[db];
+                return (
+                  <div
+                    key={db}
+                    className={
+                      "tree-row db-pick-item" +
+                      (node.conn.id === activeConnId && activeDb === db ? " active" : "")
+                    }
+                    style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
+                    onClick={() => onSelect(node.conn.id, db)}
+                  >
+                    <span className="tw leaf" />
+                    <span className="badge">🗄</span>
+                    <span className="tree-label">
+                      {highlightMatch(db, filter)}
+                      {matchedTables && matchedTables.length > 0 && (
+                        <span
+                          className="dim"
+                          style={{
+                            marginLeft: 6,
+                            fontSize: "var(--fs-xs)",
+                            color: "var(--color-primary, #60a5fa)",
+                          }}
+                        >
+                          (含匹配表: {matchedTables.join(", ")})
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
               {q && visibleDbs.length === 0 && !showDefaultDb && (
                 <div
                   className="dim"
@@ -1371,7 +1514,7 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
                     paddingBottom: "4px",
                   }}
                 >
-                  无匹配数据库
+                  {deepSearching ? "穿透搜索中…" : "无匹配数据库"}
                 </div>
               )}
             </div>
@@ -1396,7 +1539,7 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
           <Icon name="search" size={12} />
           <input
             type="text"
-            placeholder="筛选连接名 / 库名…"
+            placeholder="筛选连接名 / 库名，或穿透搜表…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             // Suppress macOS WKWebView inline suggestions while typing.
@@ -1406,6 +1549,21 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
             spellCheck={false}
             autoFocus
           />
+          {deepSearching && (
+            <span
+              className="dim"
+              style={{
+                fontSize: "var(--fs-xs)",
+                paddingRight: "6px",
+                display: "flex",
+                alignItems: "center",
+                whiteSpace: "nowrap",
+                color: "var(--color-primary, #60a5fa)",
+              }}
+            >
+              穿透中…
+            </span>
+          )}
           {filter && (
             <button
               type="button"
@@ -1423,7 +1581,9 @@ function DbPicker({ tree, activeConnId, activeDb, onSelect, onClose }: DbPickerP
           )}
           {filter.trim() !== "" &&
             roots.every((r) => !nodeMatches(r)) && (
-              <div className="tree-empty">无匹配：{filter}</div>
+              <div className="tree-empty">
+                {deepSearching ? "正在全库穿透检索中…" : `无匹配：${filter}`}
+              </div>
             )}
           {roots
             .map((r) => renderNode(r, 0))
@@ -1673,11 +1833,43 @@ export function App() {
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
 
+  const [quickOpenOpen, setQuickOpenOpen] = useState(false);
+  const [recentTables, setRecentTables] = useState<{ connId: string; db: string; table: string }[]>(() => {
+    try {
+      const raw = localStorage.getItem("cq_recent_tables");
+      return raw ? JSON.parse(raw).slice(0, 5) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const removeRecentTable = useCallback((connId: string, db: string, table: string) => {
+    setRecentTables((prev) => {
+      const next = prev.filter((x) => !(x.connId === connId && x.db === db && x.table === table)).slice(0, 5);
+      try {
+        localStorage.setItem("cq_recent_tables", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const clearRecentTables = useCallback(() => {
+    setRecentTables([]);
+    try {
+      localStorage.removeItem("cq_recent_tables");
+    } catch {}
+  }, []);
+
+  const [targetFocus, setTargetFocus] = useState<{ connId: string; db: string; table?: string } | null>(null);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
         setFilterRowVisible((v) => !v);
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        setQuickOpenOpen((v) => !v);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1688,6 +1880,7 @@ export function App() {
   // through this popup (not by clicking the tree) to avoid accidental context
   // switches between queries.
   const [dbPickerOpen, setDbPickerOpen] = useState(false);
+  const [dbMemoryOpen, setDbMemoryOpen] = useState(false);
   // Per-opener callback for the db picker. The same modal is used from
   // two places with different intents:
   //   • SQL editor area → wants to update the active tab's context
@@ -3963,6 +4156,15 @@ export function App() {
       setMultiResults(null);
       setMultiResultIdx(0);
 
+      // Track recently visited table (max 5 items, latest first)
+      setRecentTables((prev) => {
+        const next = [{ connId, db, table }, ...prev.filter((x) => !(x.connId === connId && x.db === db && x.table === table))].slice(0, 5);
+        try {
+          localStorage.setItem("cq_recent_tables", JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
       const currentTabs = tabsRef.current;
       const currentActiveId = activeTabIdRef.current;
       const currentActive = currentTabs.find((t) => t.id === currentActiveId);
@@ -4701,7 +4903,7 @@ export function App() {
               );
             })}
           </tr>
-          {filterRowVisible && (
+          {active?.kind === "table" && filterRowVisible && (
             <InlineFilterRow
               columns={cols}
               editable={editable}
@@ -5583,6 +5785,9 @@ export function App() {
     // has been deleted, fall back to loading only the SQL into the current tab.
     const conn = item.conn_id ? findConn(item.conn_id) : undefined;
     if (conn) setSelId(conn.id);
+    if (conn && item.db) {
+      setTargetFocus({ connId: conn.id, db: item.db });
+    }
     setActiveTab((t) => ({
       ...t,
       sql: item.sql,
@@ -6738,6 +6943,11 @@ export function App() {
           onShowRelationships={showRelationships}
           onSelectDb={onSelectDb}
           onNewQuery={onNewQuery}
+          onOpenQuickOpen={() => setQuickOpenOpen(true)}
+          recentTables={recentTables}
+          onRemoveRecentTable={removeRecentTable}
+          onClearRecentTables={clearRecentTables}
+          targetFocus={targetFocus}
         />
         <MemoryWidget showToast={showToast} />
       </aside>
@@ -7068,12 +7278,16 @@ export function App() {
                 onClick={() => setResultTab("data")}
               >
                 数据
+                {active?.loading ? (
+                  <span className="rtab-loading-dot" title="正在读取···" />
+                ) : (
+                  result?.kind === "table" && Array.isArray(result.rows) && (
+                    <span className="rtab-count">
+                      {result.rows.length}
+                    </span>
+                  )
+                )}
               </button>
-              <span className="result-status">
-                {active?.loading
-                  ? "[正在读取 ···]"
-                  : `[${result?.kind ?? "null"} rows=${result?.kind === "table" && Array.isArray(result.rows) ? result.rows.length : "-"}]`}
-              </span>
               <button
                 className={"rtab" + (resultTab === "structure" ? " active" : "")}
                 disabled={!structureView && !browseCtx}
@@ -7144,7 +7358,7 @@ export function App() {
                       </button>
                     )}
                   </span>
-                  {result && result.kind === "table" && Array.isArray(result.columns) && result.columns.length > 0 && (
+                  {active?.kind === "table" && result && result.kind === "table" && Array.isArray(result.columns) && result.columns.length > 0 && (
                     <button
                       type="button"
                       className={"transpose-toggle-btn" + (filterRowVisible ? " active" : "")}
@@ -7219,7 +7433,7 @@ export function App() {
               )}
             </div>
           </div>
-          {resultTab === "data" && result && result.kind === "table" && Array.isArray(result.columns) && result.columns.length > 0 && (
+          {active?.kind === "table" && resultTab === "data" && result && result.kind === "table" && Array.isArray(result.columns) && result.columns.length > 0 && (
             <TableFilterBar
               columns={result.columns}
               columnsMeta={structureView?.data?.columns}
@@ -7418,6 +7632,13 @@ export function App() {
           </button>
           <button
             className="icon-btn"
+            title="数据库记忆管理（查看与纠正业务规则）"
+            onClick={() => setDbMemoryOpen(true)}
+          >
+            🧠
+          </button>
+          <button
+            className="icon-btn"
             title={chatMaximized ? "还原侧边栏宽度" : "最大化 AI 画布（专注深度分析）"}
             onClick={() => setChatMaximized((v) => !v)}
           >
@@ -7516,6 +7737,7 @@ export function App() {
                         isRunning={streaming && i === chat.length - 1}
                         onImportSql={(sql) => handleImportToEditor(sql, undefined)}
                         onOpenNewTab={(sql) => handleOpenInNewTab(sql, undefined)}
+                        onOpenMemory={() => setDbMemoryOpen(true)}
                       />
                     )}
                     <div className="msg-body">
@@ -8075,6 +8297,16 @@ export function App() {
                 >
                   <span className="composer-plus-item-title">选择数据库</span>
                   <span className="composer-plus-item-sub">切到当前连接的另一个库</span>
+                </button>
+                <button
+                  className="composer-plus-item"
+                  onClick={() => {
+                    setPlusOpen(false);
+                    setDbMemoryOpen(true);
+                  }}
+                >
+                  <span className="composer-plus-item-title">🧠 数据库记忆管理</span>
+                  <span className="composer-plus-item-sub">查看与纠正当前库的业务规则与记忆</span>
                 </button>
                 <button
                   className="composer-plus-item"
@@ -8846,6 +9078,16 @@ export function App() {
                 onClick={() => setSettingsTab("assistant")}
               >
                 数据助手
+              </button>
+              <button
+                type="button"
+                className="nav-item"
+                onClick={() => {
+                  setSettingsOpen(false);
+                  setDbMemoryOpen(true);
+                }}
+              >
+                🧠 记忆管理
               </button>
             </div>
 
@@ -10123,6 +10365,33 @@ export function App() {
           }}
         />
       )}
+
+      {dbMemoryOpen && (
+        <DbMemoryModal
+          conns={allConns}
+          activeConnId={chatConnId || active?.connId || selId || null}
+          activeDb={chatDb !== undefined ? chatDb : (active?.db || null)}
+          onClose={() => setDbMemoryOpen(false)}
+        />
+      )}
+
+      <QuickOpenModal
+        open={quickOpenOpen}
+        onClose={() => setQuickOpenOpen(false)}
+        tree={tree}
+        onBrowseTable={(connId, db, table) => {
+          setTargetFocus({ connId, db, table });
+          void browseTable(connId, db, table);
+        }}
+        onSelectDb={(connId, db) => {
+          setTargetFocus({ connId, db });
+          if (onSelectDb) onSelectDb(connId, db);
+        }}
+        onNewQuery={(connId, db) => {
+          setTargetFocus({ connId, db });
+          if (onNewQuery) onNewQuery(connId, db);
+        }}
+      />
 
       {dlg && (
         <div
