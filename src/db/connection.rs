@@ -136,8 +136,10 @@ impl ConnectionStore {
                 storage.upsert_connection(c)?;
             }
         }
-        // Heal any environment where db_type is not Redis, but all connections inside it are Redis.
-        let mut redis_env_ids: Vec<String> = Vec::new();
+        // Heal environments:
+        // 1) All connections inside are Redis but db_type != Redis => set to Redis.
+        // 2) db_type is None (legacy missing data, ADR-022) => default to MySQL (or Redis if pure redis).
+        let mut updates: Vec<(String, DbType)> = Vec::new();
         for env in containers.iter().filter(|c| c.kind == ContainerKind::Env) {
             let group_ids: Vec<&str> = containers
                 .iter()
@@ -148,18 +150,19 @@ impl ConnectionStore {
                 .iter()
                 .filter(|c| c.group_id.as_deref().map_or(false, |gid| group_ids.contains(&gid)))
                 .collect();
-            if !env_conns.is_empty()
-                && env_conns.iter().all(|c| c.db_type == DbType::Redis)
-                && env.db_type != Some(DbType::Redis)
-            {
-                redis_env_ids.push(env.id.clone());
+            let has_redis = env_conns.iter().any(|c| c.db_type == DbType::Redis);
+            let has_mysql = env_conns.iter().any(|c| c.db_type == DbType::Mysql);
+            if !env_conns.is_empty() && has_redis && !has_mysql && env.db_type != Some(DbType::Redis) {
+                updates.push((env.id.clone(), DbType::Redis));
+            } else if env.db_type.is_none() {
+                updates.push((env.id.clone(), DbType::Mysql));
             }
         }
-        for env_id in redis_env_ids {
+        for (env_id, dt) in updates {
             if let Some(env) = containers.iter_mut().find(|c| c.id == env_id) {
-                env.db_type = Some(DbType::Redis);
+                env.db_type = Some(dt);
             }
-            let _ = storage.update_container_db_type(&env_id, Some(DbType::Redis));
+            let _ = storage.update_container_db_type(&env_id, Some(dt));
         }
         Ok(Self {
             connections,

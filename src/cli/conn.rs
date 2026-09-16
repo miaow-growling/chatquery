@@ -370,6 +370,7 @@ pub async fn handle(args: ConnArgs, json_output: bool) -> Result<()> {
                     serde_json::to_string_pretty(&serde_json::json!({
                         "ok": true,
                         "connections_added": res.connections_added,
+                        "connections_updated": res.connections_updated,
                         "containers_added": res.containers_added,
                         "passwords_needed": res.passwords_needed,
                         "skipped": res.skipped,
@@ -378,6 +379,9 @@ pub async fn handle(args: ConnArgs, json_output: bool) -> Result<()> {
             } else {
                 println!("✓ 导入成功：");
                 println!("  - 新增连接数: {}", res.connections_added);
+                if res.connections_updated > 0 {
+                    println!("  - 更新/去重连接数: {}", res.connections_updated);
+                }
                 println!("  - 新增环境/分组数: {}", res.containers_added);
                 if !res.passwords_needed.is_empty() {
                     println!(

@@ -1280,26 +1280,566 @@ body.dragging-h .cm-editor {
 .conn-db { color: var(--brand); font-weight: var(--fw-medium); }
 .conn-db-default { color: var(--text-tertiary); font-weight: var(--fw-regular); }
 
-/* =====================  QUERY TABS  ===================== */
+/* =====================  QUERY TABS & DB NAV TREE  ===================== */
 .tab-bar {
   display: flex;
-  align-items: stretch;
-  gap: 2px;
+  align-items: center;
+  gap: 0;
   background: var(--bg-canvas);
   border-bottom: 1px solid var(--border);
   padding: 0 var(--sp-2);
-  overflow-x: auto;
   min-width: 0;
   flex-shrink: 0;
-  border-bottom: 1px solid var(--border);
-  padding: 0 var(--sp-2);
+  height: 36px;
+  position: relative;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.tab-bar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* 数据库导航下拉容器 */
+.tab-db-nav-dropdown {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  z-index: 100;
+}
+
+/* 导航触发按钮：精致现代极简胶囊 */
+.tab-db-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 25px;
+  padding: 0 8px 0 7px;
+  border-radius: var(--r-sm);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-soft);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: all var(--t-fast);
+}
+.tab-db-nav-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+.tab-db-nav-btn.active {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+  color: var(--brand);
+  font-weight: var(--fw-semibold);
+}
+
+.tab-db-nav-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.85;
+}
+
+.tab-db-nav-btn-text {
+  letter-spacing: 0.2px;
+}
+
+.tab-db-nav-btn-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: var(--r-full);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-soft);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  line-height: 1;
+}
+.tab-db-nav-btn.active .tab-db-nav-btn-badge {
+  background: var(--brand);
+  border-color: transparent;
+  color: #fff;
+}
+
+.tab-db-nav-btn-caret {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.6;
+  transition: transform var(--t-fast);
+}
+.tab-db-nav-btn-caret.open {
+  transform: rotate(180deg);
+}
+
+/* 导航与 Tab 列表之间的垂直分隔条 */
+.tab-db-nav-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 8px;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+/* 下拉树形弹窗 (Tree Popover) */
+.tab-db-tree-popover {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  width: 350px;
+  max-height: 480px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: 0 16px 40px -4px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 999;
+  animation: tabDbTreeFadeIn 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  backdrop-filter: blur(16px);
+}
+
+@keyframes tabDbTreeFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 弹窗头部 */
+.tab-db-tree-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.tab-db-tree-head-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-db-tree-head-icon {
+  color: var(--brand);
+}
+
+.tab-db-tree-title {
+  font-size: 11.5px;
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+}
+
+.tab-db-tree-action-btn {
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 7px;
+  border-radius: var(--r-xs);
+  transition: all var(--t-fast);
+}
+.tab-db-tree-action-btn:hover {
+  background: var(--danger-100);
+  border-color: var(--danger-300);
+  color: var(--danger-500);
+}
+
+/* 搜索过滤栏 */
+.tab-db-tree-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-canvas);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.tab-db-tree-search-icon {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.tab-db-tree-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 11.5px;
+  outline: none;
+  min-width: 0;
+}
+.tab-db-tree-search-input::placeholder {
+  color: var(--text-placeholder);
+}
+
+.tab-db-tree-search-clear {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: var(--r-full);
+}
+.tab-db-tree-search-clear:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+/* 弹窗内容滚动区 */
+.tab-db-tree-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-soft) transparent;
+}
+.tab-db-tree-body::-webkit-scrollbar {
+  width: 5px;
+}
+.tab-db-tree-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.tab-db-tree-body::-webkit-scrollbar-thumb {
+  background: var(--border-soft);
+  border-radius: var(--r-full);
+}
+.tab-db-tree-body::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+.tab-db-tree-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+/* 数据库分组节点 */
+.tab-db-tree-group {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-sm);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+
+/* 分组表头行 */
+.tab-db-tree-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--bg-subtle);
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: var(--fw-medium);
+  transition: background var(--t-fast);
+}
+.tab-db-tree-group-header:hover {
+  background: var(--bg-hover);
+}
+.tab-db-tree-group-header.contains-active {
+  background: var(--bg-hover);
+  border-left: 3px solid var(--brand);
+}
+
+.tab-db-tree-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  color: var(--text-tertiary);
+  transition: transform var(--t-fast);
+}
+.tab-db-tree-arrow.expanded {
+  transform: rotate(90deg);
+}
+.tab-db-tree-group-header.contains-active .tab-db-tree-arrow {
+  color: var(--brand);
+}
+
+.tab-db-tree-db-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-secondary);
+}
+.tab-db-tree-group-header.contains-active .tab-db-tree-db-icon {
+  color: var(--brand);
+}
+
+.tab-db-tree-group-titles {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.tab-db-tree-conn-tag {
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-soft);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 110px;
+}
+
+.tab-db-tree-db-tag {
+  font-size: 12px;
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-db-tree-group-header.contains-active .tab-db-tree-db-tag {
+  color: var(--brand);
+}
+
+.tab-db-tree-count-badge {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-soft);
+  padding: 0 5px;
+  border-radius: var(--r-full);
+  line-height: 14px;
+}
+.tab-db-tree-group-header.contains-active .tab-db-tree-count-badge {
+  border-color: var(--brand-border);
+  color: var(--brand);
+}
+
+/* 分组统一关闭按钮 */
+.tab-db-tree-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border: none;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.tab-db-tree-close-btn:hover {
+  background: var(--danger-100);
+  color: var(--danger-500);
+}
+
+/* 子节点 Tab 列表 */
+.tab-db-tree-children {
+  display: flex;
+  flex-direction: column;
+  padding: 3px 4px 5px 16px;
+  gap: 2px;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* 单个 Tab 菜单项 */
+.tab-db-tree-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--r-xs);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: all var(--t-fast);
+  border-left: 2px solid transparent;
+}
+.tab-db-tree-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.tab-db-tree-item.active {
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-weight: var(--fw-semibold);
+  border-left-color: var(--brand);
+}
+
+.tab-db-tree-item-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-tertiary);
+}
+.tab-db-tree-item.active .tab-db-tree-item-icon {
+  color: var(--brand);
+}
+
+.tab-db-tree-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-db-tree-active-tag {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: var(--r-xs);
+  background: var(--brand);
+  color: #fff;
+  line-height: 1;
+}
+
+/* 单个 Tab 关闭按钮 */
+.tab-db-tree-item-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border: none;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+.tab-db-tree-item:hover .tab-db-tree-item-close {
+  opacity: 1;
+}
+.tab-db-tree-item-close:hover {
+  background: var(--danger-100);
+  color: var(--danger-500);
+}
+
+/* 弹窗底部操作条 */
+.tab-db-tree-footer {
+  padding: 6px 10px;
+  background: var(--bg-subtle);
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+}
+
+.tab-db-tree-footer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-xs);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: all var(--t-fast);
+  width: 100%;
+}
+.tab-db-tree-footer-btn:hover {
+  background: var(--bg-hover);
+  color: var(--brand);
+  border-color: var(--brand);
+}
+
+/* Tab 列表滑动容器与左右导航控制 */
+.tab-scroll-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* 左右两侧平滑滑动箭头按钮 (< 和 >) */
+.tab-scroll-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 24px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-xs);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  z-index: 5;
+  transition: all var(--t-fast);
+  box-shadow: var(--shadow-sm);
+  user-select: none;
+}
+.tab-scroll-arrow:hover {
+  background: var(--bg-hover);
+  border-color: var(--brand-border);
+  color: var(--brand);
+}
+.tab-scroll-arrow:active {
+  transform: scale(0.92);
+}
+.tab-scroll-arrow-left {
+  margin-right: 4px;
+}
+.tab-scroll-arrow-right {
+  margin-left: 4px;
+}
+
+/* Tab 列表滚动区域：彻底隐藏粗大原生滚动条，支持鼠标滚轮横向丝滑滑动 */
+.tab-list {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+.tab-list::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Edge, Webview2 */
+  width: 0;
+  height: 0;
+}
+
 .tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   height: 32px;
-  padding: 0 12px;
+  padding: 0 10px;
   border: 1px solid transparent;
   border-bottom: none;
   border-radius: var(--r-sm) var(--r-sm) 0 0;
@@ -1311,6 +1851,7 @@ body.dragging-h .cm-editor {
   white-space: nowrap;
   max-width: 180px;
   transition: background var(--t-fast), color var(--t-fast);
+  user-select: none;
 }
 .tab:hover {
   background: var(--bg-hover);
@@ -1343,9 +1884,12 @@ body.dragging-h .cm-editor {
   color: var(--text-tertiary);
   cursor: pointer;
   font-size: 14px;
-  padding: 0 6px;
+  padding: 0 8px;
+  height: 30px;
   border-radius: var(--r-sm);
   transition: background var(--t-fast), color var(--t-fast);
+  align-self: center;
+  margin-left: 2px;
 }
 .tab-new:hover { color: var(--brand); background: var(--bg-subtle); }
 
@@ -1636,7 +2180,6 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .pager-info { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .pager-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 2px; }
 .pager-size, .pager-jump {
-  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1646,10 +2189,13 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   -webkit-appearance: none;
   -moz-appearance: none;
   appearance: none;
-  min-width: 64px;
+  min-width: 68px;
   height: 28px;
-  padding: 0 26px 0 10px;
-  background: var(--bg-subtle);
+  padding: 0 24px 0 10px;
+  background-color: var(--bg-subtle);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
   color: var(--text-primary);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
@@ -1659,18 +2205,6 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   transition: border-color var(--t-fast);
 }
 .pager-size select:hover, .pager-size select:focus { border-color: var(--border-focus); }
-.pager-size::after {
-  content: "";
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 0; height: 0;
-  border-left: 4px solid transparent;
-  border-right: 4px solid transparent;
-  border-top: 4px solid var(--text-tertiary);
-  pointer-events: none;
-}
 .pager-jump-input {
   width: 54px;
   height: 28px;
@@ -6413,8 +6947,10 @@ select.field-input:disabled {
 .ctx-item:hover:not([aria-disabled="true"]) { background: var(--brand-soft); color: var(--brand); }
 .ctx-menu button:disabled,
 .ctx-item[aria-disabled="true"] { color: var(--text-tertiary); cursor: not-allowed; opacity: 0.7; }
+.ctx-menu button.danger,
 .ctx-item.danger { color: var(--danger-500); }
-.ctx-item.danger:hover:not([aria-disabled="true"]) { background: var(--danger-soft); }
+.ctx-menu button.danger:hover:not(:disabled),
+.ctx-item.danger:hover:not([aria-disabled="true"]) { background: var(--danger-soft); color: var(--danger-500); }
 .ctx-sep { height: 1px; background: var(--border); margin: var(--sp-1) 6px; }
 
 /* =====================  CRASH PANEL  ===================== */

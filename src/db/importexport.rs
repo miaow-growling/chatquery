@@ -35,7 +35,9 @@ const UNGROUPED: &str = "__ungrouped";
 
 #[derive(Serialize, Deserialize)]
 struct ExportRoot {
+    #[serde(default)]
     format: String,
+    #[serde(default)]
     version: u32,
     /// "system-key" | "none". Missing ⇒ treated as "none" (plaintext).
     #[serde(default)]
@@ -114,10 +116,13 @@ struct ConnExport {
 // ---------------------------------------------------------------------------
 
 /// Outcome of an import, surfaced to the UI for a summary toast.
-#[derive(Serialize, Default)]
+#[derive(Serialize, Default, Debug)]
 pub struct ImportResult {
     /// Connections successfully added (ids regenerated, passwords re-encrypted).
     pub connections_added: usize,
+    /// Connections updated/deduplicated (existing connection matched and updated).
+    #[serde(default)]
+    pub connections_updated: usize,
     /// Environments + groups created to host the imported connections.
     pub containers_added: usize,
     /// Names of connections whose (decrypted) password is empty — the user
@@ -158,6 +163,7 @@ pub fn export_yaml(store: &ConnectionStore, cipher: &str) -> Result<String> {
 
     let containers = store.list_containers();
     let conns = store.list();
+    let mut exported_conn_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Grouped connections under each (db_type, env, group).
     for db_type in [DbType::Mysql, DbType::Redis] {
@@ -165,12 +171,35 @@ pub fn export_yaml(store: &ConnectionStore, cipher: &str) -> Result<String> {
             DbType::Mysql => "mysql",
             DbType::Redis => "redis",
         };
+        // 匹配属于当前 db_type 的环境（显式设置或根据子连接推导），
+        // 或虽归属其他类型但子分组中实际包含当前 db_type 连接的环境（跨类型容错）。
         let envs: Vec<&Container> = containers
             .iter()
-            .filter(|c| c.kind == ContainerKind::Env && c.db_type == Some(db_type))
+            .filter(|c| {
+                if c.kind != ContainerKind::Env {
+                    return false;
+                }
+                if effective_env_db_type(c, containers, conns) == db_type {
+                    return true;
+                }
+                let group_ids: Vec<&str> = containers
+                    .iter()
+                    .filter(|g| g.kind == ContainerKind::Group && g.parent.as_deref() == Some(&c.id))
+                    .map(|g| g.id.as_str())
+                    .collect();
+                conns.iter().any(|conn| {
+                    conn.db_type == db_type
+                        && conn
+                            .group_id
+                            .as_deref()
+                            .map_or(false, |gid| group_ids.contains(&gid))
+                })
+            })
             .collect();
+
         let mut db_tree = DbTree { envs: vec![] };
         for env in envs {
+            let is_primary_env = effective_env_db_type(env, containers, conns) == db_type;
             let mut env_exp = EnvExport {
                 name: env.name.clone(),
                 groups: vec![],
@@ -182,31 +211,46 @@ pub fn export_yaml(store: &ConnectionStore, cipher: &str) -> Result<String> {
                 })
                 .collect();
             for g in groups {
-                let gconns: Vec<ConnExport> = conns
+                let mut gconns = Vec::new();
+                for c in conns
                     .iter()
                     .filter(|c| c.db_type == db_type && c.group_id.as_deref() == Some(&g.id))
-                    .map(|c| to_conn_export(c, cipher, k.as_ref()))
-                    .collect();
-                env_exp.groups.push(GroupExport {
-                    name: g.name.clone(),
-                    connections: gconns,
-                });
+                {
+                    exported_conn_ids.insert(c.id.clone());
+                    gconns.push(to_conn_export(c, cipher, k.as_ref()));
+                }
+                // 保留有连接的分组；若该环境本身即为主类型，亦保留空分组以保持拓扑结构
+                if !gconns.is_empty() || is_primary_env {
+                    env_exp.groups.push(GroupExport {
+                        name: g.name.clone(),
+                        connections: gconns,
+                    });
+                }
             }
-            db_tree.envs.push(env_exp);
+            if !env_exp.groups.is_empty() || is_primary_env {
+                db_tree.envs.push(env_exp);
+            }
         }
-        // Ungrouped connections (group_id == None) for this db_type → synthetic
-        // env/group named UNGROUPED so they round-trip as ungrouped.
-        let ungrouped: Vec<ConnExport> = conns
+        // 全量兜底保障：当前 db_type 下尚未被任何环境/分组导出的连接
+        // （包括 group_id 为 None 的未分组连接、孤儿连接或层级断链连接），
+        // 统统作为 UNGROUPED 导出，绝对不漏掉任何一个连接。
+        let unexported_conns: Vec<&ConnectionConfig> = conns
             .iter()
-            .filter(|c| c.db_type == db_type && c.group_id.is_none())
-            .map(|c| to_conn_export(c, cipher, k.as_ref()))
+            .filter(|c| c.db_type == db_type && !exported_conn_ids.contains(&c.id))
             .collect();
-        if !ungrouped.is_empty() {
+        let unexported: Vec<ConnExport> = unexported_conns
+            .into_iter()
+            .map(|c| {
+                exported_conn_ids.insert(c.id.clone());
+                to_conn_export(c, cipher, k.as_ref())
+            })
+            .collect();
+        if !unexported.is_empty() {
             db_tree.envs.push(EnvExport {
                 name: UNGROUPED.into(),
                 groups: vec![GroupExport {
                     name: UNGROUPED.into(),
-                    connections: ungrouped,
+                    connections: unexported,
                 }],
             });
         }
@@ -216,6 +260,34 @@ pub fn export_yaml(store: &ConnectionStore, cipher: &str) -> Result<String> {
     }
 
     serde_yaml::to_string(&root).map_err(|e| AppError::Msg(format!("yaml 序列化失败: {}", e)))
+}
+
+/// Helper to determine an environment's effective DbType (ADR-022 compatible).
+fn effective_env_db_type(
+    env: &Container,
+    containers: &[Container],
+    conns: &[ConnectionConfig],
+) -> DbType {
+    if let Some(dt) = env.db_type {
+        return dt;
+    }
+    // 兼容缺失 db_type 的旧容器：检查该环境下的所有连接
+    let group_ids: Vec<&str> = containers
+        .iter()
+        .filter(|g| g.kind == ContainerKind::Group && g.parent.as_deref() == Some(&env.id))
+        .map(|g| g.id.as_str())
+        .collect();
+    let env_conns: Vec<&ConnectionConfig> = conns
+        .iter()
+        .filter(|c| c.group_id.as_deref().map_or(false, |gid| group_ids.contains(&gid)))
+        .collect();
+    let has_redis = env_conns.iter().any(|c| c.db_type == DbType::Redis);
+    let has_mysql = env_conns.iter().any(|c| c.db_type == DbType::Mysql);
+    if has_redis && !has_mysql {
+        DbType::Redis
+    } else {
+        DbType::Mysql
+    }
 }
 
 fn to_conn_export(c: &ConnectionConfig, cipher: &str, k: Option<&[u8; 32]>) -> ConnExport {
@@ -260,7 +332,11 @@ pub fn import_external(store: &mut ConnectionStore, text: &str) -> Result<Import
 
     for ce in ext_conns {
         // Required-field validation
-        if ce.name.trim().is_empty() || ce.host.trim().is_empty() || ce.user.trim().is_empty() {
+        // Redis 通常无用户名（user 为空），故仅校验 name 与 host；MySQL 校验 name、host 与 user。
+        let missing_required = ce.name.trim().is_empty()
+            || ce.host.trim().is_empty()
+            || (ce.db_type == DbType::Mysql && ce.user.trim().is_empty());
+        if missing_required {
             result.skipped.push(ce.name.clone());
             continue;
         }
@@ -271,17 +347,43 @@ pub fn import_external(store: &mut ConnectionStore, text: &str) -> Result<Import
         let env_id = store.ensure_env(env_name, Some(ce.db_type))?;
         let group_id = Some(store.ensure_group(&env_id, group_name)?);
 
-        let need_pw = ce.password.trim().is_empty();
         let name = ce.name.trim().to_string();
 
+        // 检查是否已有相同连接（同 group_id、同 db_type，且同名或物理端点完全相同）
+        let existing = store.list().iter().find(|c| {
+            c.db_type == ce.db_type
+                && c.group_id == group_id
+                && (c.name.trim() == name
+                    || (!ce.host.trim().is_empty()
+                        && c.host.trim() == ce.host.trim()
+                        && c.port == ce.port
+                        && c.user.trim() == ce.user.trim()
+                        && c.database.trim() == ce.database.trim()))
+        }).cloned();
+
+        let (final_password, need_pw) = if !ce.password.trim().is_empty() {
+            (ce.password.clone(), false)
+        } else if let Some(ref ext) = existing {
+            if !ext.password.trim().is_empty() {
+                (ext.password.clone(), false)
+            } else {
+                (String::new(), true)
+            }
+        } else {
+            (String::new(), true)
+        };
+
+        let conn_id = existing.as_ref().map(|e| e.id.clone()).unwrap_or_else(|| gen_id("c"));
+        let port = if ce.port == 0 { ce.db_type.default_port() } else { ce.port };
+
         let cfg = ConnectionConfig {
-            id: gen_id("c"),
+            id: conn_id,
             name: name.clone(),
             db_type: ce.db_type,
             host: ce.host.trim().to_string(),
-            port: ce.port,
+            port,
             user: ce.user.trim().to_string(),
-            password: ce.password.clone(),
+            password: final_password,
             database: ce.database.trim().to_string(),
             ssl_mode: ce.ssl_mode.trim().to_string(),
             ssl_ca: ce.ssl_ca.trim().to_string(),
@@ -296,8 +398,13 @@ pub fn import_external(store: &mut ConnectionStore, text: &str) -> Result<Import
             group_id,
         };
 
-        store.add(cfg)?;
-        result.connections_added += 1;
+        if existing.is_some() {
+            store.update(cfg)?;
+            result.connections_updated += 1;
+        } else {
+            store.add(cfg)?;
+            result.connections_added += 1;
+        }
         if need_pw {
             result.passwords_needed.push(name);
         }
@@ -348,7 +455,7 @@ pub fn import_yaml(store: &mut ConnectionStore, text: &str) -> Result<ImportResu
     let mut norm: Vec<(DbType, Option<String>, Option<String>, ConnExport)> = Vec::new();
     if !root.dbs.is_empty() {
         for (db_key, tree) in &root.dbs {
-            let db_type = if db_key == "redis" {
+            let db_type = if db_key.eq_ignore_ascii_case("redis") {
                 DbType::Redis
             } else {
                 DbType::Mysql
@@ -373,7 +480,7 @@ pub fn import_yaml(store: &mut ConnectionStore, text: &str) -> Result<ImportResu
         }
     } else if let Some(list) = &root.connections {
         for c in list {
-            let db_type = if c.db_type == "redis" {
+            let db_type = if c.db_type.eq_ignore_ascii_case("redis") {
                 DbType::Redis
             } else {
                 DbType::Mysql
@@ -401,7 +508,11 @@ pub fn import_yaml(store: &mut ConnectionStore, text: &str) -> Result<ImportResu
 
     for (db_type, env_name, group_name, ce) in norm {
         // Required-field validation (lightweight; #2).
-        if ce.name.trim().is_empty() || ce.host.trim().is_empty() || ce.user.trim().is_empty() {
+        // 注意：MySQL 需要用户名，而 Redis 绝大部分场景没有用户名（user 为空），因此 Redis 仅校验 name 与 host。
+        let missing_required = ce.name.trim().is_empty()
+            || ce.host.trim().is_empty()
+            || (db_type == DbType::Mysql && ce.user.trim().is_empty());
+        if missing_required {
             result.skipped.push(ce.name.clone());
             continue;
         }
@@ -441,14 +552,43 @@ pub fn import_yaml(store: &mut ConnectionStore, text: &str) -> Result<ImportResu
             _ => ce.password.clone(),
         };
 
+        let name = ce.name.trim().to_string();
+
+        // 检查是否已有相同连接（同 group_id、同 db_type，且同名或物理端点完全相同）
+        let existing = store.list().iter().find(|c| {
+            c.db_type == db_type
+                && c.group_id == group_id
+                && (c.name.trim() == name
+                    || (!ce.host.trim().is_empty()
+                        && c.host.trim() == ce.host.trim()
+                        && c.port == ce.port
+                        && c.user.trim() == ce.user.trim()
+                        && c.database.trim() == ce.database.trim()))
+        }).cloned();
+
+        let (final_password, need_pw) = if !password.trim().is_empty() {
+            (password, false)
+        } else if let Some(ref ext) = existing {
+            if !ext.password.trim().is_empty() {
+                (ext.password.clone(), false)
+            } else {
+                (String::new(), true)
+            }
+        } else {
+            (String::new(), true)
+        };
+
+        let conn_id = existing.as_ref().map(|e| e.id.clone()).unwrap_or_else(|| gen_id("c"));
+        let port = if ce.port == 0 { db_type.default_port() } else { ce.port };
+
         let cfg = ConnectionConfig {
-            id: gen_id("c"),
-            name: ce.name.trim().to_string(),
+            id: conn_id,
+            name: name.clone(),
             db_type,
             host: ce.host.trim().to_string(),
-            port: ce.port,
+            port,
             user: ce.user.trim().to_string(),
-            password,
+            password: final_password,
             database: ce.database.trim().to_string(),
             ssl_mode: ce.ssl_mode.trim().to_string(),
             ssl_ca: ce.ssl_ca.trim().to_string(),
@@ -462,10 +602,14 @@ pub fn import_yaml(store: &mut ConnectionStore, text: &str) -> Result<ImportResu
             ssh_private_key: ce.ssh_private_key.clone(),
             group_id,
         };
-        let need_pw = cfg.password.is_empty();
-        let name = cfg.name.clone();
-        store.add(cfg)?;
-        result.connections_added += 1;
+
+        if existing.is_some() {
+            store.update(cfg)?;
+            result.connections_updated += 1;
+        } else {
+            store.add(cfg)?;
+            result.connections_added += 1;
+        }
         if need_pw {
             result.passwords_needed.push(name);
         }
@@ -693,5 +837,202 @@ mod tests {
         assert_eq!(dg.host, "5.6.7.8");
         assert_eq!(dg.user, "app_user");
         assert_eq!(dg.database, "db_dg");
+    }
+
+    fn make_test_conn(name: &str, db_type: DbType, host: &str, port: u16, group_id: Option<String>) -> ConnectionConfig {
+        ConnectionConfig {
+            id: gen_id("c"),
+            name: name.into(),
+            db_type,
+            host: host.into(),
+            port,
+            user: "root".into(),
+            password: "pw".into(),
+            database: String::new(),
+            ssl_mode: String::new(),
+            ssl_ca: String::new(),
+            client_cert: String::new(),
+            client_key: String::new(),
+            ssh_host: String::new(),
+            ssh_port: 22,
+            ssh_user: String::new(),
+            ssh_auth_kind: String::new(),
+            ssh_password: String::new(),
+            ssh_private_key: String::new(),
+            group_id,
+        }
+    }
+
+    #[test]
+    fn export_all_connections_including_missing_db_type_and_orphans() {
+        let _env = env_lock();
+        let store = temp_store();
+
+        // 1. 创建一个 db_type 为 None 的环境和分组（模拟老数据）
+        let env_id = store.storage().create_container(ContainerKind::Env, "老MySQL环境", None, None).unwrap();
+        let grp_id = store.storage().create_container(ContainerKind::Group, "老分组", Some(&env_id), None).unwrap();
+        // 重新 load store 以便 containers 加载进入
+        let storage = Storage::open().unwrap();
+        let mut store = ConnectionStore::load(storage).unwrap();
+
+        // 连接 1: 挂在老分组下
+        store.add(make_test_conn("老环境连接", DbType::Mysql, "1.1.1.1", 3306, Some(grp_id))).unwrap();
+
+        // 连接 2: 孤儿连接（group_id 指向不存在的容器）
+        store.add(make_test_conn("孤儿连接", DbType::Mysql, "2.2.2.2", 3306, Some("non_existent_group".into()))).unwrap();
+
+        // 连接 3: 未分组连接
+        store.add(make_test_conn("未分组连接", DbType::Mysql, "3.3.3.3", 3306, None)).unwrap();
+
+        // 连接 4: Redis 连接
+        store.add(make_test_conn("Redis连接", DbType::Redis, "4.4.4.4", 6379, None)).unwrap();
+
+        assert_eq!(store.list().len(), 4);
+
+        // 导出并解析
+        let yaml = export_yaml(&store, "none").unwrap();
+        let root: ExportRoot = serde_yaml::from_str(&yaml).unwrap();
+
+        // 统计导出的所有连接数
+        let mut exported_names = Vec::new();
+        for (_, tree) in &root.dbs {
+            for env in &tree.envs {
+                for g in &env.groups {
+                    for c in &g.connections {
+                        exported_names.push(c.name.clone());
+                    }
+                }
+            }
+        }
+
+        assert_eq!(exported_names.len(), 4, "所有4个连接都必须被导出");
+        assert!(exported_names.contains(&"老环境连接".to_string()));
+        assert!(exported_names.contains(&"孤儿连接".to_string()));
+        assert!(exported_names.contains(&"未分组连接".to_string()));
+        assert!(exported_names.contains(&"Redis连接".to_string()));
+    }
+
+    #[test]
+    fn import_yaml_deduplication_on_repeated_import() {
+        let _env = env_lock();
+        let mut store = temp_store();
+
+        let yaml_sample = r#"
+format: chatquery-connections
+version: 2
+cipher: none
+mysql:
+  envs:
+    - name: 测试环境
+      groups:
+        - name: 业务库
+          connections:
+            - name: 订单主库
+              host: 192.168.1.10
+              port: 3306
+              user: root
+              password: mypassword123
+              database: orders
+            - name: 用户从库
+              host: 192.168.1.11
+              port: 3306
+              user: readonly
+              password: ropassword456
+              database: users
+"#;
+
+        // 第一次导入：新增 2 个连接
+        let res1 = import_yaml(&mut store, yaml_sample).unwrap();
+        assert_eq!(res1.connections_added, 2);
+        assert_eq!(res1.connections_updated, 0);
+        assert_eq!(store.list().len(), 2);
+
+        let orig_order_id = store.list().iter().find(|c| c.name == "订单主库").unwrap().id.clone();
+
+        // 第二次重复导入完全相同的 YAML：应该全部去重更新，不新增任何连接
+        let res2 = import_yaml(&mut store, yaml_sample).unwrap();
+        assert_eq!(res2.connections_added, 0, "重复导入不应新增连接");
+        assert_eq!(res2.connections_updated, 2, "重复导入应更新/去重已有连接");
+        assert_eq!(store.list().len(), 2, "连接总数依然保持为 2，没有产生重复连接");
+
+        let after_order = store.list().iter().find(|c| c.name == "订单主库").unwrap();
+        assert_eq!(after_order.id, orig_order_id, "已有连接的 ID 应当保持不变");
+        assert_eq!(after_order.password, "mypassword123");
+
+        // 第三次导入：无密码的导出，本地已有密码不应被清空
+        let yaml_no_pw = r#"
+format: chatquery-connections
+version: 2
+cipher: none
+mysql:
+  envs:
+    - name: 测试环境
+      groups:
+        - name: 业务库
+          connections:
+            - name: 订单主库
+              host: 192.168.1.99
+              port: 3306
+              user: root
+              password: ""
+              database: orders
+"#;
+        let res3 = import_yaml(&mut store, yaml_no_pw).unwrap();
+        assert_eq!(res3.connections_added, 0);
+        assert_eq!(res3.connections_updated, 1);
+        assert_eq!(store.list().len(), 2);
+
+        let updated_order = store.list().iter().find(|c| c.name == "订单主库").unwrap();
+        assert_eq!(updated_order.host, "192.168.1.99", "host 应该被更新");
+        assert_eq!(updated_order.password, "mypassword123", "导入密码为空时应保留既有密码");
+    }
+
+    #[test]
+    fn import_redis_connection_empty_user_and_uri() {
+        let _env = env_lock();
+        let mut store = temp_store();
+
+        // 1. 导入空 user 且无 format/version 声明的 Redis YAML
+        let redis_yaml = r#"
+redis:
+  envs:
+    - name: 缓存环境
+      groups:
+        - name: Redis主群
+          connections:
+            - name: 开发环境redis
+              host: 10.11.0.100
+              port: 6379
+              user: ""
+              password: myredispassword
+"#;
+
+        let res = import_yaml(&mut store, redis_yaml).expect("import redis yaml should succeed");
+        assert_eq!(res.connections_added, 1, "Redis 连接应成功添加，不能被跳过");
+        assert_eq!(res.skipped.len(), 0, "不应有被跳过的连接");
+        assert_eq!(store.list().len(), 1);
+
+        let redis_conn = store.list().iter().find(|c| c.name == "开发环境redis").unwrap();
+        assert_eq!(redis_conn.db_type, DbType::Redis);
+        assert_eq!(redis_conn.host, "10.11.0.100");
+        assert_eq!(redis_conn.port, 6379);
+        assert_eq!(redis_conn.password, "myredispassword");
+
+        // 2. 重复导入该 Redis YAML：成功去重更新
+        let res_repeat = import_yaml(&mut store, redis_yaml).unwrap();
+        assert_eq!(res_repeat.connections_added, 0, "重复导入不能新增");
+        assert_eq!(res_repeat.connections_updated, 1, "应更新/去重既有连接");
+        assert_eq!(store.list().len(), 1);
+
+        // 3. 从纯 redis:// URI 连接串导入
+        let uri_text = "redis://:tokenpass@192.168.2.50:6379/1";
+        let res_uri = import_yaml(&mut store, uri_text).expect("import redis uri");
+        assert_eq!(res_uri.connections_added, 1);
+        assert_eq!(store.list().len(), 2);
+
+        let uri_conn = store.list().iter().find(|c| c.host == "192.168.2.50").unwrap();
+        assert_eq!(uri_conn.db_type, DbType::Redis);
+        assert_eq!(uri_conn.port, 6379);
+        assert_eq!(uri_conn.password, "tokenpass");
     }
 }

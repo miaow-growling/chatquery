@@ -851,7 +851,20 @@ export function Tree(props: TreeProps) {
       setTreeMsg("导入中…");
       try {
         const res = await api.importConnections(trimmed);
-        let msg = `导入完成：新增 ${res.connections_added} 个连接、${res.containers_added} 个容器`;
+        const parts: string[] = [];
+        if (res.connections_added > 0) {
+          parts.push(`新增 ${res.connections_added} 个连接`);
+        }
+        if (res.connections_updated && res.connections_updated > 0) {
+          parts.push(`更新/去重 ${res.connections_updated} 个连接`);
+        }
+        if (parts.length === 0) {
+          parts.push(`连接无变更（已全部去重）`);
+        }
+        if (res.containers_added > 0) {
+          parts.push(`新增 ${res.containers_added} 个容器`);
+        }
+        let msg = `导入完成：${parts.join("、")}`;
         if (res.passwords_needed.length)
           msg += `；需补密码：${res.passwords_needed.join(", ")}`;
         if (res.skipped.length) msg += `；跳过 ${res.skipped.length} 个`;

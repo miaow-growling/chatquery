@@ -2756,7 +2756,14 @@ export function App() {
   // We provide promise-based replacements rendered as an in-app modal.
   type DialogState =
     | { kind: "prompt"; title: string; def: string; resolve: (v: string | null) => void }
-    | { kind: "confirm"; title: string; message: string; resolve: (v: boolean) => void }
+    | {
+        kind: "confirm";
+        title: string;
+        message: string;
+        danger?: boolean;
+        okText?: string;
+        resolve: (v: boolean) => void;
+      }
     | {
         kind: "envType";
         title: string;
@@ -2776,8 +2783,15 @@ export function App() {
   const [groupDlgEnvId, setGroupDlgEnvId] = useState("");
   const promptAsync = (title: string, def = ""): Promise<string | null> =>
     new Promise((res) => setDlg({ kind: "prompt", title, def, resolve: res }));
-  const confirmAsync = (message: string, title = "请确认"): Promise<boolean> =>
-    new Promise((res) => setDlg({ kind: "confirm", title, message, resolve: res }));
+  const confirmAsync = (
+    message: string,
+    title = "请确认",
+    danger = false,
+    okText = "确定"
+  ): Promise<boolean> =>
+    new Promise((res) =>
+      setDlg({ kind: "confirm", title, message, danger, okText, resolve: res })
+    );
 
   /// Pre-execution guardrail (whole-table UPDATE/DELETE protection).
   /// Asks the backend to scan the SQL for UPDATE/DELETE statements lacking a
@@ -4313,6 +4327,10 @@ export function App() {
         queryTimeoutSecs
       );
       const ms = Math.round(performance.now() - t0);
+      const prevPks = active?.result?.kind === "table" ? active.result.primaryKeys : undefined;
+      if (r.kind === "table" && (!r.primaryKeys || r.primaryKeys.length === 0) && prevPks && prevPks.length > 0) {
+        r.primaryKeys = prevPks;
+      }
       setActiveTab((t) => ({
         ...t,
         result: r,
@@ -4324,6 +4342,156 @@ export function App() {
       const ms = Math.round(performance.now() - t0);
       setActiveTab((t) => ({ ...t, loading: false }));
       setRunInfo({ kind: "err", text: `✗ ${ms}ms · ${String(e)}` });
+    }
+  };
+
+  // Delete selected rows with confirmation modal (context menu / data grid)
+  const handleDeleteSelectedRows = async () => {
+    const targetRows =
+      ctxMenu?.rows && ctxMenu.rows.length > 0
+        ? [...ctxMenu.rows]
+        : Array.from(selRows).sort((a, b) => a - b);
+    setCtxMenu(null);
+    if (!result || result.kind !== "table" || targetRows.length === 0) return;
+
+    // 1. 确定目标连接、数据库、数据表
+    const connId = browseCtx?.connId ?? active?.connId;
+    const db = browseCtx?.db ?? active?.db;
+    const table =
+      browseCtx?.table ??
+      extractTableFromSql(active?.sql ?? "") ??
+      "";
+
+    if (!connId || !db || !table) {
+      showToast("无法确定目标数据表，无法执行删除");
+      return;
+    }
+
+    // 2. 解析主键列
+    let pks =
+      result.primaryKeys && result.primaryKeys.length > 0
+        ? [...result.primaryKeys]
+        : [];
+
+    if (pks.length === 0) {
+      try {
+        const cols = await api.listColumns(connId, db, table);
+        const priCols = cols.filter((c) => c.key === "PRI").map((c) => c.name);
+        if (priCols.length > 0) {
+          pks = priCols;
+          result.primaryKeys = priCols;
+        }
+      } catch (err) {
+        console.warn("Failed to fetch primary keys via listColumns:", err);
+      }
+    }
+
+    // 回退策略：检查常见主键字段如 id 或 *_id
+    if (pks.length === 0) {
+      const idCol = result.columns.find((c) => {
+        const low = c.toLowerCase();
+        return low === "id" || low.endsWith("_id");
+      });
+      if (idCol) {
+        pks = [idCol];
+      }
+    }
+
+    if (pks.length === 0) {
+      showToast("无法删除：该表未检测到主键，无法安全唯一定位行");
+      return;
+    }
+
+    const pkIndices = pks.map((pk) => result.columns.indexOf(pk));
+    if (pkIndices.some((idx) => idx === -1)) {
+      showToast("无法删除：当前结果集中缺少主键列数据");
+      return;
+    }
+
+    // 3. 构造弹窗确认文案
+    const count = targetRows.length;
+    let message = "";
+    if (count === 1) {
+      const ri = targetRows[0];
+      const row = result.rows[ri];
+      const pkDetails = pks
+        .map((pk, idx) => `${pk} = ${row?.[pkIndices[idx]] ?? ""}`)
+        .join(", ");
+      message = `确定要从「${table}」中删除选中的第 ${ri + 1} 行数据吗？\n${
+        pkDetails ? `定位主键：${pkDetails}\n` : ""
+      }\n⚠️ 确认后将直接从数据库中删除，操作不可撤销！`;
+    } else {
+      message = `确定要从「${table}」中删除选中的 ${count} 行数据吗？\n\n⚠️ 确认后将直接从数据库中删除，操作不可撤销！`;
+    }
+
+    // 4. 弹窗确认
+    const confirmed = await confirmAsync(
+      message,
+      `删除数据确认（${count} 行）`,
+      true,
+      "删除"
+    );
+    if (!confirmed) return;
+
+    // 5. 执行数据库删除
+    try {
+      let successCount = 0;
+      for (const ri of targetRows) {
+        const row = result.rows[ri];
+        if (!row) continue;
+        const pkPairs = pks.map((pk, idx) => ({
+          col: pk,
+          val: row[pkIndices[idx]] ?? "",
+        }));
+        await api.deleteRow(connId, db, table, pkPairs);
+        successCount++;
+      }
+
+      showToast(`已成功删除 ${successCount} 行数据`);
+
+      // 清除选区和待处理状态
+      setSelRows(new Set());
+      setSelCols(new Set());
+      setSelCell(null);
+      setDeletes((prev) => {
+        const next = new Set(prev);
+        for (const ri of targetRows) next.delete(ri);
+        return next;
+      });
+      setEdits((prev) => {
+        const next = { ...prev };
+        for (const ri of targetRows) delete next[ri];
+        return next;
+      });
+
+      // 6. 刷新数据
+      if (browseCtx) {
+        if (filterConditions.length > 0) {
+          const sql = buildWhereSql(filterConditions);
+          void handleFilterApply(sql);
+        } else {
+          void browseTable(
+            browseCtx.connId,
+            browseCtx.db,
+            browseCtx.table,
+            browseCtx.page,
+            browseCtx.pageSize
+          );
+        }
+      } else {
+        void runQuery();
+      }
+    } catch (e) {
+      showToast("删除失败: " + String(e));
+      if (browseCtx) {
+        void browseTable(
+          browseCtx.connId,
+          browseCtx.db,
+          browseCtx.table,
+          browseCtx.page,
+          browseCtx.pageSize
+        );
+      }
     }
   };
 
@@ -4569,17 +4737,6 @@ export function App() {
   };
 
   const handleUndoEdit = () => clearEditState();
-
-  // Toggle a row's deletion mark. A row marked for deletion is struck-through
-  // and excluded from UPDATEs at save time.
-  const toggleDelete = (ri: number) => {
-    setDeletes((prev) => {
-      const next = new Set(prev);
-      if (next.has(ri)) next.delete(ri);
-      else next.add(ri);
-      return next;
-    });
-  };
 
   // Append a blank insert row. The user fills in cells; empty cells are omitted
   // from the eventual INSERT so DB defaults (AUTO_INCREMENT etc) apply.
@@ -4858,7 +5015,6 @@ export function App() {
                 </th>
               );
             })()}
-            {editable && <th className="row-action-col" />}
             {cols.map((c, i) => {
               const isSorted = gridSort?.col === i;
               const sortDir = isSorted ? gridSort.dir : null;
@@ -4951,20 +5107,6 @@ export function App() {
                 >
                   {vi + 1}
                 </td>
-                {editable && (
-                  <td className="row-action-col">
-                    <button
-                      className="row-del-btn"
-                      title={isDeleted ? "取消删除" : "标记删除"}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleDelete(ri);
-                      }}
-                    >
-                      {isDeleted ? "↩" : "×"}
-                    </button>
-                  </td>
-                )}
                 {row.map((v, ci) => {
                   const ov = edits[ri]?.[ci];
                   const isEditing =
@@ -5052,15 +5194,13 @@ export function App() {
           })}
           {inserts.map((ins, ii) => (
             <tr key={"ins-" + ii} className="row-insert">
-              <td className="row-num" title="新增行">·</td>
-              <td className="row-action-col">
-                <button
-                  className="row-del-btn"
-                  title="移除新增行"
-                  onClick={() => removeInsertRow(ii)}
-                >
-                  ×
-                </button>
+              <td
+                className="row-num"
+                title="点击移除该新增行"
+                onClick={() => removeInsertRow(ii)}
+                style={{ cursor: "pointer", color: "var(--danger-500)" }}
+              >
+                ×
               </td>
               {cols.map((_, ci) => (
                 <td key={ci} className="insert-cell">
@@ -5442,32 +5582,305 @@ export function App() {
     setDbPickerOpen(false);
   };
 
-  const closeTab = (id: string) => {
-    if (tabs.length <= 1) return;
-    delete tabFiltersRef.current[id];
-    const idx = tabs.findIndex((t) => t.id === id);
-    setTabs((prev) => prev.filter((t) => t.id !== id));
-    if (id === activeTabId) {
-      const next = tabs[idx === 0 ? 1 : idx - 1];
-      activeTabIdRef.current = next.id;
-      setActiveTabId(next.id);
-      clearEditState();
-      if (next.kind !== "table") {
-        editorRef.current?.replaceValue(next.sql);
+  // 数据库下拉树形导航与 Tab 右键菜单状态
+  const [dbNavOpen, setDbNavOpen] = useState(false);
+  const [dbNavFilterText, setDbNavFilterText] = useState("");
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
+  const dbNavRef = useRef<HTMLDivElement>(null);
+
+  // 点击外部自动关闭下拉弹窗，ESC 键也可关闭
+  useEffect(() => {
+    if (!dbNavOpen) {
+      setDbNavFilterText("");
+      return;
+    }
+    const onMouseDown = (e: MouseEvent) => {
+      if (dbNavRef.current && !dbNavRef.current.contains(e.target as Node)) {
+        setDbNavOpen(false);
       }
-      _setRunInfo(next.runInfo || null);
-      const saved = tabFiltersRef.current[next.id];
-      if (saved) {
-        setFilterConditions(saved.conditions || []);
-        setInlineColFilters(saved.inlineFilters || {});
-        setFilterRowVisible(saved.filterRowOpen !== false);
-      } else {
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDbNavOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [dbNavOpen]);
+
+  const toggleGroupCollapse = (key: string) => {
+    setCollapsedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const tabListRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  // 检测 Tab 列表左右滑动可用状态
+  const checkTabScrollState = useCallback(() => {
+    const el = tabListRef.current;
+    if (!el) return;
+    const { scrollLeft, scrollWidth, clientWidth } = el;
+    setCanScrollLeft(scrollLeft > 2);
+    setCanScrollRight(scrollLeft + clientWidth < scrollWidth - 2);
+  }, []);
+
+  // 活跃 Tab 变更时自动平滑滚入视野并刷新滑动箭头
+  useEffect(() => {
+    if (!tabListRef.current) return;
+    const activeEl = tabListRef.current.querySelector<HTMLElement>(".tab.active");
+    if (activeEl) {
+      activeEl.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    }
+    const timer = setTimeout(checkTabScrollState, 250);
+    return () => clearTimeout(timer);
+  }, [activeTabId, checkTabScrollState]);
+
+  // 监听 Tab 数量变化与窗口缩放
+  useEffect(() => {
+    checkTabScrollState();
+    window.addEventListener("resize", checkTabScrollState);
+    return () => window.removeEventListener("resize", checkTabScrollState);
+  }, [tabs.length, checkTabScrollState]);
+
+  // 鼠标滚轮在 Tab 栏滚动时，直接转化为横向平滑滚动
+  const handleTabListWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY !== 0) {
+      e.currentTarget.scrollLeft += e.deltaY;
+    }
+  };
+
+  // 点击左右滑动箭头按钮左右平移
+  const scrollTabList = (dir: "left" | "right") => {
+    const el = tabListRef.current;
+    if (!el) return;
+    const step = 260;
+    el.scrollBy({ left: dir === "left" ? -step : step, behavior: "smooth" });
+  };
+
+  // 通用 Tab 批量关闭函数（支持单关、多关、关左侧、关右侧、关其他、关所有、按库关）
+  const closeTabsByIds = useCallback(
+    (idsToClose: string[]) => {
+      const closeSet = new Set(idsToClose);
+      if (closeSet.size === 0) return;
+
+      for (const id of idsToClose) {
+        delete tabFiltersRef.current[id];
+      }
+
+      const remaining = tabs.filter((t) => !closeSet.has(t.id));
+
+      if (remaining.length === 0) {
+        const newId = genTabId();
+        const freshTab: QueryTab = {
+          id: newId,
+          name: "查询 1",
+          kind: "query",
+          sql: "",
+          result: null,
+          browseCtx: null,
+          connId: selId,
+          db: selDb,
+          qid: genQid(),
+          runInfo: null,
+        };
+        tabFiltersRef.current[newId] = {
+          conditions: [],
+          inlineFilters: {},
+          filterRowOpen: true,
+        };
+        setTabs([freshTab]);
+        activeTabIdRef.current = newId;
+        setActiveTabId(newId);
+        clearEditState();
+        editorRef.current?.replaceValue("");
+        _setRunInfo(null);
         setFilterConditions([]);
         setInlineColFilters({});
         setFilterRowVisible(true);
+        return;
       }
+
+      setTabs(remaining);
+
+      if (closeSet.has(activeTabId)) {
+        const oldIdx = tabs.findIndex((t) => t.id === activeTabId);
+        let nextTab = remaining[0];
+        if (oldIdx > 0) {
+          for (let i = oldIdx - 1; i >= 0; i--) {
+            if (!closeSet.has(tabs[i].id)) {
+              nextTab = tabs[i];
+              break;
+            }
+          }
+        }
+        activeTabIdRef.current = nextTab.id;
+        setActiveTabId(nextTab.id);
+        clearEditState();
+        if (nextTab.kind !== "table") {
+          editorRef.current?.replaceValue(nextTab.sql);
+        }
+        _setRunInfo(nextTab.runInfo || null);
+        const saved = tabFiltersRef.current[nextTab.id];
+        if (saved) {
+          setFilterConditions(saved.conditions || []);
+          setInlineColFilters(saved.inlineFilters || {});
+          setFilterRowVisible(saved.filterRowOpen !== false);
+        } else {
+          setFilterConditions([]);
+          setInlineColFilters({});
+          setFilterRowVisible(true);
+        }
+      }
+    },
+    [tabs, activeTabId, selId, selDb, clearEditState]
+  );
+
+  const closeTab = useCallback(
+    (id: string) => {
+      closeTabsByIds([id]);
+    },
+    [closeTabsByIds]
+  );
+
+  // 按照数据库进行分组聚合 (按连接 + 数据库组织)
+  const dbGroups = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        key: string;
+        label: string;
+        connName: string;
+        dbName: string;
+        tabs: QueryTab[];
+      }
+    >();
+
+    for (const t of tabs) {
+      const conn = findConn(t.connId);
+      const connName = conn?.name || (t.connId ? "未知连接" : "未连接");
+      const dbName = t.db ? t.db : "默认库";
+      const key = `${t.connId || "none"}::${t.db || "default"}`;
+
+      let g = map.get(key);
+      if (!g) {
+        g = {
+          key,
+          label: conn ? `${conn.name} · ${dbName}` : dbName,
+          connName,
+          dbName,
+          tabs: [],
+        };
+        map.set(key, g);
+      }
+      g.tabs.push(t);
     }
+
+    return Array.from(map.values());
+  }, [tabs, findConn]);
+
+  // 搜索关键词过滤数据库分组与查询页签
+  const filteredDbGroups = useMemo(() => {
+    if (!dbNavFilterText.trim()) return dbGroups;
+    const q = dbNavFilterText.trim().toLowerCase();
+    return dbGroups
+      .map((g) => {
+        const groupMatches =
+          g.label.toLowerCase().includes(q) ||
+          g.connName.toLowerCase().includes(q) ||
+          g.dbName.toLowerCase().includes(q);
+        const matchingTabs = g.tabs.filter(
+          (t) => groupMatches || t.name.toLowerCase().includes(q)
+        );
+        if (matchingTabs.length === 0) return null;
+        return {
+          ...g,
+          tabs: matchingTabs,
+        };
+      })
+      .filter((g): g is NonNullable<typeof g> => g !== null);
+  }, [dbGroups, dbNavFilterText]);
+
+  // 展开树形导航时：默认只展开当前打开的 Tab 所在的数据库分组，其余全部收缩折叠
+  useEffect(() => {
+    if (dbNavOpen) {
+      const activeGroupKey = dbGroups.find((g) =>
+        g.tabs.some((t) => t.id === activeTabId)
+      )?.key;
+      const nextCollapsed: Record<string, boolean> = {};
+      for (const g of dbGroups) {
+        nextCollapsed[g.key] = g.key !== activeGroupKey;
+      }
+      setCollapsedGroups(nextCollapsed);
+    }
+  }, [dbNavOpen]);
+
+  // 统一关闭某个数据库分组下的所有 Tab
+  const closeDbGroupTabs = (key: string) => {
+    const group = dbGroups.find((g) => g.key === key);
+    if (!group) return;
+    closeTabsByIds(group.tabs.map((t) => t.id));
   };
+
+  // Tab 右键菜单项配置
+  const tabContextMenuItems: MenuItem[] = useMemo(() => {
+    if (!tabContextMenu) return [];
+    const targetId = tabContextMenu.tabId;
+    const idx = tabs.findIndex((t) => t.id === targetId);
+    if (idx === -1) return [];
+
+    return [
+      {
+        type: "item",
+        label: "关闭",
+        onClick: () => {
+          closeTabsByIds([targetId]);
+          setTabContextMenu(null);
+        },
+      },
+      {
+        type: "item",
+        label: "关闭其他",
+        disabled: tabs.length <= 1,
+        onClick: () => {
+          closeTabsByIds(tabs.filter((t) => t.id !== targetId).map((t) => t.id));
+          setTabContextMenu(null);
+        },
+      },
+      { type: "sep" },
+      {
+        type: "item",
+        label: "关闭左侧",
+        disabled: idx <= 0,
+        onClick: () => {
+          closeTabsByIds(tabs.slice(0, idx).map((t) => t.id));
+          setTabContextMenu(null);
+        },
+      },
+      {
+        type: "item",
+        label: "关闭右侧",
+        disabled: idx >= tabs.length - 1,
+        onClick: () => {
+          closeTabsByIds(tabs.slice(idx + 1).map((t) => t.id));
+          setTabContextMenu(null);
+        },
+      },
+      { type: "sep" },
+      {
+        type: "item",
+        label: "关闭所有",
+        danger: true,
+        onClick: () => {
+          closeTabsByIds(tabs.map((t) => t.id));
+          setTabContextMenu(null);
+        },
+      },
+    ];
+  }, [tabContextMenu, tabs, closeTabsByIds]);
 
   /// 将代码块中的 SQL 一键导入到查询中（相同数据库实例追加在末尾，否则新建查询）。
   /// `binding` 是消息上记录的库上下文（AI 回复时用的连接/库）——优先于当前
@@ -6990,24 +7403,234 @@ export function App() {
 
       <main className="app-main" ref={appMainRef}>
         <div className="tab-bar">
-            {tabs.map((t) => (
-              <div
-                key={t.id}
-                className={"tab" + (t.id === activeTabId ? " active" : "") + (t.loading ? " is-loading" : "")}
-                onClick={() => switchTab(t.id)}
-                title={t.name}
-              >
-                <span className="tab-name">
-                  {t.loading ? (
-                    <span className="tab-loading-spinner" title="加载中…" />
-                  ) : t.kind === "table" ? (
-                    "▤ "
+          {/* 数据库分组导航：点击往下弹出的树形菜单 */}
+          <div className="tab-db-nav-dropdown" ref={dbNavRef}>
+            <button
+              type="button"
+              className={"tab-db-nav-btn" + (dbNavOpen ? " active" : "")}
+              onClick={() => setDbNavOpen((v) => !v)}
+              title="按数据库分组查看和管理已打开的查询页签"
+            >
+              <span className="tab-db-nav-btn-icon">
+                <Icon name="database" size={13} />
+              </span>
+              <span className="tab-db-nav-btn-text">数据库</span>
+              <span className="tab-db-nav-btn-badge">{tabs.length}</span>
+              <span className={`tab-db-nav-btn-caret ${dbNavOpen ? "open" : ""}`}>
+                <Icon name="chevron-down" size={11} />
+              </span>
+            </button>
+
+            {dbNavOpen && (
+              <div className="tab-db-tree-popover">
+                {/* 弹窗头部 */}
+                <div className="tab-db-tree-head">
+                  <div className="tab-db-tree-head-left">
+                    <Icon name="database" size={13} className="tab-db-tree-head-icon" />
+                    <span className="tab-db-tree-title">
+                      已打开页签 ({dbGroups.length} 个库 · {tabs.length} 项)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="tab-db-tree-action-btn"
+                    title="关闭所有查询页签"
+                    onClick={() => {
+                      closeTabsByIds(tabs.map((t) => t.id));
+                      setDbNavOpen(false);
+                    }}
+                  >
+                    全部关闭
+                  </button>
+                </div>
+
+                {/* 快速搜索栏 (当 tab 数量较多时极大提升定位效率) */}
+                {tabs.length > 3 && (
+                  <div className="tab-db-tree-search-wrap">
+                    <Icon name="search" size={12} className="tab-db-tree-search-icon" />
+                    <input
+                      type="text"
+                      className="tab-db-tree-search-input"
+                      placeholder="搜索数据库或查询页签..."
+                      value={dbNavFilterText}
+                      onChange={(e) => setDbNavFilterText(e.target.value)}
+                      autoFocus
+                    />
+                    {dbNavFilterText && (
+                      <button
+                        type="button"
+                        className="tab-db-tree-search-clear"
+                        onClick={() => setDbNavFilterText("")}
+                        title="清空搜索"
+                      >
+                        <Icon name="close" size={10} />
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* 树形分组列表 */}
+                <div className="tab-db-tree-body">
+                  {filteredDbGroups.length === 0 ? (
+                    <div className="tab-db-tree-empty">无匹配的查询页签</div>
                   ) : (
-                    ""
+                    filteredDbGroups.map((g) => {
+                      const isCollapsed = !dbNavFilterText && !!collapsedGroups[g.key];
+                      const hasActive = g.tabs.some((t) => t.id === activeTabId);
+                      return (
+                        <div key={g.key} className="tab-db-tree-group">
+                          <div
+                            className={
+                              "tab-db-tree-group-header" +
+                              (hasActive ? " contains-active" : "")
+                            }
+                            onClick={() => toggleGroupCollapse(g.key)}
+                            title={`点击${isCollapsed ? "展开" : "收起"}「${g.label}」`}
+                          >
+                            <span className={`tab-db-tree-arrow ${!isCollapsed ? "expanded" : ""}`}>
+                              <Icon name="chevron-right" size={10} />
+                            </span>
+                            <span className="tab-db-tree-db-icon">
+                              <Icon name="cylinder" size={12} />
+                            </span>
+                            <div className="tab-db-tree-group-titles">
+                              {g.connName && g.connName !== "未连接" && (
+                                <span className="tab-db-tree-conn-tag">{g.connName}</span>
+                              )}
+                              <span className="tab-db-tree-db-tag">{g.dbName}</span>
+                            </div>
+                            <span className="tab-db-tree-count-badge">
+                              {g.tabs.length}
+                            </span>
+                            <button
+                              type="button"
+                              className="tab-db-tree-close-btn"
+                              title={`统一关闭「${g.label}」下的全部 ${g.tabs.length} 个页签`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                closeDbGroupTabs(g.key);
+                              }}
+                            >
+                              <Icon name="close" size={11} />
+                            </button>
+                          </div>
+
+                          {!isCollapsed && (
+                            <div className="tab-db-tree-children">
+                              {g.tabs.map((t) => {
+                                const isActive = t.id === activeTabId;
+                                return (
+                                  <div
+                                    key={t.id}
+                                    className={
+                                      "tab-db-tree-item" + (isActive ? " active" : "")
+                                    }
+                                    onClick={() => {
+                                      switchTab(t.id);
+                                      setDbNavOpen(false);
+                                    }}
+                                    title={`切换到「${t.name}」`}
+                                  >
+                                    <span className="tab-db-tree-item-icon">
+                                      {t.loading ? (
+                                        <span className="tab-loading-spinner" />
+                                      ) : t.kind === "table" ? (
+                                        <Icon name="table" size={12} />
+                                      ) : (
+                                        <Icon name="file" size={12} />
+                                      )}
+                                    </span>
+                                    <span className="tab-db-tree-item-name">
+                                      {t.name}
+                                    </span>
+                                    {isActive && (
+                                      <span className="tab-db-tree-active-tag">
+                                        当前
+                                      </span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      className="tab-db-tree-item-close"
+                                      title="关闭此页签"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        closeTab(t.id);
+                                      }}
+                                    >
+                                      <Icon name="close" size={10} />
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
                   )}
-                  {t.name}
-                </span>
-                {tabs.length > 1 && (
+                </div>
+
+                {/* 底部新建操作 */}
+                <div className="tab-db-tree-footer">
+                  <button
+                    type="button"
+                    className="tab-db-tree-footer-btn"
+                    onClick={() => {
+                      newTab();
+                      setDbNavOpen(false);
+                    }}
+                  >
+                    <Icon name="plus" size={12} />
+                    <span>新建查询页签</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="tab-db-nav-divider" />
+
+          {/* 查询页签滚动区域与左右滑动箭头 */}
+          <div className="tab-scroll-wrapper">
+            {canScrollLeft && (
+              <button
+                type="button"
+                className="tab-scroll-arrow tab-scroll-arrow-left"
+                onClick={() => scrollTabList("left")}
+                title="向左滚动页签"
+              >
+                <Icon name="chevron-left" size={12} />
+              </button>
+            )}
+
+            <div
+              className="tab-list"
+              ref={tabListRef}
+              onWheel={handleTabListWheel}
+              onScroll={checkTabScrollState}
+            >
+              {tabs.map((t) => (
+                <div
+                  key={t.id}
+                  className={"tab" + (t.id === activeTabId ? " active" : "") + (t.loading ? " is-loading" : "")}
+                  onClick={() => switchTab(t.id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setTabContextMenu({ x: e.clientX, y: e.clientY, tabId: t.id });
+                  }}
+                  title={`${t.name}\n${findConn(t.connId)?.name || "未连接"} · ${t.db || "默认库"}\n(右键查看更多操作)`}
+                >
+                  <span className="tab-name">
+                    {t.loading ? (
+                      <span className="tab-loading-spinner" title="加载中…" />
+                    ) : t.kind === "table" ? (
+                      "▤ "
+                    ) : (
+                      ""
+                    )}
+                    {t.name}
+                  </span>
                   <button
                     className="tab-close"
                     title="关闭"
@@ -7018,13 +7641,26 @@ export function App() {
                   >
                     ×
                   </button>
-                )}
-              </div>
-            ))}
-            <button className="tab-new" title="新建查询" onClick={() => newTab()}>
-              ＋
-            </button>
+                </div>
+              ))}
+            </div>
+
+            {canScrollRight && (
+              <button
+                type="button"
+                className="tab-scroll-arrow tab-scroll-arrow-right"
+                onClick={() => scrollTabList("right")}
+                title="向右滚动页签"
+              >
+                <Icon name="chevron-right" size={12} />
+              </button>
+            )}
           </div>
+
+          <button className="tab-new" title="新建查询" onClick={() => newTab()}>
+            ＋
+          </button>
+        </div>
           {isRedisConn ? (
             <Suspense fallback={<div className="pane-head">加载 Redis 面板…</div>}>
               <RedisBrowser connId={active!.connId} db={parseInt(active!.db || "0", 10)} showToast={showToast} />
@@ -10373,6 +11009,13 @@ export function App() {
             <button onClick={() => void copyRowsAs("csv")}>
               复制为 CSV
             </button>
+            <div className="ctx-sep" />
+            <button
+              className="danger"
+              onClick={() => void handleDeleteSelectedRows()}
+            >
+              删除选中 {ctxMenu.rows.length} 行
+            </button>
               </>
             ) : null}
           </TableContextMenuContainer>
@@ -10385,6 +11028,15 @@ export function App() {
           y={editorMenu.y}
           onClose={() => setEditorMenu(null)}
           items={buildEditorMenu(editorMenu.hasSel)}
+        />
+      )}
+
+      {tabContextMenu && (
+        <ContextMenu
+          x={tabContextMenu.x}
+          y={tabContextMenu.y}
+          onClose={() => setTabContextMenu(null)}
+          items={tabContextMenuItems}
         />
       )}
 
@@ -10538,7 +11190,7 @@ export function App() {
                 );
               })()
             ) : (
-              <p className="modal-msg">{dlg.message}</p>
+              <p className="modal-msg" style={{ whiteSpace: "pre-wrap" }}>{dlg.message}</p>
             )}
             <div className="modal-actions">
               <button
@@ -10547,7 +11199,7 @@ export function App() {
                 取消
               </button>
               <button
-                className="primary"
+                className={`primary${dlg.kind === "confirm" && dlg.danger ? " danger" : ""}`}
                 disabled={dlg.kind === "groupForm" && (!groupDlgName.trim() || !groupDlgEnvId)}
                 onClick={() => {
                   if (dlg.kind === "prompt") {
@@ -10564,7 +11216,7 @@ export function App() {
                   }
                 }}
               >
-                确定
+                {dlg.kind === "confirm" && dlg.okText ? dlg.okText : "确定"}
               </button>
             </div>
           </div>

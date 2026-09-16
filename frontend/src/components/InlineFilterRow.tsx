@@ -12,7 +12,7 @@ export interface InlineFilterRowProps {
 
 export const InlineFilterRow: React.FC<InlineFilterRowProps> = ({
   columns,
-  editable,
+  editable: _editable,
   colFilters,
   onColChange,
   onColClear,
@@ -46,9 +46,6 @@ export const InlineFilterRow: React.FC<InlineFilterRowProps> = ({
       <th className="row-num filter-th-row-num" title="行内即时过滤 (快捷键: ⌘⇧F 显示/隐藏)">
         ⚲
       </th>
-
-      {/* 如果表可编辑，占位操作列 */}
-      {editable && <th className="row-action-col filter-th-action" />}
 
       {/* 每一列的行内过滤框 */}
       {columns.map((col) => {

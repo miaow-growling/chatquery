@@ -427,6 +427,8 @@ export interface KeyStatus {
 export interface ImportResult {
   /// Connections successfully added (ids regenerated, passwords re-encrypted).
   connections_added: number;
+  /// Connections updated/deduplicated (existing connection matched and updated).
+  connections_updated?: number;
   /// Environments + groups created to host the imported connections.
   containers_added: number;
   /// Names of connections whose (decrypted) password is empty — the user must
