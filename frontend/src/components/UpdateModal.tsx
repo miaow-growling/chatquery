@@ -77,6 +77,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [showManualFiles, setShowManualFiles] = useState<boolean>(false);
+  const [showChangelog, setShowChangelog] = useState<boolean>(true);
 
   const activeUpdateRef = useRef<any>(null);
 
@@ -244,23 +245,33 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
 
           {/* ===================== 更新日志模块 (Changelog) ===================== */}
           <div className="update-changelog-card">
-            <div className="changelog-header">
+            <div
+              className="changelog-header"
+              onClick={() => setShowChangelog((prev) => !prev)}
+              title={showChangelog ? "点击收起更新日志" : "点击展开更新日志"}
+            >
               <div className="changelog-title">
+                <span className={`changelog-arrow ${showChangelog ? 'expanded' : ''}`}>▶</span>
                 <span className="changelog-icon">📋</span>
                 <span>更新日志 · v{releaseInfo.version}</span>
               </div>
-              <span className="changelog-count-pill">{changelogList.length} 项改进</span>
+              <div className="changelog-header-right">
+                <span className="changelog-count-pill">{changelogList.length} 项改进</span>
+                <span className="changelog-toggle-tip">{showChangelog ? '点击收起 ▴' : '点击展开 ▾'}</span>
+              </div>
             </div>
-            <div className="changelog-list-scroll">
-              {changelogList.map((item, idx) => (
-                <div key={idx} className="changelog-item-row">
-                  <span className={`changelog-tag tag-${item.tagType}`}>
-                    {item.tag}
-                  </span>
-                  <span className="changelog-item-text">{item.text}</span>
-                </div>
-              ))}
-            </div>
+            {showChangelog && (
+              <div className="changelog-list-scroll">
+                {changelogList.map((item, idx) => (
+                  <div key={idx} className="changelog-item-row">
+                    <span className={`changelog-tag tag-${item.tagType}`}>
+                      {item.tag}
+                    </span>
+                    <span className="changelog-item-text">{item.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* ===================== 应用内快速更新主操作区 ===================== */}

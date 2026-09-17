@@ -10833,6 +10833,13 @@ select.field-input:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--t-fast);
+}
+
+.changelog-header:hover {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.07));
 }
 
 .changelog-title {
@@ -10842,6 +10849,23 @@ select.field-input:disabled {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.changelog-arrow {
+  font-size: 8px;
+  transition: transform 0.2s ease;
+  display: inline-block;
+  color: var(--text-tertiary);
+}
+
+.changelog-arrow.expanded {
+  transform: rotate(90deg);
+}
+
+.changelog-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .changelog-count-pill {
@@ -10854,13 +10878,37 @@ select.field-input:disabled {
   border: 1px solid rgba(99, 102, 241, 0.25);
 }
 
+.changelog-toggle-tip {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
 .changelog-list-scroll {
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 150px;
+  max-height: 140px;
   overflow-y: auto;
+}
+
+/* 更新日志平滑自适应滚动条 */
+.changelog-list-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.changelog-list-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.changelog-list-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong, rgba(255, 255, 255, 0.15));
+  border-radius: 9999px;
+}
+
+.changelog-list-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--brand, #6366f1);
 }
 
 .changelog-item-row {
