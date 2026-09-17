@@ -2027,15 +2027,14 @@ export function App() {
     return () => window.removeEventListener("mouseup", up);
   }, []);
 
-  // Defensive: Tauri's WKWebView shows its own context menu (Reload / Inspect),
-  // and on macOS a native "Paste" bubble pops up on right-click over editable
-  // areas. `contextmenu` preventDefault suppresses the menu, but that "Paste"
-  // bubble is triggered by the OS on the right-button *mousedown* — before the
-  // contextmenu event our custom menu depends on — so we also swallow the
-  // default there. Both run in the capture phase so they fire before any
-  // native handling. This guarantees our custom menus are the only thing that
-  // appear over the editor and the result table.
+  // 桌面原生体验守卫：
+  // 1. 全局拦截空白区域的 Webview 默认右键菜单（刷新、后退、前进、检查等），仅对真实输入框（input / textarea）放行原生剪贴板菜单；
+  // 2. 拦截 .result-table 与 .editor 上的右键 mousedown，防止 macOS WKWebView 弹出原生 Paste 气泡覆盖自定义菜单。
   useEffect(() => {
+    const isTextInput = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      return !!el?.closest?.("input, textarea, [contenteditable='true']");
+    };
     const inScope = (t: EventTarget | null) => {
       const el = t as HTMLElement | null;
       return !!el?.closest?.(".result-table") || !!el?.closest?.(".editor");
@@ -2046,7 +2045,10 @@ export function App() {
       }
     };
     const onCtx = (e: MouseEvent) => {
-      if (inScope(e.target)) e.preventDefault();
+      // 仅在真实输入框上保留系统原生菜单，其余所有区域（空白页、侧边栏、状态栏等）均彻底禁用刷新/后退默认菜单
+      if (!isTextInput(e.target)) {
+        e.preventDefault();
+      }
     };
     document.addEventListener("mousedown", onMouseDown, true);
     document.addEventListener("contextmenu", onCtx, true);

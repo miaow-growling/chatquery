@@ -7,6 +7,18 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // 桌面原生体验：全局拦截空白区域的 Webview 默认右键菜单（刷新、后退、前进、检查等），仅对真实输入框放行系统剪贴板菜单
+      document.addEventListener(
+        "contextmenu",
+        function (e) {
+          if (!e.target || !e.target.closest("input, textarea, [contenteditable='true']")) {
+            e.preventDefault();
+          }
+        },
+        true
+      );
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
