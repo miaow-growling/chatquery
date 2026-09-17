@@ -268,17 +268,22 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             {status === 'idle' && (
               <div className="deluxe-idle-view">
                 <div className="deluxe-idle-info">
-                  <div className="deluxe-mode-pill">⚡ 推荐方式 · 应用内无感热更</div>
+                  <div className="deluxe-mode-pill">
+                    <span className="pill-dot" />
+                    <span>推荐方式 · 极速无感热更</span>
+                  </div>
                   <div className="deluxe-mode-desc">
-                    自动在后台静默下载增量更新包并校验数字签名，无需打开浏览器或重装。
+                    自动在后台静默下载增量包并校验 Ed25519 签名，免去手动安装。
                   </div>
                 </div>
                 <button
                   type="button"
-                  className="primary deluxe-start-btn"
+                  className="hero-update-cta-btn"
                   onClick={handleStartInAppUpdate}
                 >
-                  立即开始更新
+                  <span className="cta-icon-flash">⚡</span>
+                  <span className="cta-main-text">立即开始更新</span>
+                  <span className="cta-arrow-icon">➔</span>
                 </button>
               </div>
             )}
@@ -404,20 +409,17 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
 
         {/* 底部按钮栏 */}
         <div className="update-deluxe-footer">
-          <span className="deluxe-footer-tip">
-            {status === 'ready' ? '⚡ 新版本已准备好，点击立即生效' : '如需跳过本次更新可直接关闭'}
-          </span>
+          <div className="deluxe-footer-security">
+            <span className="security-shield-icon">🛡️</span>
+            <span className="security-text">官方 Ed25519 数字签名校验 · 安全防篡改</span>
+          </div>
           <div className="deluxe-footer-btns">
-            <button type="button" className="sec-btn" onClick={onClose}>
+            <button type="button" className="sec-btn deluxe-dismiss-btn" onClick={onClose}>
               稍后提醒
             </button>
-            {status === 'ready' ? (
-              <button type="button" className="primary" onClick={handleRelaunch}>
-                立即重启生效
-              </button>
-            ) : (
-              <button type="button" className="primary" onClick={handleStartInAppUpdate}>
-                立即更新
+            {status === 'ready' && (
+              <button type="button" className="primary deluxe-footer-restart-btn" onClick={handleRelaunch}>
+                🚀 立即重启生效
               </button>
             )}
           </div>
