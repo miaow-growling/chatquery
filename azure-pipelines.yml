@@ -65,3 +65,20 @@ steps:
       ArtifactName: '智询-Windows安装包'
       publishLocation: 'Container'
 
+  # 8. 自动同步发布到阿里云 OSS (当配置了 OSS 凭据变量时自动上传)
+  - powershell: |
+      if (-not $env:OSS_ACCESS_KEY_ID -or -not $env:OSS_ACCESS_KEY_SECRET -or -not $env:OSS_BUCKET) {
+        Write-Host "##vso[task.logissue type=warning]未检测到完整 OSS 变量配置 (OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET / OSS_BUCKET)，跳过 OSS 自动上传。"
+      } else {
+        node scripts/upload-oss.mjs
+      }
+    displayName: '上传安装包到阿里云 OSS'
+    condition: succeeded()
+    env:
+      OSS_ACCESS_KEY_ID: $(OSS_ACCESS_KEY_ID)
+      OSS_ACCESS_KEY_SECRET: $(OSS_ACCESS_KEY_SECRET)
+      OSS_BUCKET: $(OSS_BUCKET)
+      OSS_REGION: $(OSS_REGION)
+      OSS_PREFIX: $(OSS_PREFIX)
+      OSS_PUBLIC_DOMAIN: $(OSS_PUBLIC_DOMAIN)
+

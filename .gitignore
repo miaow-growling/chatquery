@@ -23,6 +23,9 @@ Thumbs.db
 *.local
 .env
 .env.*
+!.env.oss.example
+!.env.example
+.ossutilconfig*
 *.pem
 *.key
 *.pfx
