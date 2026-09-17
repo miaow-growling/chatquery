@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "upload:oss": "node ../scripts/upload-oss.mjs",
-    "release:oss": "tauri build && node ../scripts/upload-oss.mjs"
+    "release:oss": "cd .. && npx --prefix frontend tauri build && node scripts/upload-oss.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
