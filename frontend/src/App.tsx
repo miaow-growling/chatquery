@@ -2182,52 +2182,11 @@ export function App() {
   });
 
   // --- Software Version & Update Checker ----------------------------------
-  // 调试阶段：默认常驻显示更新卡片，调好后把 DEBUG_FORCE_SHOW_UPDATE 改为 false 即可
-  const DEBUG_FORCE_SHOW_UPDATE = true;
+  // 恢复为正常生产模式：仅当远程 OSS 存在比当前安装版本更高的新版本时，才显示更新提示
+  const DEBUG_FORCE_SHOW_UPDATE = false;
 
-  const [latestRelease, setLatestRelease] = useState<LatestReleaseInfo | null>(() => ({
-    version: "0.2.0",
-    tag: "v0.2.0",
-    notes: `• 🚀 新增支持应用内极速无感热更新，下载完毕一键重启即可完成版本升级
-• 🛡️ 集成 Ed25519 官方数字签名与防篡改校验，守护安装包完整性
-• 📊 增强 Tab 栏数据库树形分组与超长页签平滑横向滚动能力
-• ⚡ 优化大结果集表格渲染性能，降低内存峰值占用并支持一键释放缓存
-• 🛠️ 修复连接导入导出与 Windows 单实例多开场景下的兼容性问题`,
-    release_date: new Date().toISOString(),
-    platforms: {
-      "macos-arm64": {
-        name: "智询_0.2.0_aarch64.dmg",
-        size: "10.2 MB",
-        url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json",
-      },
-      "windows-installer": {
-        name: "智询_0.2.0_x64-setup.exe",
-        size: "12.5 MB",
-        url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json",
-      },
-    },
-    files: [
-      {
-        name: "智询_0.2.0_aarch64.dmg",
-        platform: "macos-arm64",
-        size: "10.2 MB",
-        url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json",
-      },
-      {
-        name: "智询_0.2.0_x64-setup.exe",
-        platform: "windows-installer",
-        size: "12.5 MB",
-        url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json",
-      },
-      {
-        name: "智询_免安装绿色版.exe",
-        platform: "windows-portable",
-        size: "11.8 MB",
-        url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json",
-      },
-    ],
-  }));
-  const [hasNewVersion, setHasNewVersion] = useState<boolean>(true);
+  const [latestRelease, setLatestRelease] = useState<LatestReleaseInfo | null>(null);
+  const [hasNewVersion, setHasNewVersion] = useState<boolean>(false);
   const [updateDismissed, setUpdateDismissed] = useState<boolean>(false);
   const [showUpdateModal, setShowUpdateModal] = useState<boolean>(false);
 
@@ -2237,9 +2196,7 @@ export function App() {
       if (!res.ok) throw new Error("网络连接失败");
       const data: LatestReleaseInfo = await res.json();
       if (data && data.version) {
-        if (!DEBUG_FORCE_SHOW_UPDATE) {
-          setLatestRelease(data);
-        }
+        setLatestRelease(data);
         const isNewer = compareVersions(data.version, CURRENT_APP_VERSION) > 0;
         if (isNewer || DEBUG_FORCE_SHOW_UPDATE) {
           setHasNewVersion(true);
