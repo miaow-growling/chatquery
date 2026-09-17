@@ -14,7 +14,9 @@ pool:
   vmImage: 'windows-latest'
 
 variables:
-  CARGO_TERM_COLOR: always
+  - group: aliyun-oss-chatquery
+  - name: CARGO_TERM_COLOR
+    value: always
 
 steps:
   # 1. 检出代码
