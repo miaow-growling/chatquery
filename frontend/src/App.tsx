@@ -72,11 +72,29 @@ import remarkGfm from "remark-gfm";
 import { InlineAiBar } from "./InlineAiBar";
 import { DataAssistantEditor } from "./components/DataAssistantEditor";
 import { MemoryWidget } from "./components/MemoryWidget";
+import { UpdateNotification } from "./components/UpdateNotification";
+import { UpdateModal, type LatestReleaseInfo } from "./components/UpdateModal";
 import { TableFilterBar, buildWhereSql } from "./components/TableFilterBar";
 import { InlineFilterRow } from "./components/InlineFilterRow";
 import { QuickOpenModal } from "./components/QuickOpenModal";
 import { DbMemoryModal } from "./components/DbMemoryModal";
 import { McpInstallModal } from "./components/McpInstallModal";
+
+const CURRENT_APP_VERSION = "0.1.0";
+const OSS_LATEST_RELEASE_URL = "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json";
+
+function compareVersions(v1: string, v2: string): number {
+  const p1 = v1.replace(/^v/, "").split(".").map(Number);
+  const p2 = v2.replace(/^v/, "").split(".").map(Number);
+  const len = Math.max(p1.length, p2.length);
+  for (let i = 0; i < len; i++) {
+    const num1 = p1[i] || 0;
+    const num2 = p2[i] || 0;
+    if (num1 > num2) return 1;
+    if (num1 < num2) return -1;
+  }
+  return 0;
+}
 
 /** 表格右键菜单自适应容器（具有视口边缘碰撞检测，自动翻转防止菜单底部被遮挡截断） */
 function TableContextMenuContainer({
@@ -2162,6 +2180,82 @@ export function App() {
     if (!Number.isFinite(n) || n <= 0) return 200;
     return Math.min(5000, Math.max(10, Math.floor(n)));
   });
+
+  // --- Software Version & Update Checker ----------------------------------
+  const [latestRelease, setLatestRelease] = useState<LatestReleaseInfo | null>(null);
+  const [hasNewVersion, setHasNewVersion] = useState<boolean>(false);
+  const [updateDismissed, setUpdateDismissed] = useState<boolean>(false);
+  const [showUpdateModal, setShowUpdateModal] = useState<boolean>(false);
+
+  const checkForUpdates = useCallback(async (manual = false) => {
+    try {
+      const res = await fetch(`${OSS_LATEST_RELEASE_URL}?t=${Date.now()}`);
+      if (!res.ok) throw new Error("网络连接失败");
+      const data: LatestReleaseInfo = await res.json();
+      if (data && data.version) {
+        setLatestRelease(data);
+        const isNewer = compareVersions(data.version, CURRENT_APP_VERSION) > 0;
+        if (isNewer) {
+          setHasNewVersion(true);
+          setUpdateDismissed(false);
+          if (manual) setShowUpdateModal(true);
+        } else if (manual) {
+          alert(`当前已是最新版本 (v${CURRENT_APP_VERSION})`);
+        }
+      }
+    } catch {
+      if (manual) {
+        alert("检查更新失败，请检查网络连接");
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    checkForUpdates(false);
+    // 挂载用于演示和查看效果的调试触发函数
+    (window as unknown as { __previewNewVersion?: () => void }).__previewNewVersion = () => {
+      setLatestRelease({
+        version: "0.2.0",
+        tag: "v0.2.0",
+        release_date: new Date().toISOString(),
+        platforms: {
+          "macos-arm64": {
+            name: "智询_0.2.0_aarch64.dmg",
+            size: "10.2 MB",
+            url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json"
+          },
+          "windows-installer": {
+            name: "智询_0.2.0_x64-setup.exe",
+            size: "12.5 MB",
+            url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json"
+          }
+        },
+        files: [
+          {
+            name: "智询_0.2.0_aarch64.dmg",
+            platform: "macos-arm64",
+            size: "10.2 MB",
+            url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json"
+          },
+          {
+            name: "智询_0.2.0_x64-setup.exe",
+            platform: "windows-installer",
+            size: "12.5 MB",
+            url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json"
+          },
+          {
+            name: "智询_免安装绿色版.exe",
+            platform: "windows-portable",
+            size: "11.8 MB",
+            url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json"
+          }
+        ]
+      });
+      setHasNewVersion(true);
+      setUpdateDismissed(false);
+      console.log("🚀 [Demo] 已激活 v0.2.0 新版本更新提示预览！");
+    };
+  }, [checkForUpdates]);
 
   // --- Resizable chat panel -----------------------------------------------
   const appContainerRef = useRef<HTMLDivElement>(null);
@@ -7321,13 +7415,18 @@ export function App() {
         <div className="sidebar-head">
           <span>连接</span>
           <div className="head-actions">
-            <button
-              className="icon-btn"
-              title="LLM 模型设置"
-              onClick={() => void openSettings()}
-            >
-              ⚙
-            </button>
+            <div className="head-action-wrapper">
+              <button
+                className="icon-btn"
+                title="设置与偏好"
+                onClick={() => void openSettings()}
+              >
+                ⚙
+              </button>
+              {hasNewVersion && (
+                <span className="settings-update-dot" title={`发现新版本 v${latestRelease?.version}`} />
+              )}
+            </div>
             <button
               className="icon-btn"
               title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}
@@ -7398,6 +7497,14 @@ export function App() {
           onClearRecentTables={clearRecentTables}
           targetFocus={targetFocus}
         />
+        {hasNewVersion && !updateDismissed && latestRelease && (
+          <UpdateNotification
+            latestVersion={latestRelease.version}
+            currentVersion={CURRENT_APP_VERSION}
+            onOpenModal={() => setShowUpdateModal(true)}
+            onDismiss={() => setUpdateDismissed(true)}
+          />
+        )}
         <MemoryWidget showToast={showToast} />
       </aside>
 
@@ -10425,6 +10532,38 @@ export function App() {
                         }}
                       />
                     </label>
+
+                    <div className="cfg-input" style={{ borderTop: "1px solid var(--border)", paddingTop: 16, marginTop: 16 }}>
+                      <span>
+                        软件版本与检查更新
+                        <small>
+                          当前安装版本 v{CURRENT_APP_VERSION}。点击可直接向官方更新源检查新版本。
+                        </small>
+                      </span>
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8 }}>
+                        <button
+                          type="button"
+                          className="sec-btn"
+                          style={{ padding: "5px 12px", fontSize: 12 }}
+                          onClick={() => void checkForUpdates(true)}
+                        >
+                          检查新版本
+                        </button>
+                        {hasNewVersion && latestRelease && (
+                          <button
+                            type="button"
+                            className="primary-btn"
+                            style={{ padding: "5px 12px", fontSize: 12 }}
+                            onClick={() => {
+                              setSettingsOpen(false);
+                              setShowUpdateModal(true);
+                            }}
+                          >
+                            🚀 立即更新 (v{latestRelease.version})
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -11429,6 +11568,14 @@ export function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {showUpdateModal && latestRelease && (
+        <UpdateModal
+          currentVersion={CURRENT_APP_VERSION}
+          releaseInfo={latestRelease}
+          onClose={() => setShowUpdateModal(false)}
+        />
       )}
     </div>
     </div>
