@@ -140,14 +140,15 @@ function scanArtifacts() {
     if (!alreadyHasPortable) {
       const portableName = '智询_免安装绿色版.exe';
       const targetPortable = path.join(nsisDir, portableName);
-      if (fs.existsSync(nsisDir)) {
-        fs.copyFileSync(rawExe, targetPortable);
-        artifacts.push({
-          platform: 'windows-portable',
-          name: portableName,
-          filePath: targetPortable,
-        });
+      if (!fs.existsSync(nsisDir)) {
+        fs.mkdirSync(nsisDir, { recursive: true });
       }
+      fs.copyFileSync(rawExe, targetPortable);
+      artifacts.push({
+        platform: 'windows-portable',
+        name: portableName,
+        filePath: targetPortable,
+      });
     }
   }
 
@@ -221,7 +222,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`🔍 扫描到 ${artifacts.length} 个待发布产物:`);
+  console.log(`🔍 本地扫描到 ${artifacts.length} 个新构建产物:`);
   for (const art of artifacts) {
     const info = getFileInfo(art.filePath);
     art.size = info.size;
@@ -254,144 +255,192 @@ async function main() {
     }
   }
 
-  // 计算并生成 SHA256SUMS.txt
-  const sha256Content = artifacts
-    .map(a => `${a.sha256}  ${a.name}`)
+  let client = null;
+  if (!isDryRun) {
+    client = new OSS({
+      accessKeyId,
+      accessKeySecret,
+      bucket,
+      region,
+      endpoint,
+      secure: true,
+    });
+  }
+
+  // 1. 先上传本次本地构建的安装包二进制文件
+  const uploadedArtifacts = [];
+  for (let i = 0; i < artifacts.length; i++) {
+    const art = artifacts[i];
+    const ossKey = `${prefix}/${versionTag}/${art.name}`;
+    const progressText = `[${i + 1}/${artifacts.length}]`;
+    console.log(`\n⬆️  ${progressText} 正在上传安装包: \x1b[36m${art.name}\x1b[0m (${art.sizeFormatted})...`);
+    console.log(`   目标路径: ${ossKey}`);
+
+    const headers = {
+      'Content-Type': getContentType(art.name),
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    };
+
+    if (!isDryRun && client) {
+      try {
+        if (art.size > 5 * 1024 * 1024) {
+          await client.multipartUpload(ossKey, art.filePath, {
+            parallel: 4,
+            partSize: 2 * 1024 * 1024,
+            headers,
+            progress: (p) => {
+              process.stdout.write(`   上传进度: ${(p * 100).toFixed(1)}%\r`);
+            },
+          });
+          console.log(`   上传进度: 100.0% [完成]`);
+        } else {
+          await client.put(ossKey, art.filePath, { headers });
+          console.log(`   上传成功 [完成]`);
+        }
+      } catch (err) {
+        console.error(`❌ 上传失败: ${art.name}`, err);
+        process.exit(1);
+      }
+    } else {
+      console.log(`   [Dry-Run] 模拟上传完成`);
+    }
+
+    uploadedArtifacts.push({
+      name: art.name,
+      platform: art.platform,
+      size: art.sizeFormatted,
+      sha256: art.sha256,
+      url: `${publicDomain}/${ossKey}`,
+    });
+  }
+
+  // 2. 智能合并：获取 OSS 远端已有的 latest.json 与 SHA256SUMS.txt
+  console.log(`\n🔄 正在检查远端已有清单并执行多平台智能合并...`);
+
+  const sha256Key = `${prefix}/${versionTag}/SHA256SUMS.txt`;
+  const latestKey = `${prefix}/latest.json`;
+
+  const mergedSha256Map = new Map();
+  const mergedFilesMap = new Map();
+
+  // 尝试拉取远程已有 latest.json
+  let remoteLatest = null;
+  if (!isDryRun && client) {
+    try {
+      const res = await client.get(latestKey);
+      if (res && res.content) {
+        remoteLatest = JSON.parse(res.content.toString('utf-8'));
+      }
+    } catch {
+      // 404 说明首次发版，直接跳过
+    }
+
+    // 尝试拉取远程同版本的 SHA256SUMS.txt
+    try {
+      const resSha = await client.get(sha256Key);
+      if (resSha && resSha.content) {
+        const lines = resSha.content.toString('utf-8').split('\n');
+        for (const line of lines) {
+          const match = line.trim().match(/^([a-f0-9]{64})\s+(.+)$/i);
+          if (match) {
+            mergedSha256Map.set(match[2].trim(), match[1].toLowerCase());
+          }
+        }
+      }
+    } catch {
+      // 忽略
+    }
+  }
+
+  // 合并规则：
+  // 如果远端的 latest.json 与当前构建版本相同（例如均为 0.1.0），则保留远端已有其他平台产物
+  if (remoteLatest && remoteLatest.version === version && Array.isArray(remoteLatest.files)) {
+    for (const f of remoteLatest.files) {
+      if (f.name && f.name !== 'latest.json' && f.name !== 'SHA256SUMS.txt') {
+        mergedFilesMap.set(f.name, f);
+        if (f.sha256) {
+          mergedSha256Map.set(f.name, f.sha256);
+        }
+      }
+    }
+  }
+
+  // 注入本次构建并上传的本地产物（同名产物更新覆盖，新平台产物追加合并）
+  for (const item of uploadedArtifacts) {
+    mergedFilesMap.set(item.name, item);
+    mergedSha256Map.set(item.name, item.sha256);
+  }
+
+  const allMergedFiles = Array.from(mergedFilesMap.values());
+  console.log(`🤝 合并完成！当前 ${versionTag} 版本共聚合 ${allMergedFiles.length} 个跨平台产物:`);
+  for (const f of allMergedFiles) {
+    console.log(`   - [${f.platform}] ${f.name} (${f.size})`);
+  }
+
+  // 3. 生成并上传合并后的 SHA256SUMS.txt
+  const mergedSha256Content = Array.from(mergedSha256Map.entries())
+    .map(([name, hash]) => `${hash}  ${name}`)
     .join('\n') + '\n';
+
   const sha256FilePath = path.join(ROOT_DIR, 'src-tauri', 'target', 'release', 'SHA256SUMS.txt');
-  fs.writeFileSync(sha256FilePath, sha256Content, 'utf-8');
+  fs.writeFileSync(sha256FilePath, mergedSha256Content, 'utf-8');
 
-  // 构建待上传清单
-  const uploadList = [
-    ...artifacts.map(a => ({
-      localPath: a.filePath,
-      ossKey: `${prefix}/${versionTag}/${a.name}`,
-      contentType: getContentType(a.name),
-      isImmutable: true,
-      name: a.name,
-      sizeFormatted: a.sizeFormatted,
-      sha256: a.sha256,
-      platform: a.platform,
-    })),
-    {
-      localPath: sha256FilePath,
-      ossKey: `${prefix}/${versionTag}/SHA256SUMS.txt`,
-      contentType: 'text/plain; charset=utf-8',
-      isImmutable: true,
-      name: 'SHA256SUMS.txt',
-      sizeFormatted: (Buffer.byteLength(sha256Content) / 1024).toFixed(1) + ' KB',
-      sha256: crypto.createHash('sha256').update(sha256Content).digest('hex'),
-      platform: 'checksum',
-    },
-  ];
+  console.log(`\n⬆️  正在同步更新合并后的校验文件: ${sha256Key}...`);
+  if (!isDryRun && client) {
+    await client.put(sha256Key, Buffer.from(mergedSha256Content, 'utf-8'), {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-cache, max-age=0, must-revalidate',
+      },
+    });
+  }
 
-  // 生成最新版本元数据清单 latest.json
-  const latestManifest = {
-    version: version,
+  // 4. 生成并上传合并后的 latest.json
+  const platformsDict = {};
+  for (const f of allMergedFiles) {
+    if (f.platform) {
+      platformsDict[f.platform] = f;
+    }
+  }
+
+  const mergedLatestManifest = {
+    version,
     tag: versionTag,
     release_date: new Date().toISOString(),
-    files: uploadList.map(item => ({
-      name: item.name,
-      platform: item.platform,
-      size: item.sizeFormatted,
-      sha256: item.sha256,
-      url: `${publicDomain}/${item.ossKey}`,
-    })),
+    platforms: platformsDict,
+    files: [
+      ...allMergedFiles,
+      {
+        name: 'SHA256SUMS.txt',
+        platform: 'checksum',
+        size: (Buffer.byteLength(mergedSha256Content) / 1024).toFixed(1) + ' KB',
+        sha256: crypto.createHash('sha256').update(mergedSha256Content).digest('hex'),
+        url: `${publicDomain}/${sha256Key}`,
+      },
+    ],
   };
 
   const latestJsonPath = path.join(ROOT_DIR, 'src-tauri', 'target', 'release', 'latest.json');
-  fs.writeFileSync(latestJsonPath, JSON.stringify(latestManifest, null, 2), 'utf-8');
+  fs.writeFileSync(latestJsonPath, JSON.stringify(mergedLatestManifest, null, 2), 'utf-8');
 
-  uploadList.push({
-    localPath: latestJsonPath,
-    ossKey: `${prefix}/latest.json`,
-    contentType: 'application/json; charset=utf-8',
-    isImmutable: false, // 每次发布更新，不得使用 immutable 缓存
-    name: 'latest.json',
-    sizeFormatted: (Buffer.byteLength(JSON.stringify(latestManifest)) / 1024).toFixed(1) + ' KB',
-    sha256: crypto.createHash('sha256').update(JSON.stringify(latestManifest)).digest('hex'),
-    platform: 'manifest',
-  });
-
-  if (isDryRun) {
-    console.log('📋 [Dry-Run] 计划上传的对象清单:');
-    for (const item of uploadList) {
-      console.log(`   - 本地文件: ${item.localPath}`);
-      console.log(`     目标 OSS: oss://${bucket || '<BUCKET>'}/${item.ossKey}`);
-      console.log(`     公开 URL: ${publicDomain}/${item.ossKey}`);
-      console.log(`     头部设置: Content-Type=${item.contentType}, Immutable=${item.isImmutable}`);
-    }
-    console.log('\n✨ Dry-run 模拟完成，所有产物校验通过！');
-    return;
-  }
-
-  // 初始化 OSS Client
-  console.log(`🔌 正在连接阿里云 OSS Bucket: \x1b[32m${bucket}\x1b[0m (${region})...`);
-  const client = new OSS({
-    accessKeyId,
-    accessKeySecret,
-    bucket,
-    region,
-    endpoint,
-    secure: true,
-  });
-
-  const uploadResults = [];
-
-  for (let i = 0; i < uploadList.length; i++) {
-    const item = uploadList[i];
-    const progressText = `[${i + 1}/${uploadList.length}]`;
-    console.log(`\n⬆️  ${progressText} 正在上传: \x1b[36m${item.name}\x1b[0m (${item.sizeFormatted})...`);
-    console.log(`   目标路径: ${item.ossKey}`);
-
-    const headers = {
-      'Content-Type': item.contentType,
-      'Cache-Control': item.isImmutable
-        ? 'public, max-age=31536000, immutable'
-        : 'no-cache, max-age=0, must-revalidate',
-    };
-
-    try {
-      const stats = fs.statSync(item.localPath);
-      // 大于 5MB 采用分片并发上传
-      if (stats.size > 5 * 1024 * 1024) {
-        await client.multipartUpload(item.ossKey, item.localPath, {
-          parallel: 4,
-          partSize: 2 * 1024 * 1024,
-          headers,
-          progress: (p) => {
-            process.stdout.write(`   上传进度: ${(p * 100).toFixed(1)}%\r`);
-          },
-        });
-        console.log(`   上传进度: 100.0% [完成]`);
-      } else {
-        await client.put(item.ossKey, item.localPath, { headers });
-        console.log(`   上传成功 [完成]`);
-      }
-
-      const publicUrl = `${publicDomain}/${item.ossKey}`;
-      uploadResults.push({
-        name: item.name,
-        size: item.sizeFormatted,
-        sha256: item.sha256,
-        url: publicUrl,
-        success: true,
-      });
-    } catch (err) {
-      console.error(`❌ 上传失败: ${item.name}`, err);
-      process.exit(1);
-    }
+  console.log(`⬆️  正在发布合并后的版本元信息: ${latestKey}...`);
+  if (!isDryRun && client) {
+    await client.put(latestKey, Buffer.from(JSON.stringify(mergedLatestManifest, null, 2), 'utf-8'), {
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-cache, max-age=0, must-revalidate',
+      },
+    });
   }
 
   console.log('\n====================================================');
-  console.log('🎉 智询 (ChatQuery) 自动化发布成功！');
+  console.log('🎉 智询 (ChatQuery) 多平台安装包自动合并与发布成功！');
   console.log('====================================================');
   console.log(`版本号: ${versionTag}`);
-  console.log(`版本元信息地址: ${publicDomain}/${prefix}/latest.json\n`);
-  console.log('各平台正式下载地址:');
-  for (const res of uploadResults) {
-    if (res.name === 'latest.json') continue;
-    console.log(`  - \x1b[1m${res.name}\x1b[0m:`);
+  console.log(`版本元信息地址: ${publicDomain}/${latestKey}\n`);
+  console.log('全平台合并后可用下载直链:');
+  for (const res of allMergedFiles) {
+    console.log(`  - \x1b[1m[${res.platform}] ${res.name}\x1b[0m:`);
     console.log(`    下载链接: \x1b[34m${res.url}\x1b[0m`);
     console.log(`    文件大小: ${res.size}`);
     console.log(`    SHA256:   ${res.sha256}`);
