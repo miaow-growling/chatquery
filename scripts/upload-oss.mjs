@@ -590,11 +590,25 @@ async function main() {
     });
   }
 
+  // 解析更新日志：命令行参数 --notes > 环境变量 RELEASE_NOTES > 根目录 RELEASE_NOTES.md > 远端已有 notes > 预设默认说明
+  let releaseNotes = getArgValue('--notes') || getEnv('RELEASE_NOTES');
+  if (!releaseNotes) {
+    const notesFile = path.join(ROOT_DIR, 'RELEASE_NOTES.md');
+    if (fs.existsSync(notesFile)) {
+      releaseNotes = fs.readFileSync(notesFile, 'utf-8').trim();
+      console.log('📝 已自动读取根目录 RELEASE_NOTES.md 作为本次发布日志');
+    } else if (remoteLatest && remoteLatest.version === version && remoteLatest.notes) {
+      releaseNotes = remoteLatest.notes;
+    } else {
+      releaseNotes = `• 🚀 智询 (ChatQuery) ${versionTag} 官方发布版本\n• ⚡ 包含最新功能优化与性能提升\n• 🛡️ 官方数字签名保障，安全无感更新`;
+    }
+  }
+
   // 4. 生成并上传合并后的符合 Tauri v2 自动更新规范的 latest.json
   const mergedLatestManifest = {
     version,
     tag: versionTag,
-    notes: `智询 (ChatQuery) ${versionTag} 官方发布版本。\n支持多平台自动更新与安装包一键安装。`,
+    notes: releaseNotes,
     pub_date: new Date().toISOString(),
     platforms: mergedUpdaterPlatforms,
     files: [
