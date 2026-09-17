@@ -7628,365 +7628,6 @@ select.field-input:disabled {
   border-color: var(--redis-500);
 }
 
-/* =====================  SOFTWARE UPDATE NOTIFICATION & MODAL  ===================== */
-
-/* 侧边栏底部新版本提示卡片 */
-.sidebar-update-banner {
-  flex-shrink: 0;
-  margin: 6px 10px 4px 10px;
-  padding: 6px 8px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.18) 0%, rgba(168, 85, 247, 0.15) 100%);
-  border: 1px solid rgba(129, 140, 248, 0.45);
-  border-radius: var(--r-md);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.12);
-  animation: updateFadeIn 0.3s ease-out;
-  user-select: none;
-}
-
-@keyframes updateFadeIn {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.update-banner-main {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-  cursor: pointer;
-}
-
-.update-banner-icon {
-  font-size: 14px;
-  flex-shrink: 0;
-  animation: rocketBounce 2s infinite ease-in-out;
-}
-
-@keyframes rocketBounce {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2px); }
-}
-
-.update-banner-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  flex: 1;
-}
-
-.update-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.2;
-}
-
-.update-ver-tag {
-  font-size: 10px;
-  color: var(--brand, #6366f1);
-  font-weight: 600;
-  font-family: var(--font-mono);
-  line-height: 1.2;
-}
-
-.update-action-btn {
-  padding: 3px 8px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #ffffff;
-  background: var(--brand, #6366f1);
-  border: none;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  white-space: nowrap;
-  flex-shrink: 0;
-  box-shadow: 0 1px 4px rgba(99, 102, 241, 0.4);
-  transition: all var(--t-fast);
-}
-
-.update-action-btn:hover {
-  background: var(--brand-hover, #4f46e5);
-  transform: translateY(-1px);
-}
-
-.update-dismiss-btn {
-  background: transparent;
-  border: none;
-  color: var(--text-dim);
-  font-size: 14px;
-  line-height: 1;
-  padding: 2px 4px;
-  cursor: pointer;
-  border-radius: 4px;
-  transition: color var(--t-fast);
-}
-
-.update-dismiss-btn:hover {
-  color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.08);
-}
-
-/* 侧边栏设置按钮角标红点 */
-.head-action-wrapper {
-  position: relative;
-  display: inline-flex;
-}
-
-.settings-update-dot {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 7px;
-  height: 7px;
-  background: #ef4444;
-  border: 1.5px solid var(--sidebar-bg);
-  border-radius: 50%;
-  pointer-events: none;
-  animation: pulse-dot 1.4s ease-in-out infinite;
-}
-
-/* 版本更新弹窗 (Update Modal) */
-.update-modal {
-  max-width: 520px;
-  width: 90%;
-  background: var(--modal-bg, var(--bg-surface));
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.4);
-}
-
-.update-modal-body {
-  padding: 16px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.update-version-banner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 20px;
-  padding: 14px 16px;
-  background: var(--bg-elevated, rgba(255, 255, 255, 0.03));
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-}
-
-.version-info-box {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-
-.ver-label {
-  font-size: 11px;
-  color: var(--text-dim);
-}
-
-.ver-val {
-  font-size: 15px;
-  font-weight: 700;
-  font-family: var(--font-mono);
-}
-
-.ver-val.current {
-  color: var(--text-dim);
-}
-
-.ver-val.latest {
-  color: var(--brand, #6366f1);
-}
-
-.version-arrow {
-  font-size: 18px;
-  color: var(--text-dim);
-}
-
-.update-meta-time {
-  font-size: 12px;
-  color: var(--text-dim);
-  text-align: center;
-}
-
-.recommended-download-card {
-  padding: 12px 14px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(59, 130, 246, 0.08) 100%);
-  border: 1px solid rgba(99, 102, 241, 0.35);
-  border-radius: var(--r-md);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.rec-badge {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--brand, #818cf8);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.rec-content {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.rec-info {
-  display: flex;
-  align-items: baseline;
-  gap: 4px;
-  overflow: hidden;
-}
-
-.rec-filename {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.rec-filesize {
-  font-size: 11px;
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-
-.rec-btn {
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.all-downloads-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.all-downloads-section .section-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-dim);
-}
-
-.download-files-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 180px;
-  overflow-y: auto;
-}
-
-.download-file-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 10px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  gap: 10px;
-}
-
-.download-file-item:hover {
-  border-color: var(--border-focus);
-}
-
-.file-item-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  overflow: hidden;
-}
-
-.file-icon {
-  font-size: 14px;
-  flex-shrink: 0;
-}
-
-.file-details {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.file-name {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.file-size {
-  font-size: 10px;
-  color: var(--text-dim);
-}
-
-.file-item-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.sec-btn-sm {
-  padding: 3px 8px;
-  font-size: 11px;
-  background: var(--btn-sec-bg, rgba(255, 255, 255, 0.05));
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  color: var(--text-dim);
-  cursor: pointer;
-  transition: all var(--t-fast);
-}
-
-.sec-btn-sm:hover {
-  color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.primary-btn-sm {
-  padding: 3px 10px;
-  font-size: 11px;
-  background: var(--brand, #6366f1);
-  border: none;
-  border-radius: var(--r-sm);
-  color: #ffffff;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all var(--t-fast);
-}
-
-.primary-btn-sm:hover {
-  background: var(--brand-hover, #4f46e5);
-}
-
-.no-files-hint {
-  font-size: 12px;
-  color: var(--text-dim);
-  text-align: center;
-  padding: 12px 0;
-}
-
 .php-view-btn:disabled { opacity: 0.4; cursor: default; }
 .php-close-btn {
   padding: 2px 8px;
@@ -10889,3 +10530,382 @@ select.field-input:disabled {
   align-items: center;
   justify-content: space-between;
 }
+
+/* =========================================================================
+   ★ SOFTWARE UPDATE SYSTEM (Notification Card & Full-Screen Mask Modal)
+   ========================================================================= */
+
+/* 侧边栏底部新版本提示卡片 (240px 专属高质感分层布局) */
+.sidebar-update-card {
+  flex-shrink: 0;
+  margin: 6px 10px 4px 10px;
+  padding: 8px 10px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.16) 0%, rgba(139, 92, 246, 0.12) 100%);
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  border-radius: var(--r-md, 8px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.12);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
+}
+
+.sidebar-update-card:hover {
+  border-color: var(--brand, #6366f1);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.22) 0%, rgba(139, 92, 246, 0.18) 100%);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.25);
+}
+
+.update-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.update-card-tag {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.update-rocket {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.update-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.update-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--brand, #6366f1);
+  font-family: var(--font-mono);
+  background: rgba(99, 102, 241, 0.15);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.update-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.update-close-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.update-card-body {
+  width: 100%;
+}
+
+.update-btn-primary {
+  width: 100%;
+  padding: 5px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--brand, #6366f1);
+  border: none;
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(99, 102, 241, 0.35);
+  transition: all 0.15s ease;
+}
+
+.update-btn-primary:hover {
+  background: var(--brand-hover, #4f46e5);
+  transform: translateY(-1px);
+}
+
+/* 侧边栏设置齿轮红点 */
+.head-action-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.settings-update-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  background: #ef4444;
+  border: 1.5px solid var(--sidebar-bg);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+/* 软件版本更新弹窗 (居中模态) */
+.update-modal {
+  width: 520px;
+  max-width: 90vw;
+  box-sizing: border-box;
+  background: var(--modal-bg, #141826);
+  border: 1px solid var(--modal-border, rgba(255, 255, 255, 0.1));
+  border-radius: 12px;
+  box-shadow: var(--modal-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.update-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft, rgba(255, 255, 255, 0.08));
+}
+
+.update-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.update-modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 版本对比 */
+.update-compare-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 14px 16px;
+  background: var(--bg-surface, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.compare-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.compare-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.compare-val {
+  font-size: 16px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.compare-val.current {
+  color: var(--text-secondary);
+}
+
+.compare-val.latest {
+  color: var(--brand, #6366f1);
+}
+
+.compare-arrow {
+  font-size: 18px;
+  color: var(--text-tertiary);
+}
+
+.update-date-text {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+/* 推荐安装包卡片 */
+.rec-card {
+  padding: 12px 14px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(59, 130, 246, 0.08) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rec-card-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--brand, #818cf8);
+}
+
+.rec-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rec-file-info {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.rec-file-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rec-file-size {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.rec-download-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 全平台列表 */
+.downloads-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.section-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--bg-surface, rgba(255, 255, 255, 0.02));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  gap: 10px;
+}
+
+.file-col-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.file-emoji {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.file-text-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.file-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-sub {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.file-col-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.file-action-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.file-action-btn.copy-btn {
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.file-action-btn.copy-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.file-action-btn.dl-btn {
+  background: var(--brand, #6366f1);
+  border: none;
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.file-action-btn.dl-btn:hover {
+  background: var(--brand-hover, #4f46e5);
+}
+
+.empty-files-text {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: 12px 0;
+}
+
+.update-modal-actions {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft, rgba(255, 255, 255, 0.08));
+}
+

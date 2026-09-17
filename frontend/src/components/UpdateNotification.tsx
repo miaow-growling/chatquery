@@ -13,35 +13,37 @@ export const UpdateNotification: React.FC<UpdateNotificationProps> = ({
   onDismiss,
 }) => {
   return (
-    <div className="sidebar-update-banner" title={`发现新版本 v${latestVersion}，点击查看更新`}>
-      <div className="update-banner-main" onClick={onOpenModal}>
-        <span className="update-banner-icon">🚀</span>
-        <div className="update-banner-text">
+    <div className="sidebar-update-card" onClick={onOpenModal}>
+      <div className="update-card-header">
+        <div className="update-card-tag">
+          <span className="update-rocket">🚀</span>
           <span className="update-title">发现新版本</span>
-          <span className="update-ver-tag">v{latestVersion}</span>
+          <span className="update-badge">v{latestVersion}</span>
         </div>
         <button
           type="button"
-          className="update-action-btn"
+          className="update-close-btn"
+          title="稍后提醒"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDismiss();
+          }}
+        >
+          ×
+        </button>
+      </div>
+      <div className="update-card-body">
+        <button
+          type="button"
+          className="update-btn-primary"
           onClick={(e) => {
             e.stopPropagation();
             onOpenModal();
           }}
         >
-          立即更新
+          立即更新 ➔
         </button>
       </div>
-      <button
-        type="button"
-        className="update-dismiss-btn"
-        title="稍后提醒"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDismiss();
-        }}
-      >
-        ×
-      </button>
     </div>
   );
 };

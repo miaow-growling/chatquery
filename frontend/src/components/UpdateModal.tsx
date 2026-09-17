@@ -34,7 +34,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   const isMac = typeof navigator !== 'undefined' && /macintosh|mac os x/i.test(navigator.userAgent);
   const isWindows = typeof navigator !== 'undefined' && /windows|win32/i.test(navigator.userAgent);
 
-  // 整理所有安装包文件（排除 SHA256SUMS 和 latest.json）
+  // 整理所有安装包文件（排除校验文件和 json 清单）
   const downloadFiles: ReleaseFile[] = (releaseInfo.files || []).filter(
     (f) => !f.name.endsWith('.txt') && !f.name.endsWith('.json')
   );
@@ -73,54 +73,52 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
     : null;
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-mask" onClick={onClose}>
       <div className="modal update-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <div className="modal-title">
-            <span className="modal-title-icon">🚀</span>
+        <div className="update-modal-header">
+          <div className="update-modal-title">
+            <span className="update-modal-icon">🚀</span>
             <span>软件版本更新</span>
           </div>
-          <button type="button" className="icon-btn modal-close" onClick={onClose}>
+          <button type="button" className="icon-btn" onClick={onClose} title="关闭 (Esc)">
             ×
           </button>
         </div>
 
-        <div className="update-modal-body">
+        <div className="update-modal-content">
           {/* 版本对比横幅 */}
-          <div className="update-version-banner">
-            <div className="version-info-box">
-              <span className="ver-label">当前版本</span>
-              <span className="ver-val current">v{currentVersion}</span>
+          <div className="update-compare-box">
+            <div className="compare-item">
+              <span className="compare-label">当前版本</span>
+              <span className="compare-val current">v{currentVersion}</span>
             </div>
-            <div className="version-arrow">➔</div>
-            <div className="version-info-box">
-              <span className="ver-label">最新版本</span>
-              <span className="ver-val latest">v{releaseInfo.version}</span>
+            <span className="compare-arrow">➔</span>
+            <div className="compare-item">
+              <span className="compare-label">最新版本</span>
+              <span className="compare-val latest">v{releaseInfo.version}</span>
             </div>
           </div>
 
           {formattedDate && (
-            <div className="update-meta-time">
-              <span>发布时间：{formattedDate}</span>
+            <div className="update-date-text">
+              发布时间：{formattedDate}
             </div>
           )}
 
-          {/* 首选推荐下载入口 */}
+          {/* 针对当前操作系统的首选推荐安装包 */}
           {recommendedFile && (
-            <div className="recommended-download-card">
-              <div className="rec-badge">
-                {isMac ? '🍎 macOS 推荐' : isWindows ? '🪟 Windows 推荐' : '⭐ 推荐安装包'}
+            <div className="rec-card">
+              <div className="rec-card-badge">
+                {isMac ? '🍎 macOS 平台专属安装包' : isWindows ? '🪟 Windows 平台专属安装包' : '⭐ 推荐安装包'}
               </div>
-              <div className="rec-content">
-                <div className="rec-info">
-                  <span className="rec-filename">{recommendedFile.name}</span>
-                  {recommendedFile.size && (
-                    <span className="rec-filesize">（{recommendedFile.size}）</span>
-                  )}
+              <div className="rec-card-row">
+                <div className="rec-file-info">
+                  <span className="rec-file-name">{recommendedFile.name}</span>
+                  {recommendedFile.size && <span className="rec-file-size">({recommendedFile.size})</span>}
                 </div>
                 <button
                   type="button"
-                  className="primary-btn rec-btn"
+                  className="primary rec-download-btn"
                   onClick={() => handleOpenDownload(recommendedFile!.url)}
                 >
                   立即下载安装包
@@ -129,33 +127,33 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             </div>
           )}
 
-          {/* 所有可用平台下载列表 */}
-          <div className="all-downloads-section">
-            <div className="section-title">全平台安装包下载直链：</div>
-            <div className="download-files-list">
+          {/* 全平台所有下载地址 */}
+          <div className="downloads-section">
+            <div className="section-label">全平台安装包下载直链：</div>
+            <div className="files-list">
               {downloadFiles.length > 0 ? (
                 downloadFiles.map((file) => (
-                  <div key={file.name} className="download-file-item">
-                    <div className="file-item-left">
-                      <span className="file-icon">
+                  <div key={file.name} className="file-row">
+                    <div className="file-col-left">
+                      <span className="file-emoji">
                         {file.name.endsWith('.dmg') ? '🍎' : file.name.endsWith('.exe') ? '🪟' : '📦'}
                       </span>
-                      <div className="file-details">
-                        <span className="file-name">{file.name}</span>
-                        {file.size && <span className="file-size">{file.size}</span>}
+                      <div className="file-text-col">
+                        <span className="file-title">{file.name}</span>
+                        {file.size && <span className="file-sub">{file.size}</span>}
                       </div>
                     </div>
-                    <div className="file-item-actions">
+                    <div className="file-col-right">
                       <button
                         type="button"
-                        className="sec-btn-sm"
+                        className="file-action-btn copy-btn"
                         onClick={() => handleCopy(file.url)}
                       >
-                        {copiedUrl === file.url ? '✓ 已复制' : '复制链接'}
+                        {copiedUrl === file.url ? '✓ 已复制' : '复制直链'}
                       </button>
                       <button
                         type="button"
-                        className="primary-btn-sm"
+                        className="file-action-btn dl-btn"
                         onClick={() => handleOpenDownload(file.url)}
                       >
                         下载
@@ -164,22 +162,17 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   </div>
                 ))
               ) : (
-                <div className="no-files-hint">未找到该版本的安装包文件。</div>
+                <div className="empty-files-text">暂未发现可下载的安装包</div>
               )}
             </div>
           </div>
         </div>
 
-        <div className="modal-footer">
-          <button type="button" className="sec-btn" onClick={onClose}>
-            关闭
-          </button>
+        <div className="modal-actions update-modal-actions">
+          <span className="spacer" />
+          <button onClick={onClose}>关闭</button>
           {recommendedFile && (
-            <button
-              type="button"
-              className="primary-btn"
-              onClick={() => handleOpenDownload(recommendedFile!.url)}
-            >
+            <button className="primary" onClick={() => handleOpenDownload(recommendedFile!.url)}>
               在浏览器中打开下载
             </button>
           )}
