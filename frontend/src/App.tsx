@@ -2182,8 +2182,47 @@ export function App() {
   });
 
   // --- Software Version & Update Checker ----------------------------------
-  const [latestRelease, setLatestRelease] = useState<LatestReleaseInfo | null>(null);
-  const [hasNewVersion, setHasNewVersion] = useState<boolean>(false);
+  // 调试阶段：默认常驻显示更新卡片，调好后把 DEBUG_FORCE_SHOW_UPDATE 改为 false 即可
+  const DEBUG_FORCE_SHOW_UPDATE = true;
+
+  const [latestRelease, setLatestRelease] = useState<LatestReleaseInfo | null>(() => ({
+    version: "0.2.0",
+    tag: "v0.2.0",
+    release_date: new Date().toISOString(),
+    platforms: {
+      "macos-arm64": {
+        name: "智询_0.2.0_aarch64.dmg",
+        size: "10.2 MB",
+        url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json",
+      },
+      "windows-installer": {
+        name: "智询_0.2.0_x64-setup.exe",
+        size: "12.5 MB",
+        url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json",
+      },
+    },
+    files: [
+      {
+        name: "智询_0.2.0_aarch64.dmg",
+        platform: "macos-arm64",
+        size: "10.2 MB",
+        url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json",
+      },
+      {
+        name: "智询_0.2.0_x64-setup.exe",
+        platform: "windows-installer",
+        size: "12.5 MB",
+        url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json",
+      },
+      {
+        name: "智询_免安装绿色版.exe",
+        platform: "windows-portable",
+        size: "11.8 MB",
+        url: "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json",
+      },
+    ],
+  }));
+  const [hasNewVersion, setHasNewVersion] = useState<boolean>(true);
   const [updateDismissed, setUpdateDismissed] = useState<boolean>(false);
   const [showUpdateModal, setShowUpdateModal] = useState<boolean>(false);
 
@@ -2193,9 +2232,11 @@ export function App() {
       if (!res.ok) throw new Error("网络连接失败");
       const data: LatestReleaseInfo = await res.json();
       if (data && data.version) {
-        setLatestRelease(data);
+        if (!DEBUG_FORCE_SHOW_UPDATE) {
+          setLatestRelease(data);
+        }
         const isNewer = compareVersions(data.version, CURRENT_APP_VERSION) > 0;
-        if (isNewer) {
+        if (isNewer || DEBUG_FORCE_SHOW_UPDATE) {
           setHasNewVersion(true);
           setUpdateDismissed(false);
           if (manual) setShowUpdateModal(true);
