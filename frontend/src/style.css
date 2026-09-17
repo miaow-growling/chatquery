@@ -10903,6 +10903,227 @@ select.field-input:disabled {
   padding: 12px 0;
 }
 
+/* =========================================================================
+   ★ IN-APP AUTO-UPDATER CARD & PROGRESS BAR
+   ========================================================================= */
+
+.in-app-update-card {
+  padding: 14px 16px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(139, 92, 246, 0.08) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 初始状态 */
+.update-idle-view {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.update-idle-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.update-feature-tag {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--brand, #818cf8);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.update-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.in-app-action-btn {
+  padding: 8px 18px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35);
+  transition: all 0.2s ease;
+}
+
+.in-app-action-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+}
+
+/* 下载进度条状态 */
+.update-downloading-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.progress-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.progress-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.progress-pct {
+  font-size: 13px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--brand, #6366f1);
+}
+
+.update-progress-track {
+  width: 100%;
+  height: 8px;
+  background: var(--bg-inset, rgba(0, 0, 0, 0.25));
+  border-radius: 9999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.update-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 50%, #3b82f6 100%);
+  border-radius: 9999px;
+  transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.6);
+}
+
+.progress-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.progress-hint {
+  font-style: italic;
+}
+
+/* 下载就绪 / 等待重启状态 */
+.update-ready-view {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  text-align: center;
+}
+
+.ready-icon-wrap {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: rgba(34, 197, 94, 0.15);
+  border: 1.5px solid #22c55e;
+  color: #22c55e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 700;
+  box-shadow: 0 0 16px rgba(34, 197, 94, 0.3);
+}
+
+.ready-text-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ready-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.ready-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.in-app-restart-btn {
+  padding: 8px 24px;
+  font-size: 13px;
+  font-weight: 600;
+  background: #22c55e;
+  border-color: #22c55e;
+  color: #ffffff;
+  box-shadow: 0 2px 12px rgba(34, 197, 94, 0.4);
+  animation: pulse-dot 1.5s infinite ease-in-out;
+}
+
+.in-app-restart-btn:hover {
+  background: #16a34a;
+  transform: translateY(-1px);
+}
+
+/* 错误状态 */
+.update-error-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.update-error-view .error-text {
+  font-size: 12px;
+  color: var(--danger-500, #ef4444);
+}
+
+/* 手动下载折叠区 */
+.manual-download-fold {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.manual-fold-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--t-fast);
+}
+
+.manual-fold-header:hover {
+  color: var(--text-primary);
+}
+
+.fold-arrow {
+  font-size: 9px;
+  transition: transform 0.15s ease;
+}
+
+.manual-files-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 0 0;
+  border-top: 1px dashed var(--border-soft);
+}
+
 .update-modal-actions {
   margin-top: 4px;
   padding-top: 10px;

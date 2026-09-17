@@ -43,6 +43,9 @@ jobs:
 
       - name: Build Tauri App (Windows x64)
         shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           npx --prefix frontend tauri build --bundles nsis
           if (Test-Path "src-tauri/target/release/chatquery.exe") {
@@ -67,6 +70,8 @@ jobs:
           OSS_REGION: ${{ secrets.OSS_REGION || 'oss-cn-hangzhou' }}
           OSS_PREFIX: ${{ secrets.OSS_PREFIX || 'chatquery/releases' }}
           OSS_PUBLIC_DOMAIN: ${{ secrets.OSS_PUBLIC_DOMAIN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if (-not $env:OSS_ACCESS_KEY_ID -or -not $env:OSS_ACCESS_KEY_SECRET -or -not $env:OSS_BUCKET) {
             Write-Warning "未检测到完整 OSS Secrets 配置 (OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET / OSS_BUCKET)，跳过 OSS 自动上传。"

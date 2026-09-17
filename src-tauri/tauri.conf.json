@@ -27,6 +27,7 @@
     }
   },
   "bundle": {
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -43,6 +44,14 @@
       "minimumSystemVersion": "10.15",
       "frameworks": [],
       "signingIdentity": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkzRTAyMjEzMjM2OTkyNTQKUldSVWtta2pFeUxna3l0b0hlSThtelVUeWRwM0xtWGVjM01RbUw4cFFqaG5RVVl5bVZwNGdubmsK",
+      "endpoints": [
+        "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json"
+      ]
     }
   }
 }

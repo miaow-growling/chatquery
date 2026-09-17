@@ -58,6 +58,9 @@ steps:
         Copy-Item -Path "src-tauri\target\release\chatquery.exe" -Destination "src-tauri\target\release\bundle\nsis\智询_免安装绿色版.exe"
       }
     displayName: '打包 Tauri Windows 应用 (NSIS .exe)'
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
 
   # 7. 发布构建产物供网页下载
   - task: PublishBuildArtifacts@1
@@ -83,4 +86,6 @@ steps:
       OSS_REGION: $(OSS_REGION)
       OSS_PREFIX: $(OSS_PREFIX)
       OSS_PUBLIC_DOMAIN: $(OSS_PUBLIC_DOMAIN)
+      TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
 

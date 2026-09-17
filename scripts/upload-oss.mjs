@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { execSync, spawnSync } from 'node:child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -60,6 +61,7 @@ function getEnv(key, defaultVal = '') {
 // 命令行参数解析
 const args = process.argv.slice(2);
 const isDryRun = args.includes('--dry-run');
+const shouldBuild = args.includes('--build');
 
 function getArgValue(flag) {
   const idx = args.indexOf(flag);
@@ -112,9 +114,63 @@ function getFileInfo(filePath) {
   };
 }
 
-// 扫描所有已构建好的桌面安装包和免安装程序
-function scanArtifacts() {
+// 对目标文件进行签名（使用本地私钥）
+function ensureSignature(targetFile, privateKey, password = '') {
+  const sigFile = `${targetFile}.sig`;
+  if (fs.existsSync(sigFile)) {
+    return fs.readFileSync(sigFile, 'utf-8').trim();
+  }
+  if (!privateKey) {
+    return null;
+  }
+  try {
+    console.log(`🔐 正在为更新包生成数字签名: ${path.basename(targetFile)}...`);
+    const env = {
+      ...process.env,
+      TAURI_SIGNING_PRIVATE_KEY: privateKey,
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: password,
+    };
+    const cmd = `npx --prefix frontend tauri signer sign "${targetFile}"`;
+    execSync(cmd, {
+      cwd: ROOT_DIR,
+      env,
+      stdio: 'inherit',
+    });
+    if (fs.existsSync(sigFile)) {
+      return fs.readFileSync(sigFile, 'utf-8').trim();
+    }
+  } catch (err) {
+    console.warn(`⚠️  签名生成失败: ${targetFile}`, err);
+  }
+  return null;
+}
+
+// 如果需要，执行编译并自动注入签名私钥
+function performBuildIfRequested(privateKey, password = '') {
+  if (!shouldBuild) return;
+  console.log('🔨 检测到 --build 参数，正在执行 Tauri 桌面打包...');
+  const env = {
+    ...process.env,
+    TAURI_SIGNING_PRIVATE_KEY: privateKey || process.env.TAURI_SIGNING_PRIVATE_KEY || '',
+    TAURI_SIGNING_PRIVATE_KEY_PASSWORD: password || process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '',
+  };
+  const isWin = process.platform === 'win32';
+  const buildCmd = isWin
+    ? 'npx --prefix frontend tauri build --bundles nsis'
+    : 'npx --prefix frontend tauri build';
+
+  execSync(buildCmd, {
+    cwd: ROOT_DIR,
+    env,
+    stdio: 'inherit',
+  });
+  console.log('✅ Tauri 打包完成！\n');
+}
+
+// 扫描所有已构建好的桌面安装包、绿色版及自动更新增量包
+function scanArtifacts(privateKey, password = '') {
   const artifacts = [];
+  const updaterArtifacts = [];
   const bundleDir = path.join(ROOT_DIR, 'src-tauri', 'target', 'release', 'bundle');
   const releaseDir = path.join(ROOT_DIR, 'src-tauri', 'target', 'release');
 
@@ -124,11 +180,39 @@ function scanArtifacts() {
     const files = fs.readdirSync(nsisDir);
     for (const f of files) {
       if (f.endsWith('.exe')) {
-        artifacts.push({
-          platform: f.includes('免安装') || f.includes('portable') ? 'windows-portable' : 'windows-installer',
+        const fullPath = path.join(nsisDir, f);
+        const isPortable = f.includes('免安装') || f.includes('portable');
+        const art = {
+          platform: isPortable ? 'windows-portable' : 'windows-installer',
+          targetPlatform: 'windows-x86_64',
           name: f,
-          filePath: path.join(nsisDir, f),
-        });
+          filePath: fullPath,
+        };
+        artifacts.push(art);
+
+        // 如果存在安装包的对应 .sig 签名或 .nsis.zip
+        const sigFile = `${fullPath}.sig`;
+        if (fs.existsSync(sigFile)) {
+          art.signature = fs.readFileSync(sigFile, 'utf-8').trim();
+          updaterArtifacts.push(art);
+        }
+      } else if (f.endsWith('.nsis.zip')) {
+        // Tauri v2 NSIS 增量更新包
+        const fullPath = path.join(nsisDir, f);
+        const sigFile = `${fullPath}.sig`;
+        let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
+        if (!sig && privateKey) {
+          sig = ensureSignature(fullPath, privateKey, password);
+        }
+        const art = {
+          platform: 'windows-updater',
+          targetPlatform: 'windows-x86_64',
+          name: f,
+          filePath: fullPath,
+          signature: sig,
+        };
+        artifacts.push(art);
+        updaterArtifacts.push(art);
       }
     }
   }
@@ -152,18 +236,75 @@ function scanArtifacts() {
     }
   }
 
-  // 2. macOS DMG 安装包
+  // 2. macOS DMG 安装包与 .app.tar.gz 自动更新增量包
   const dmgDir = path.join(bundleDir, 'dmg');
   if (fs.existsSync(dmgDir)) {
     const files = fs.readdirSync(dmgDir);
     for (const f of files) {
       // 忽略临时文件如 rw.*.dmg
       if (f.endsWith('.dmg') && !f.startsWith('rw.')) {
+        const isArm = f.includes('aarch64') || f.includes('arm64');
         artifacts.push({
-          platform: f.includes('aarch64') || f.includes('arm64') ? 'macos-arm64' : 'macos-x64',
+          platform: isArm ? 'macos-arm64' : 'macos-x64',
+          targetPlatform: isArm ? 'darwin-aarch64' : 'darwin-x86_64',
           name: f,
           filePath: path.join(dmgDir, f),
         });
+      }
+    }
+  }
+
+  const macosDir = path.join(bundleDir, 'macos');
+  if (fs.existsSync(macosDir)) {
+    // 检查是否有现有 .tar.gz 更新包
+    const macosFiles = fs.readdirSync(macosDir);
+    for (const f of macosFiles) {
+      if (f.endsWith('.tar.gz')) {
+        const fullPath = path.join(macosDir, f);
+        const sigFile = `${fullPath}.sig`;
+        let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
+        if (!sig && privateKey) {
+          sig = ensureSignature(fullPath, privateKey, password);
+        }
+        const isArm = f.includes('aarch64') || f.includes('arm64') || process.arch === 'arm64';
+        const art = {
+          platform: isArm ? 'macos-arm64-updater' : 'macos-x64-updater',
+          targetPlatform: isArm ? 'darwin-aarch64' : 'darwin-x86_64',
+          name: f,
+          filePath: fullPath,
+          signature: sig,
+        };
+        artifacts.push(art);
+        updaterArtifacts.push(art);
+      }
+    }
+
+    // 如果有 智询.app 但没有 .tar.gz，自动打包出 智询.app.tar.gz 供自动更新
+    const hasTarGz = artifacts.some(a => a.name.endsWith('.app.tar.gz'));
+    const appFolder = macosFiles.find(f => f.endsWith('.app'));
+    if (!hasTarGz && appFolder) {
+      const appPath = path.join(macosDir, appFolder);
+      const isArm = process.arch === 'arm64';
+      const tarGzName = `${appFolder}.tar.gz`;
+      const tarGzPath = path.join(macosDir, tarGzName);
+      try {
+        console.log(`📦 正在生成 macOS 应用内增量更新包: ${tarGzName}...`);
+        execSync(`tar -czf "${tarGzName}" "${appFolder}"`, { cwd: macosDir });
+        let sig = null;
+        if (privateKey) {
+          sig = ensureSignature(tarGzPath, privateKey, password);
+        }
+        const art = {
+          platform: isArm ? 'macos-arm64-updater' : 'macos-x64-updater',
+          targetPlatform: isArm ? 'darwin-aarch64' : 'darwin-x86_64',
+          name: tarGzName,
+          filePath: tarGzPath,
+          signature: sig,
+        };
+        artifacts.push(art);
+        updaterArtifacts.push(art);
+      } catch (err) {
+        console.warn('⚠️  自动压缩 .app.tar.gz 失败:', err);
       }
     }
   }
@@ -176,6 +317,7 @@ function scanArtifacts() {
       if (f.endsWith('.AppImage')) {
         artifacts.push({
           platform: 'linux-appimage',
+          targetPlatform: 'linux-x86_64',
           name: f,
           filePath: path.join(appImageDir, f),
         });
@@ -183,7 +325,7 @@ function scanArtifacts() {
     }
   }
 
-  return artifacts;
+  return { artifacts, updaterArtifacts };
 }
 
 // 推断 Content-Type
@@ -194,31 +336,43 @@ function getContentType(filename) {
   if (filename.endsWith('.tar.gz')) return 'application/gzip';
   if (filename.endsWith('.json')) return 'application/json; charset=utf-8';
   if (filename.endsWith('.txt')) return 'text/plain; charset=utf-8';
+  if (filename.endsWith('.sig')) return 'text/plain; charset=utf-8';
   return 'application/octet-stream';
 }
 
 async function main() {
   console.log('====================================================');
-  console.log('🚀 智询 (ChatQuery) 安装包自动发布 -> 阿里云 OSS');
+  console.log('🚀 智询 (ChatQuery) 自动化发布与应用内热更新 -> 阿里云 OSS');
   console.log('====================================================');
 
   const version = resolveVersion();
   const versionTag = `v${version}`;
   const prefix = (getArgValue('--prefix') || getEnv('OSS_PREFIX', 'chatquery/releases')).replace(/\/+$/, '');
 
+  const privateKey = getEnv('TAURI_SIGNING_PRIVATE_KEY');
+  const privateKeyPassword = getEnv('TAURI_SIGNING_PRIVATE_KEY_PASSWORD', '');
+
+  // 若带 --build 参数，先打包并注入私钥
+  performBuildIfRequested(privateKey, privateKeyPassword);
+
   console.log(`📦 当前发布版本: \x1b[32m${versionTag}\x1b[0m`);
   console.log(`📁 存储路径前缀: \x1b[36m${prefix}\x1b[0m`);
+  if (privateKey) {
+    console.log(`🔑 自动更新签名私钥: \x1b[32m已配置 (可生成防篡改签名)\x1b[0m`);
+  } else {
+    console.log(`⚠️  自动更新签名私钥: \x1b[33m未配置 (将无法生成新的 .sig 签名)\x1b[0m`);
+  }
   if (isDryRun) {
     console.log(`⚠️  当前运行模式: \x1b[33mDRY-RUN (仅预览，不实际连接与上传)\x1b[0m\n`);
   }
 
   // 扫描本地构建产物
-  const artifacts = scanArtifacts();
+  const { artifacts, updaterArtifacts } = scanArtifacts(privateKey, privateKeyPassword);
   if (artifacts.length === 0) {
     console.error('⚠️  未扫描到任何待发布的安装包产物！');
     console.error('   请先运行打包命令:');
-    console.error('   macOS:   npx --prefix frontend tauri build');
-    console.error('   Windows: npx --prefix frontend tauri build --bundles nsis');
+    console.error('   macOS:   npm run release:oss');
+    console.error('   Windows: npm run release:oss');
     process.exit(1);
   }
 
@@ -229,6 +383,9 @@ async function main() {
     art.sizeFormatted = info.sizeFormatted;
     art.sha256 = info.sha256;
     console.log(`   - [${art.platform}] ${art.name} (${art.sizeFormatted})`);
+    if (art.signature) {
+      console.log(`     签名 (.sig): ${art.signature.slice(0, 32)}...`);
+    }
     console.log(`     SHA256: ${art.sha256}`);
   }
   console.log('');
@@ -267,13 +424,29 @@ async function main() {
     });
   }
 
-  // 1. 先上传本次本地构建的安装包二进制文件
+  // 1. 先上传本次本地构建的安装包二进制文件及对应签名文件
   const uploadedArtifacts = [];
-  for (let i = 0; i < artifacts.length; i++) {
-    const art = artifacts[i];
+  const filesToUpload = [...artifacts];
+
+  // 检查是否有伴随的 .sig 文件需要上传
+  for (const art of artifacts) {
+    const sigPath = `${art.filePath}.sig`;
+    if (fs.existsSync(sigPath) && !filesToUpload.some(f => f.filePath === sigPath)) {
+      filesToUpload.push({
+        name: `${art.name}.sig`,
+        platform: 'signature',
+        filePath: sigPath,
+        sizeFormatted: '0.1 KB',
+        sha256: crypto.createHash('sha256').update(fs.readFileSync(sigPath)).digest('hex'),
+      });
+    }
+  }
+
+  for (let i = 0; i < filesToUpload.length; i++) {
+    const art = filesToUpload[i];
     const ossKey = `${prefix}/${versionTag}/${art.name}`;
-    const progressText = `[${i + 1}/${artifacts.length}]`;
-    console.log(`\n⬆️  ${progressText} 正在上传安装包: \x1b[36m${art.name}\x1b[0m (${art.sizeFormatted})...`);
+    const progressText = `[${i + 1}/${filesToUpload.length}]`;
+    console.log(`\n⬆️  ${progressText} 正在上传文件: \x1b[36m${art.name}\x1b[0m (${art.sizeFormatted})...`);
     console.log(`   目标路径: ${ossKey}`);
 
     const headers = {
@@ -283,7 +456,8 @@ async function main() {
 
     if (!isDryRun && client) {
       try {
-        if (art.size > 5 * 1024 * 1024) {
+        const stats = fs.statSync(art.filePath);
+        if (stats.size > 5 * 1024 * 1024) {
           await client.multipartUpload(ossKey, art.filePath, {
             parallel: 4,
             partSize: 2 * 1024 * 1024,
@@ -308,8 +482,10 @@ async function main() {
     uploadedArtifacts.push({
       name: art.name,
       platform: art.platform,
+      targetPlatform: art.targetPlatform,
       size: art.sizeFormatted,
       sha256: art.sha256,
+      signature: art.signature,
       url: `${publicDomain}/${ossKey}`,
     });
   }
@@ -322,6 +498,7 @@ async function main() {
 
   const mergedSha256Map = new Map();
   const mergedFilesMap = new Map();
+  const mergedUpdaterPlatforms = {};
 
   // 尝试拉取远程已有 latest.json
   let remoteLatest = null;
@@ -353,13 +530,22 @@ async function main() {
   }
 
   // 合并规则：
-  // 如果远端的 latest.json 与当前构建版本相同（例如均为 0.1.0），则保留远端已有其他平台产物
-  if (remoteLatest && remoteLatest.version === version && Array.isArray(remoteLatest.files)) {
-    for (const f of remoteLatest.files) {
-      if (f.name && f.name !== 'latest.json' && f.name !== 'SHA256SUMS.txt') {
-        mergedFilesMap.set(f.name, f);
-        if (f.sha256) {
-          mergedSha256Map.set(f.name, f.sha256);
+  // 如果远端的 latest.json 与当前构建版本相同，保留远端已有产物与 updater platforms
+  if (remoteLatest && remoteLatest.version === version) {
+    if (Array.isArray(remoteLatest.files)) {
+      for (const f of remoteLatest.files) {
+        if (f.name && f.name !== 'latest.json' && f.name !== 'SHA256SUMS.txt') {
+          mergedFilesMap.set(f.name, f);
+          if (f.sha256) {
+            mergedSha256Map.set(f.name, f.sha256);
+          }
+        }
+      }
+    }
+    if (remoteLatest.platforms && typeof remoteLatest.platforms === 'object') {
+      for (const [pKey, pVal] of Object.entries(remoteLatest.platforms)) {
+        if (pVal && pVal.signature && pVal.url) {
+          mergedUpdaterPlatforms[pKey] = pVal;
         }
       }
     }
@@ -368,7 +554,16 @@ async function main() {
   // 注入本次构建并上传的本地产物（同名产物更新覆盖，新平台产物追加合并）
   for (const item of uploadedArtifacts) {
     mergedFilesMap.set(item.name, item);
-    mergedSha256Map.set(item.name, item.sha256);
+    if (item.sha256) {
+      mergedSha256Map.set(item.name, item.sha256);
+    }
+    // 如果是自动更新包并带有签名，注入到 Tauri Updater 的 platforms 结构中
+    if (item.targetPlatform && item.signature) {
+      mergedUpdaterPlatforms[item.targetPlatform] = {
+        signature: item.signature,
+        url: item.url,
+      };
+    }
   }
 
   const allMergedFiles = Array.from(mergedFilesMap.values());
@@ -395,19 +590,13 @@ async function main() {
     });
   }
 
-  // 4. 生成并上传合并后的 latest.json
-  const platformsDict = {};
-  for (const f of allMergedFiles) {
-    if (f.platform) {
-      platformsDict[f.platform] = f;
-    }
-  }
-
+  // 4. 生成并上传合并后的符合 Tauri v2 自动更新规范的 latest.json
   const mergedLatestManifest = {
     version,
     tag: versionTag,
-    release_date: new Date().toISOString(),
-    platforms: platformsDict,
+    notes: `智询 (ChatQuery) ${versionTag} 官方发布版本。\n支持多平台自动更新与安装包一键安装。`,
+    pub_date: new Date().toISOString(),
+    platforms: mergedUpdaterPlatforms,
     files: [
       ...allMergedFiles,
       {
@@ -423,7 +612,7 @@ async function main() {
   const latestJsonPath = path.join(ROOT_DIR, 'src-tauri', 'target', 'release', 'latest.json');
   fs.writeFileSync(latestJsonPath, JSON.stringify(mergedLatestManifest, null, 2), 'utf-8');
 
-  console.log(`⬆️  正在发布合并后的版本元信息: ${latestKey}...`);
+  console.log(`⬆️  正在发布合并后的版本元信息 (Tauri v2 Updater 兼容): ${latestKey}...`);
   if (!isDryRun && client) {
     await client.put(latestKey, Buffer.from(JSON.stringify(mergedLatestManifest, null, 2), 'utf-8'), {
       headers: {
@@ -434,12 +623,20 @@ async function main() {
   }
 
   console.log('\n====================================================');
-  console.log('🎉 智询 (ChatQuery) 多平台安装包自动合并与发布成功！');
+  console.log('🎉 智询 (ChatQuery) 安装包与应用内自动更新发布成功！');
   console.log('====================================================');
   console.log(`版本号: ${versionTag}`);
-  console.log(`版本元信息地址: ${publicDomain}/${latestKey}\n`);
-  console.log('全平台合并后可用下载直链:');
+  console.log(`Tauri 自动更新端点: ${publicDomain}/${latestKey}\n`);
+  console.log('Tauri In-App Updater 签名平台列表:');
+  for (const [targetKey, targetObj] of Object.entries(mergedUpdaterPlatforms)) {
+    console.log(`  - \x1b[32m${targetKey}\x1b[0m:`);
+    console.log(`    下载包: ${targetObj.url}`);
+    console.log(`    签名:   ${targetObj.signature.slice(0, 32)}...`);
+  }
+
+  console.log('\n全平台下载直链清单:');
   for (const res of allMergedFiles) {
+    if (res.name.endsWith('.sig')) continue;
     console.log(`  - \x1b[1m[${res.platform}] ${res.name}\x1b[0m:`);
     console.log(`    下载链接: \x1b[34m${res.url}\x1b[0m`);
     console.log(`    文件大小: ${res.size}`);

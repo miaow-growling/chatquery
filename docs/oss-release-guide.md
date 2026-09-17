@@ -56,22 +56,26 @@ OSS_REGION=oss-cn-hangzhou
 OSS_PREFIX=chatquery/releases
 # 可选：如果你给 Bucket 绑定了自定义 CDN 域名（如 https://download.example.com），在此填入
 OSS_PUBLIC_DOMAIN=
+
+# 自动更新签名私钥（用于生成防篡改签名文件 .sig，由 tauri signer 生成）
+TAURI_SIGNING_PRIVATE_KEY="dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5C..."
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 ```
 
 ### 2. 常用操作命令
-在项目根目录下或 `frontend` 目录下均可操作：
+在项目根目录下操作：
 
-- **打包并一键自动上传至 OSS**：
+- **打包并一键自动上传至 OSS（含签名与应用内热更支持）**：
   ```bash
-  npm --prefix frontend run release:oss
+  npm run release:oss
   ```
 - **仅上传已有构建产物（不重新编译）**：
   ```bash
-  npm --prefix frontend run upload:oss
+  npm run upload:oss
   ```
 - **测试预览（Dry-Run 模式，不实际连接与上传）**：
   ```bash
-  npm --prefix frontend run upload:oss -- --dry-run
+  npm run upload:oss -- --dry-run
   ```
 
 ---
@@ -89,17 +93,29 @@ OSS_PUBLIC_DOMAIN=
 - `OSS_REGION`：（可选，默认 `oss-cn-hangzhou`）
 - `OSS_PREFIX`：（可选，默认 `chatquery/releases`）
 - `OSS_PUBLIC_DOMAIN`：（可选，自定义 CDN 域名）
+- `TAURI_SIGNING_PRIVATE_KEY`：Tauri 签名私钥（用于 Windows 增量更新包签名）
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：私钥密码（无密码则为空）
 
 *注：若未配置上述 Secrets，CI 会自动发出 Warning 并跳过上传，不会导致流水线报错。*
 
 ### 2. Azure Pipelines 自动上传
-在 Azure DevOps 中配置 Pipeline 变量或 Variable Group：
-- 将 `OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET` 设为 Secret 变量；
-- 将 `OSS_BUCKET`、`OSS_REGION` 设为 Pipeline 变量。
+在 Azure DevOps 的 `Library -> aliyun-oss-chatquery` 变量组中增加：
+- `TAURI_SIGNING_PRIVATE_KEY`：将本地生成的私钥内容粘贴进去并点击右侧锁头隐藏。
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：（可选，留空即可）。
 
 ---
 
-## 四、对象存储目录规范与下载地址
+## 四、Tauri 应用内无感自动更新 (In-App Auto-Updater) 机制
+
+本项目已完整集成 Tauri v2 官方 Updater：
+1. **客户端自动检测**：应用启动时异步请求 OSS 上的 `latest.json`。
+2. **应用内一键下载**：点击更新后，直接在应用内弹窗显示平滑进度条，从 OSS 下载签名增量包。
+3. **数字签名校验**：自动校验 Ed25519 签名，防篡改劫持。
+4. **一键重启生效**：下载完毕点击「立即重启软件」即可完成替换，全流程无需打开浏览器或运行安装向导。
+
+---
+
+## 五、对象存储目录规范与下载地址
 
 上传成功后，OSS 中的目录结构如下：
 ```text
@@ -107,9 +123,11 @@ chatquery/releases/
 ├── v0.1.0/
 │   ├── 智询_0.1.0_x64-setup.exe       # Windows 安装包 (NSIS)
 │   ├── 智询_免安装绿色版.exe           # Windows 免安装便携版
-│   ├── ChatQuery_0.1.0_aarch64.dmg     # macOS Apple Silicon 安装包 (若本地打包)
-│   └── SHA256SUMS.txt                  # 本版本所有产物的哈希校验清单
-└── latest.json                         # 指向最新版本的元信息与各平台直链
+│   ├── 智询_0.1.0_aarch64.dmg         # macOS 安装包
+│   ├── 智询.app.tar.gz                # macOS 应用内热更新增量包
+│   ├── 智询.app.tar.gz.sig            # 增量包数字签名
+│   └── SHA256SUMS.txt                 # 本版本所有产物的哈希校验清单
+└── latest.json                        # 符合 Tauri v2 规范的最新版本清单与签名
 ```
 
 ### 1. 固定最新版本清单地址
