@@ -10652,287 +10652,288 @@ select.field-input:disabled {
   animation: pulse-dot 1.4s ease-in-out infinite;
 }
 
-/* 软件版本更新弹窗 (居中模态) */
-.update-modal {
-  width: 520px;
-  max-width: 90vw;
+/* =========================================================================
+   ★ DELUXE SOFTWARE UPDATE SYSTEM (Header, Version Capsule, Changelog & In-App Update)
+   ========================================================================= */
+
+.update-modal-deluxe {
+  width: 580px;
+  max-width: 92vw;
+  max-height: 88vh;
   box-sizing: border-box;
   background: var(--modal-bg, #141826);
-  border: 1px solid var(--modal-border, rgba(255, 255, 255, 0.1));
-  border-radius: 12px;
-  box-shadow: var(--modal-shadow);
+  border: 1px solid var(--modal-border, rgba(255, 255, 255, 0.12));
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(99, 102, 241, 0.2);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  overflow: hidden;
+  animation: modal-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.update-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: 8px;
+/* 顶部标题区 */
+.update-deluxe-header {
+  padding: 16px 20px 14px;
+  background: linear-gradient(180deg, rgba(99, 102, 241, 0.08) 0%, transparent 100%);
   border-bottom: 1px solid var(--border-soft, rgba(255, 255, 255, 0.08));
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-shrink: 0;
 }
 
-.update-modal-title {
+.update-deluxe-title-group {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.update-modal-content {
-  display: flex;
-  flex-direction: column;
   gap: 12px;
 }
 
-/* 版本对比 */
-.update-compare-box {
+.update-hero-icon-box {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.25) 0%, rgba(168, 85, 247, 0.2) 100%);
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.25);
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 24px;
-  padding: 14px 16px;
+  flex-shrink: 0;
+}
+
+.update-hero-rocket {
+  font-size: 20px;
+  line-height: 1;
+  animation: rocketBounce 2s infinite ease-in-out;
+}
+
+.update-hero-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.update-hero-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.update-hero-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.update-hero-badge {
+  font-size: 9px;
+  font-weight: 800;
+  color: #ffffff;
+  background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+  padding: 1px 6px;
+  border-radius: 9999px;
+  letter-spacing: 0.05em;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.4);
+}
+
+.update-hero-sub {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+}
+
+.deluxe-close-btn {
+  font-size: 18px;
+  color: var(--text-tertiary);
+  transition: all var(--t-fast);
+}
+
+.deluxe-close-btn:hover {
+  color: var(--text-primary);
+  transform: rotate(90deg);
+}
+
+/* 主内容滚动区 */
+.update-deluxe-body {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  max-height: calc(88vh - 130px);
+}
+
+/* 1. 版本对比胶囊条 */
+.update-version-capsule-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
   background: var(--bg-surface, rgba(255, 255, 255, 0.03));
   border: 1px solid var(--border);
   border-radius: 8px;
 }
 
-.compare-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-
-.compare-label {
-  font-size: 11px;
-  color: var(--text-tertiary);
-}
-
-.compare-val {
-  font-size: 16px;
-  font-weight: 700;
-  font-family: var(--font-mono);
-}
-
-.compare-val.current {
-  color: var(--text-secondary);
-}
-
-.compare-val.latest {
-  color: var(--brand, #6366f1);
-}
-
-.compare-arrow {
-  font-size: 18px;
-  color: var(--text-tertiary);
-}
-
-.update-date-text {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  text-align: center;
-}
-
-/* 推荐安装包卡片 */
-.rec-card {
-  padding: 12px 14px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(59, 130, 246, 0.08) 100%);
-  border: 1px solid rgba(99, 102, 241, 0.4);
-  border-radius: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.rec-card-badge {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--brand, #818cf8);
-}
-
-.rec-card-row {
+.capsule-version-group {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.rec-file-info {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  overflow: hidden;
-  flex: 1;
-}
-
-.rec-file-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.rec-file-size {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  white-space: nowrap;
-}
-
-.rec-download-btn {
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-/* 全平台列表 */
-.downloads-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.section-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.files-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 180px;
-  overflow-y: auto;
-}
-
-.file-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 10px;
-  background: var(--bg-surface, rgba(255, 255, 255, 0.02));
-  border: 1px solid var(--border);
-  border-radius: 6px;
   gap: 10px;
 }
 
-.file-col-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  overflow: hidden;
-  flex: 1;
-}
-
-.file-emoji {
-  font-size: 14px;
-  flex-shrink: 0;
-}
-
-.file-text-col {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.file-title {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.file-sub {
-  font-size: 10px;
-  color: var(--text-tertiary);
-}
-
-.file-col-right {
+.capsule-tag {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-shrink: 0;
+  font-family: var(--font-mono);
 }
 
-.file-action-btn {
-  padding: 3px 8px;
+.capsule-tag .tag-label {
   font-size: 11px;
-  border-radius: 4px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.15s ease;
+  color: var(--text-tertiary);
 }
 
-.file-action-btn.copy-btn {
-  background: var(--bg-subtle, rgba(255, 255, 255, 0.05));
-  border: 1px solid var(--border);
+.capsule-tag .tag-val {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.current-tag .tag-val {
   color: var(--text-secondary);
 }
 
-.file-action-btn.copy-btn:hover {
-  color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.1);
+.latest-tag .tag-val {
+  color: var(--brand, #6366f1);
+  font-weight: 700;
 }
 
-.file-action-btn.dl-btn {
-  background: var(--brand, #6366f1);
-  border: none;
-  color: #ffffff;
-  font-weight: 500;
-}
-
-.file-action-btn.dl-btn:hover {
-  background: var(--brand-hover, #4f46e5);
-}
-
-.empty-files-text {
-  font-size: 12px;
+.capsule-arrow {
   color: var(--text-tertiary);
-  text-align: center;
-  padding: 12px 0;
+  font-size: 13px;
 }
 
-/* =========================================================================
-   ★ IN-APP AUTO-UPDATER CARD & PROGRESS BAR
-   ========================================================================= */
-
-.in-app-update-card {
-  padding: 14px 16px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(139, 92, 246, 0.08) 100%);
-  border: 1px solid rgba(99, 102, 241, 0.35);
-  border-radius: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+.capsule-date-badge {
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 
-/* 初始状态 */
-.update-idle-view {
+/* 2. 更新日志模块 (Changelog) */
+.update-changelog-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-surface, rgba(255, 255, 255, 0.02));
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.changelog-header {
+  padding: 8px 12px;
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.04));
+  border-bottom: 1px solid var(--border-soft, var(--border));
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
 }
 
-.update-idle-info {
+.changelog-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.changelog-count-pill {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--brand, #818cf8);
+  background: rgba(99, 102, 241, 0.12);
+  padding: 1px 7px;
+  border-radius: 9999px;
+  border: 1px solid rgba(99, 102, 241, 0.25);
+}
+
+.changelog-list-scroll {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.changelog-item-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.changelog-tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  line-height: 1.3;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.changelog-tag.tag-feature {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
+.changelog-tag.tag-security {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.35);
+}
+
+.changelog-tag.tag-perf {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.changelog-tag.tag-fix {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.changelog-item-text {
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+/* 3. 应用内热更新操作卡片 */
+.deluxe-action-card {
+  padding: 14px 16px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(139, 92, 246, 0.10) 100%);
+  border: 1px solid rgba(129, 140, 248, 0.38);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.12);
+}
+
+.deluxe-idle-view {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.deluxe-idle-info {
   display: flex;
   flex-direction: column;
   gap: 4px;
   flex: 1;
 }
 
-.update-feature-tag {
+.deluxe-mode-pill {
   font-size: 11px;
   font-weight: 700;
   color: var(--brand, #818cf8);
@@ -10941,71 +10942,85 @@ select.field-input:disabled {
   gap: 4px;
 }
 
-.update-desc {
+.deluxe-mode-desc {
   font-size: 12px;
   color: var(--text-secondary);
   line-height: 1.5;
 }
 
-.in-app-action-btn {
+.deluxe-start-btn {
   padding: 8px 18px;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
   white-space: nowrap;
   flex-shrink: 0;
-  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35);
+  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.4);
   transition: all 0.2s ease;
 }
 
-.in-app-action-btn:hover {
+.deluxe-start-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.5);
 }
 
-/* 下载进度条状态 */
-.update-downloading-view {
+/* 下载进度条视图 */
+.deluxe-progress-view {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.progress-status-row {
+.deluxe-progress-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 
-.progress-title {
+.progress-label-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.progress-spinner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--brand, #6366f1);
+  animation: pulse-dot 1.2s infinite ease-in-out;
+}
+
+.progress-main-title {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
-.progress-pct {
-  font-size: 13px;
-  font-weight: 700;
+.progress-percentage-num {
+  font-size: 14px;
+  font-weight: 800;
   font-family: var(--font-mono);
   color: var(--brand, #6366f1);
 }
 
-.update-progress-track {
+.deluxe-progress-track {
   width: 100%;
   height: 8px;
-  background: var(--bg-inset, rgba(0, 0, 0, 0.25));
+  background: var(--bg-inset, rgba(0, 0, 0, 0.35));
   border-radius: 9999px;
   overflow: hidden;
   position: relative;
 }
 
-.update-progress-bar {
+.deluxe-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 50%, #3b82f6 100%);
+  background: linear-gradient(90deg, #6366f1 0%, #a855f7 50%, #38bdf8 100%);
   border-radius: 9999px;
   transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 0 10px rgba(99, 102, 241, 0.6);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.7);
 }
 
-.progress-meta-row {
+.deluxe-progress-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -11013,89 +11028,92 @@ select.field-input:disabled {
   color: var(--text-tertiary);
 }
 
-.progress-hint {
+.progress-hint-text {
   font-style: italic;
 }
 
-/* 下载就绪 / 等待重启状态 */
-.update-ready-view {
+/* 下载完成 / 准备重启视图 */
+.deluxe-ready-view {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
-  padding: 6px 0;
+  gap: 10px;
+  padding: 4px 0;
   text-align: center;
 }
 
-.ready-icon-wrap {
-  width: 38px;
-  height: 38px;
+.ready-avatar-glow {
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  background: rgba(34, 197, 94, 0.15);
+  background: rgba(34, 197, 94, 0.18);
   border: 1.5px solid #22c55e;
   color: #22c55e;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
-  font-weight: 700;
-  box-shadow: 0 0 16px rgba(34, 197, 94, 0.3);
+  font-size: 18px;
+  font-weight: 800;
+  box-shadow: 0 0 16px rgba(34, 197, 94, 0.35);
 }
 
-.ready-text-wrap {
+.ready-text-col {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
-.ready-title {
+.ready-head-text {
   font-size: 14px;
   font-weight: 700;
   color: var(--text-primary);
 }
 
-.ready-sub {
+.ready-sub-text {
   font-size: 12px;
   color: var(--text-secondary);
 }
 
-.in-app-restart-btn {
-  padding: 8px 24px;
+.deluxe-relaunch-btn {
+  padding: 8px 22px;
   font-size: 13px;
   font-weight: 600;
-  background: #22c55e;
-  border-color: #22c55e;
+  background: #16a34a;
+  border: none;
+  border-radius: var(--r-md, 6px);
   color: #ffffff;
-  box-shadow: 0 2px 12px rgba(34, 197, 94, 0.4);
+  box-shadow: 0 2px 12px rgba(22, 163, 74, 0.45);
+  cursor: pointer;
   animation: pulse-dot 1.5s infinite ease-in-out;
+  transition: all 0.2s;
 }
 
-.in-app-restart-btn:hover {
-  background: #16a34a;
+.deluxe-relaunch-btn:hover {
+  background: #15803d;
   transform: translateY(-1px);
 }
 
-/* 错误状态 */
-.update-error-view {
+/* 错误提示 */
+.deluxe-error-view {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.update-error-view .error-text {
+.error-tip-text {
   font-size: 12px;
   color: var(--danger-500, #ef4444);
 }
 
-/* 手动下载折叠区 */
-.manual-download-fold {
+/* 4. 手动下载备用折叠区 */
+.deluxe-manual-accordion {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
-.manual-fold-header {
+.manual-accordion-header {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -11107,16 +11125,26 @@ select.field-input:disabled {
   transition: color var(--t-fast);
 }
 
-.manual-fold-header:hover {
+.manual-accordion-header:hover {
   color: var(--text-primary);
 }
 
-.fold-arrow {
+.accordion-arrow {
   font-size: 9px;
-  transition: transform 0.15s ease;
+  transition: transform 0.2s ease;
+  display: inline-block;
 }
 
-.manual-files-container {
+.accordion-arrow.expanded {
+  transform: rotate(90deg);
+}
+
+.accordion-files-count {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.manual-accordion-content {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -11124,9 +11152,111 @@ select.field-input:disabled {
   border-top: 1px dashed var(--border-soft);
 }
 
-.update-modal-actions {
-  margin-top: 4px;
-  padding-top: 10px;
+.rec-download-banner {
+  padding: 8px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rec-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--brand);
+}
+
+.rec-body-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rec-fname {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.manual-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.manual-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--bg-surface, rgba(255, 255, 255, 0.02));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  gap: 10px;
+}
+
+.manual-file-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.file-type-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.manual-file-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.file-name-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-size-text {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.manual-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* 底部操作条 */
+.update-deluxe-footer {
+  padding: 12px 20px;
   border-top: 1px solid var(--border-soft, rgba(255, 255, 255, 0.08));
+  background: var(--bg-surface, rgba(255, 255, 255, 0.02));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.deluxe-footer-tip {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.deluxe-footer-btns {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 

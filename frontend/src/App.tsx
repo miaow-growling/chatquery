@@ -2188,6 +2188,11 @@ export function App() {
   const [latestRelease, setLatestRelease] = useState<LatestReleaseInfo | null>(() => ({
     version: "0.2.0",
     tag: "v0.2.0",
+    notes: `• 🚀 新增支持应用内极速无感热更新，下载完毕一键重启即可完成版本升级
+• 🛡️ 集成 Ed25519 官方数字签名与防篡改校验，守护安装包完整性
+• 📊 增强 Tab 栏数据库树形分组与超长页签平滑横向滚动能力
+• ⚡ 优化大结果集表格渲染性能，降低内存峰值占用并支持一键释放缓存
+• 🛠️ 修复连接导入导出与 Windows 单实例多开场景下的兼容性问题`,
     release_date: new Date().toISOString(),
     platforms: {
       "macos-arm64": {
@@ -2258,6 +2263,11 @@ export function App() {
       setLatestRelease({
         version: "0.2.0",
         tag: "v0.2.0",
+        notes: `• 🚀 新增支持应用内极速无感热更新，下载完毕一键重启即可完成版本升级
+• 🛡️ 集成 Ed25519 官方数字签名与防篡改校验，守护安装包完整性
+• 📊 增强 Tab 栏数据库树形分组与超长页签平滑横向滚动能力
+• ⚡ 优化大结果集表格渲染性能，降低内存峰值占用并支持一键释放缓存
+• 🛠️ 修复连接导入导出与 Windows 单实例多开场景下的兼容性问题`,
         release_date: new Date().toISOString(),
         platforms: {
           "macos-arm64": {

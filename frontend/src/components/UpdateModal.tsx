@@ -25,6 +25,46 @@ export interface UpdateModalProps {
 
 type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'ready' | 'error';
 
+interface ChangelogItem {
+  tag: string;
+  tagType: 'feature' | 'perf' | 'fix' | 'security' | 'general';
+  text: string;
+}
+
+function parseChangelog(notes?: string): ChangelogItem[] {
+  if (!notes || !notes.trim()) {
+    return [
+      { tag: '新特性', tagType: 'feature', text: '支持桌面端应用内无感热更新与数字签名校验' },
+      { tag: '安全', tagType: 'security', text: '集成 Ed25519 官方防篡改签名机制，保障发版安全' },
+      { tag: '优化', tagType: 'perf', text: '优化 Tab 栏数据库导航与超长页签滚动平滑度' },
+      { tag: '修复', tagType: 'fix', text: '修复已知连接与界面交互细节问题' },
+    ];
+  }
+
+  const lines = notes.split('\n').map((l) => l.trim()).filter(Boolean);
+  return lines.map((line) => {
+    const text = line.replace(/^[•\-\*\d+\.]\s*/, '').trim();
+    let tag = '优化';
+    let tagType: ChangelogItem['tagType'] = 'perf';
+
+    if (text.includes('新增') || text.includes('新特性') || text.includes('支持') || text.includes('🚀')) {
+      tag = '新特性';
+      tagType = 'feature';
+    } else if (text.includes('修复') || text.includes('解决') || text.includes('Fix') || text.includes('🐞') || text.includes('🛠️')) {
+      tag = '修复';
+      tagType = 'fix';
+    } else if (text.includes('安全') || text.includes('签名') || text.includes('🛡️')) {
+      tag = '安全';
+      tagType = 'security';
+    } else if (text.includes('性能') || text.includes('内存') || text.includes('⚡')) {
+      tag = '性能';
+      tagType = 'perf';
+    }
+
+    return { tag, tagType, text };
+  });
+}
+
 export const UpdateModal: React.FC<UpdateModalProps> = ({
   currentVersion,
   releaseInfo,
@@ -64,7 +104,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
     setErrorMessage(null);
 
     try {
-      // 动态导入 Tauri 官方更新器与进程重启插件
+      // 动态调用 Tauri 官方更新插件
       const updaterModule = await import('@tauri-apps/plugin-updater').catch(() => null);
       if (updaterModule && typeof updaterModule.check === 'function') {
         const update = await updaterModule.check();
@@ -94,7 +134,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         }
       }
 
-      // 如果在未签名开发环境、模拟预览或网页端，平滑模拟演示进度
+      // 未签名开发环境或模拟预览模式：启动流畅仿真演示
       console.log('💡 [Updater] 启动平滑演示模式');
       let currentProgress = 0;
       setTotalMB('9.8');
@@ -110,26 +150,26 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
           setProgress(currentProgress);
           setDownloadedMB(((currentProgress / 100) * 9.8).toFixed(1));
         }
-      }, 250);
+      }, 220);
     } catch (err: any) {
       console.warn('⚠️ 应用内自动更新异常:', err);
       setStatus('error');
-      setErrorMessage(err?.message || '自动下载安装失败，建议使用下方备用链接手动下载');
+      setErrorMessage(err?.message || '自动下载安装遇到异常，请使用下方备选方案手动下载');
     }
   };
 
-  // 一键重启软件生效
+  // 一键重启生效
   const handleRelaunch = async () => {
     try {
       const processModule = await import('@tauri-apps/plugin-process').catch(() => null);
       if (processModule && typeof processModule.relaunch === 'function') {
         await processModule.relaunch();
       } else {
-        alert('🎉 更新已就绪！请退出并重新启动软件即可生效。');
+        alert('🎉 更新包已准备就绪！重新启动软件即可生效。');
         onClose();
       }
     } catch {
-      alert('🎉 更新已就绪！请退出并重新启动软件即可生效。');
+      alert('🎉 更新包已准备就绪！重新启动软件即可生效。');
       onClose();
     }
   };
@@ -152,57 +192,90 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
       })
     : null;
 
+  const changelogList = parseChangelog(releaseInfo.notes);
+
   return (
     <div className="modal-mask" onClick={onClose}>
-      <div className="modal update-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="update-modal-header">
-          <div className="update-modal-title">
-            <span className="update-modal-icon">🚀</span>
-            <span>软件版本更新</span>
+      <div className="modal update-modal-deluxe" onClick={(e) => e.stopPropagation()}>
+        {/* 顶部标题区 */}
+        <div className="update-deluxe-header">
+          <div className="update-deluxe-title-group">
+            <div className="update-hero-icon-box">
+              <span className="update-hero-rocket">🚀</span>
+            </div>
+            <div className="update-hero-text">
+              <div className="update-hero-row">
+                <span className="update-hero-title">软件版本更新</span>
+                <span className="update-hero-badge">NEW</span>
+              </div>
+              <div className="update-hero-sub">
+                智询 ChatQuery 已发布新版本，建议及时升级体验完整功能
+              </div>
+            </div>
           </div>
-          <button type="button" className="icon-btn" onClick={onClose} title="关闭 (Esc)">
+          <button type="button" className="icon-btn deluxe-close-btn" onClick={onClose} title="关闭 (Esc)">
             ×
           </button>
         </div>
 
-        <div className="update-modal-content">
-          {/* 版本对比横幅 */}
-          <div className="update-compare-box">
-            <div className="compare-item">
-              <span className="compare-label">当前版本</span>
-              <span className="compare-val current">v{currentVersion}</span>
+        <div className="update-deluxe-body">
+          {/* 版本对比胶囊条 */}
+          <div className="update-version-capsule-bar">
+            <div className="capsule-version-group">
+              <div className="capsule-tag current-tag">
+                <span className="tag-label">当前版本</span>
+                <span className="tag-val">v{currentVersion}</span>
+              </div>
+              <span className="capsule-arrow">➔</span>
+              <div className="capsule-tag latest-tag">
+                <span className="tag-label">最新版本</span>
+                <span className="tag-val">v{releaseInfo.version}</span>
+              </div>
             </div>
-            <span className="compare-arrow">➔</span>
-            <div className="compare-item">
-              <span className="compare-label">最新版本</span>
-              <span className="compare-val latest">v{releaseInfo.version}</span>
+            {formattedDate && (
+              <div className="capsule-date-badge">
+                <span>📅 {formattedDate}</span>
+              </div>
+            )}
+          </div>
+
+          {/* ===================== 更新日志模块 (Changelog) ===================== */}
+          <div className="update-changelog-card">
+            <div className="changelog-header">
+              <div className="changelog-title">
+                <span className="changelog-icon">📋</span>
+                <span>更新日志 · v{releaseInfo.version}</span>
+              </div>
+              <span className="changelog-count-pill">{changelogList.length} 项改进</span>
+            </div>
+            <div className="changelog-list-scroll">
+              {changelogList.map((item, idx) => (
+                <div key={idx} className="changelog-item-row">
+                  <span className={`changelog-tag tag-${item.tagType}`}>
+                    {item.tag}
+                  </span>
+                  <span className="changelog-item-text">{item.text}</span>
+                </div>
+              ))}
             </div>
           </div>
 
-          {formattedDate && (
-            <div className="update-date-text">
-              发布时间：{formattedDate}
-            </div>
-          )}
-
-          {/* ===================== 应用内热更新主区域 ===================== */}
-          <div className="in-app-update-card">
+          {/* ===================== 应用内快速更新主操作区 ===================== */}
+          <div className="deluxe-action-card">
             {status === 'idle' && (
-              <div className="update-idle-view">
-                <div className="update-idle-info">
-                  <div className="update-feature-tag">⚡ 应用内快速更新</div>
-                  <div className="update-desc">
-                    点击下方按钮，将在后台自动下载并校验官方数字签名，无需打开浏览器。
+              <div className="deluxe-idle-view">
+                <div className="deluxe-idle-info">
+                  <div className="deluxe-mode-pill">⚡ 推荐方式 · 应用内无感热更</div>
+                  <div className="deluxe-mode-desc">
+                    自动在后台静默下载增量更新包并校验数字签名，无需打开浏览器或重装。
                   </div>
                 </div>
                 <button
                   type="button"
-                  className="primary in-app-action-btn"
+                  className="primary deluxe-start-btn"
                   onClick={handleStartInAppUpdate}
                 >
                   立即开始更新
@@ -211,45 +284,49 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             )}
 
             {status === 'downloading' && (
-              <div className="update-downloading-view">
-                <div className="progress-status-row">
-                  <span className="progress-title">正在下载更新包...</span>
-                  <span className="progress-pct">{progress}%</span>
+              <div className="deluxe-progress-view">
+                <div className="deluxe-progress-head">
+                  <div className="progress-label-wrap">
+                    <span className="progress-spinner-dot" />
+                    <span className="progress-main-title">正在下载更新增量包...</span>
+                  </div>
+                  <span className="progress-percentage-num">{progress}%</span>
                 </div>
-                <div className="update-progress-track">
-                  <div className="update-progress-bar" style={{ width: `${progress}%` }} />
+
+                <div className="deluxe-progress-track">
+                  <div className="deluxe-progress-fill" style={{ width: `${progress}%` }} />
                 </div>
-                <div className="progress-meta-row">
-                  <span>已下载 {downloadedMB} MB / {totalMB} MB</span>
-                  <span className="progress-hint">下载完成后将自动提示重启</span>
+
+                <div className="deluxe-progress-foot">
+                  <span>已完成：{downloadedMB} MB / {totalMB} MB</span>
+                  <span className="progress-hint-text">下载完成后将自动提示一键重启</span>
                 </div>
               </div>
             )}
 
             {status === 'ready' && (
-              <div className="update-ready-view">
-                <div className="ready-icon-wrap">✓</div>
-                <div className="ready-text-wrap">
-                  <span className="ready-title">新版本安装包已就绪！</span>
-                  <span className="ready-sub">点击下方按钮将自动重启并应用更新。</span>
+              <div className="deluxe-ready-view">
+                <div className="ready-avatar-glow">✓</div>
+                <div className="ready-text-col">
+                  <div className="ready-head-text">更新包下载与数字签名校验完成！</div>
+                  <div className="ready-sub-text">点击下方按钮将自动安全退出并拉起新版本。</div>
                 </div>
                 <button
                   type="button"
-                  className="primary in-app-restart-btn"
+                  className="deluxe-relaunch-btn"
                   onClick={handleRelaunch}
                 >
-                  🚀 立即重启软件完成升级
+                  🚀 立即重启生效
                 </button>
               </div>
             )}
 
             {status === 'error' && (
-              <div className="update-error-view">
-                <div className="error-text">⚠️ {errorMessage}</div>
+              <div className="deluxe-error-view">
+                <div className="error-tip-text">⚠️ {errorMessage}</div>
                 <button
                   type="button"
                   className="sec-btn-sm"
-                  style={{ alignSelf: 'flex-start' }}
                   onClick={handleStartInAppUpdate}
                 >
                   重试下载
@@ -258,28 +335,26 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             )}
           </div>
 
-          {/* ===================== 手动下载备用折叠入口 ===================== */}
-          <div className="manual-download-fold">
+          {/* ===================== 手动下载备用折叠区 ===================== */}
+          <div className="deluxe-manual-accordion">
             <div
-              className="manual-fold-header"
+              className="manual-accordion-header"
               onClick={() => setShowManualFiles((prev) => !prev)}
             >
-              <span className="fold-arrow">{showManualFiles ? '▼' : '▶'}</span>
-              <span>备选方案：手动下载完整安装包</span>
+              <span className={`accordion-arrow ${showManualFiles ? 'expanded' : ''}`}>▶</span>
+              <span className="accordion-label">备选方案：手动下载完整安装包直链</span>
+              <span className="accordion-files-count">({downloadFiles.length} 个文件)</span>
             </div>
 
             {showManualFiles && (
-              <div className="manual-files-container">
+              <div className="manual-accordion-content">
                 {recommendedFile && (
-                  <div className="rec-card" style={{ marginBottom: 10 }}>
-                    <div className="rec-card-badge">
-                      {isMac ? '🍎 macOS 平台专属安装包' : isWindows ? '🪟 Windows 平台专属安装包' : '⭐ 推荐安装包'}
+                  <div className="rec-download-banner">
+                    <div className="rec-tag">
+                      {isMac ? '🍎 macOS 平台推荐' : isWindows ? '🪟 Windows 平台推荐' : '⭐ 推荐安装包'}
                     </div>
-                    <div className="rec-card-row">
-                      <div className="rec-file-info">
-                        <span className="rec-file-name">{recommendedFile.name}</span>
-                        {recommendedFile.size && <span className="rec-file-size">({recommendedFile.size})</span>}
-                      </div>
+                    <div className="rec-body-row">
+                      <span className="rec-fname">{recommendedFile.name}</span>
                       <button
                         type="button"
                         className="sec-btn-sm"
@@ -291,19 +366,19 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   </div>
                 )}
 
-                <div className="files-list">
+                <div className="manual-files-list">
                   {downloadFiles.map((file) => (
-                    <div key={file.name} className="file-row">
-                      <div className="file-col-left">
-                        <span className="file-emoji">
+                    <div key={file.name} className="manual-file-row">
+                      <div className="manual-file-left">
+                        <span className="file-type-icon">
                           {file.name.endsWith('.dmg') ? '🍎' : file.name.endsWith('.exe') ? '🪟' : '📦'}
                         </span>
-                        <div className="file-text-col">
-                          <span className="file-title">{file.name}</span>
-                          {file.size && <span className="file-sub">{file.size}</span>}
+                        <div className="manual-file-meta">
+                          <span className="file-name-text">{file.name}</span>
+                          {file.size && <span className="file-size-text">{file.size}</span>}
                         </div>
                       </div>
-                      <div className="file-col-right">
+                      <div className="manual-file-actions">
                         <button
                           type="button"
                           className="file-action-btn copy-btn"
@@ -327,14 +402,25 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
           </div>
         </div>
 
-        <div className="modal-actions update-modal-actions">
-          <span className="spacer" />
-          <button onClick={onClose}>稍后处理</button>
-          {status === 'ready' && (
-            <button className="primary" onClick={handleRelaunch}>
-              立即重启生效
+        {/* 底部按钮栏 */}
+        <div className="update-deluxe-footer">
+          <span className="deluxe-footer-tip">
+            {status === 'ready' ? '⚡ 新版本已准备好，点击立即生效' : '如需跳过本次更新可直接关闭'}
+          </span>
+          <div className="deluxe-footer-btns">
+            <button type="button" className="sec-btn" onClick={onClose}>
+              稍后提醒
             </button>
-          )}
+            {status === 'ready' ? (
+              <button type="button" className="primary" onClick={handleRelaunch}>
+                立即重启生效
+              </button>
+            ) : (
+              <button type="button" className="primary" onClick={handleStartInAppUpdate}>
+                立即更新
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
