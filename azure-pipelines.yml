@@ -14,6 +14,8 @@ variables:
   - group: aliyun-oss-chatquery
   - name: CARGO_TERM_COLOR
     value: always
+  - name: CI
+    value: 'true'
 
 jobs:
   # =========================================================================
@@ -46,13 +48,14 @@ jobs:
 
       - powershell: |
           Set-Location -Path "$(System.DefaultWorkingDirectory)"
+          $env:CI = "true"
           if ($env:TAURI_SIGNING_PRIVATE_KEY -like '$(*') {
             $env:TAURI_SIGNING_PRIVATE_KEY = $null
           }
           if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -like '$(*') {
             $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
           }
-          npx --prefix frontend tauri build --bundles nsis
+          npx --prefix frontend tauri build --ci --bundles nsis
           if (Test-Path "src-tauri\target\release\chatquery.exe") {
             Copy-Item -Path "src-tauri\target\release\chatquery.exe" -Destination "src-tauri\target\release\bundle\nsis\智询_免安装绿色版.exe"
           }
@@ -118,13 +121,14 @@ jobs:
         displayName: '安装前端依赖 (npm install)'
 
       - script: |
+          export CI="true"
           if [[ "$TAURI_SIGNING_PRIVATE_KEY" == "\$(TAURI_SIGNING_PRIVATE_KEY)" ]]; then
             unset TAURI_SIGNING_PRIVATE_KEY
           fi
           if [[ "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" == "\$(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)" ]]; then
             export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
           fi
-          npx --prefix frontend tauri build
+          npx --prefix frontend tauri build --ci
         displayName: '打包 Tauri macOS 应用 (.dmg)'
         env:
           TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
@@ -191,13 +195,14 @@ jobs:
         displayName: '安装前端依赖 (npm install)'
 
       - script: |
+          export CI="true"
           if [[ "$TAURI_SIGNING_PRIVATE_KEY" == "\$(TAURI_SIGNING_PRIVATE_KEY)" ]]; then
             unset TAURI_SIGNING_PRIVATE_KEY
           fi
           if [[ "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" == "\$(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)" ]]; then
             export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
           fi
-          npx --prefix frontend tauri build
+          npx --prefix frontend tauri build --ci
         displayName: '打包 Tauri Linux 应用 (AppImage & deb)'
         env:
           TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)

@@ -151,13 +151,14 @@ function performBuildIfRequested(privateKey, password = '') {
   console.log('🔨 检测到 --build 参数，正在执行 Tauri 桌面打包...');
   const env = {
     ...process.env,
+    CI: 'true',
     TAURI_SIGNING_PRIVATE_KEY: privateKey || process.env.TAURI_SIGNING_PRIVATE_KEY || '',
     TAURI_SIGNING_PRIVATE_KEY_PASSWORD: password || process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '',
   };
   const isWin = process.platform === 'win32';
   const buildCmd = isWin
-    ? 'npx --prefix frontend tauri build --bundles nsis'
-    : 'npx --prefix frontend tauri build';
+    ? 'npx --prefix frontend tauri build --ci --bundles nsis'
+    : 'npx --prefix frontend tauri build --ci';
 
   execSync(buildCmd, {
     cwd: ROOT_DIR,
