@@ -98,10 +98,14 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 
 *注：若未配置上述 Secrets，CI 会自动发出 Warning 并跳过上传，不会导致流水线报错。*
 
-### 2. Azure Pipelines 自动上传
-在 Azure DevOps 的 `Library -> aliyun-oss-chatquery` 变量组中增加：
-- `TAURI_SIGNING_PRIVATE_KEY`：将本地生成的私钥内容粘贴进去并点击右侧锁头隐藏。
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：（可选，留空即可）。
+### 2. Azure Pipelines 多平台自动打包与上传 (Windows / macOS / Linux)
+在 Azure DevOps 的 `Library -> aliyun-oss-chatquery` 变量组中配置好变量后：
+- 推送版本标签（如 `git push azure v0.1.1`）或在 Azure 网页点击「Run pipeline」；
+- 流水线将依次启动：
+  1. **Windows 构建 (windows-latest)**：生成 NSIS 安装包 `.exe` 与免安装绿色版；
+  2. **macOS 构建 (macos-14 Apple Silicon)**：生成 `.dmg` 安装包与 `.app.tar.gz` 热更新包；
+  3. **Linux 构建 (ubuntu-latest)**：安装 WebKitGTK 依赖并生成 `.AppImage` 与 `.deb`；
+- 各平台独立完成签名，并通过智能增量合并自动将全平台产物与哈希汇总上传到同一个 OSS `latest.json` 中。
 
 ---
 

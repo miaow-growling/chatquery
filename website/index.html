@@ -101,6 +101,7 @@
 
     html {
       scroll-behavior: smooth;
+      scroll-padding-top: 88px;
       font-size: 16px;
     }
 
@@ -352,6 +353,7 @@
     /* 智能下载组合按钮与下拉菜单 */
     .download-combo-btn {
       position: relative;
+      scroll-margin-top: 112px;
       display: inline-flex;
       align-items: stretch;
       border-radius: var(--radius-lg);
@@ -1598,7 +1600,7 @@
             </span>
             <span id="heroDownloadText">下载 macOS 版 (9.91 MB)</span>
           </a>
-          <button type="button" class="download-arrow-btn" id="downloadDropdownTrigger" aria-label="查看更多下载选项" title="所有系统与架构下载">
+          <button type="button" class="download-arrow-btn" id="downloadDropdownTrigger" aria-label="查看更多下载选项" aria-expanded="false" aria-controls="downloadDropdownMenu" title="所有系统与架构下载">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
               <polyline points="6 9 12 15 18 9"></polyline>
             </svg>

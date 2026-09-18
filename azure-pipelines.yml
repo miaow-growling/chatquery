@@ -1,7 +1,7 @@
-# Azure DevOps Pipeline for Tauri Windows App
-# 默认关闭分支推送自动触发（避免随意提交浪费构建时长），仅支持：
+# Azure DevOps Pipeline for Multi-Platform Tauri App (Windows, macOS, Linux)
+# 默认关闭普通分支推送自动触发（避免日常提交浪费构建时长），仅支持：
 # 1. 在 Azure 网页上手动点击「Run pipeline」触发
-# 2. 推送版本标签（如 git push azure v0.1.0）时触发
+# 2. 推送版本标签（如 git push azure v0.1.1）时触发
 trigger:
   branches:
     exclude:
@@ -10,82 +10,196 @@ trigger:
     include:
       - 'v*'
 
-pool:
-  vmImage: 'windows-latest'
-
 variables:
   - group: aliyun-oss-chatquery
   - name: CARGO_TERM_COLOR
     value: always
 
-steps:
-  # 1. 检出代码
-  - checkout: self
-    fetchDepth: 1
+jobs:
+  # =========================================================================
+  # 1. Windows 构建 (x86_64 NSIS 安装包 + 免安装绿色便携版)
+  # =========================================================================
+  - job: build_windows
+    displayName: 'Windows 构建 (x86_64)'
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+      - checkout: self
+        fetchDepth: 1
 
-  # 2. 确保使用 Node.js 20
-  - task: NodeTool@0
-    displayName: '设置 Node.js 20'
-    inputs:
-      versionSpec: '20.x'
+      - task: NodeTool@0
+        displayName: '设置 Node.js 20'
+        inputs:
+          versionSpec: '20.x'
 
-  # 3. 确保 Rust stable (x86_64-pc-windows-msvc) 工具链
-  - powershell: |
-      rustup default stable-x86_64-pc-windows-msvc
-      rustup target add x86_64-pc-windows-msvc
-      cargo --version
-      rustc --version
-    displayName: '检查并配置 Rust 工具链'
+      - powershell: |
+          rustup default stable-x86_64-pc-windows-msvc
+          rustup target add x86_64-pc-windows-msvc
+          cargo --version
+          rustc --version
+        displayName: '配置 Rust 工具链 (x86_64-pc-windows-msvc)'
 
-  # 4. 安装前端依赖
-  - powershell: |
-      Set-Location -Path "$(System.DefaultWorkingDirectory)\frontend"
-      npm install --registry=https://registry.npmjs.org
-    displayName: '安装前端依赖 (npm install)'
+      - powershell: |
+          Set-Location -Path "$(System.DefaultWorkingDirectory)\frontend"
+          npm install --registry=https://registry.npmjs.org
+        displayName: '安装前端依赖 (npm install)'
 
-  # 5. 构建前端
-  - powershell: |
-      Set-Location -Path "$(System.DefaultWorkingDirectory)\frontend"
-      npm run build
-    displayName: '构建前端静态资源 (Vite)'
+      - powershell: |
+          Set-Location -Path "$(System.DefaultWorkingDirectory)"
+          npx --prefix frontend tauri build --bundles nsis
+          if (Test-Path "src-tauri\target\release\chatquery.exe") {
+            Copy-Item -Path "src-tauri\target\release\chatquery.exe" -Destination "src-tauri\target\release\bundle\nsis\智询_免安装绿色版.exe"
+          }
+        displayName: '打包 Tauri Windows 应用 (NSIS .exe)'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
 
-  # 6. 打包 Tauri Windows 应用 (使用现代 NSIS 引擎，生成 .exe 安装包并规避 WiX 3 字符集缺陷)
-  - powershell: |
-      Set-Location -Path "$(System.DefaultWorkingDirectory)"
-      npx --prefix frontend tauri build --bundles nsis
-      # 将编译好的主程序独立复制一份作为绿色便携版，供免安装直接运行
-      if (Test-Path "src-tauri\target\release\chatquery.exe") {
-        Copy-Item -Path "src-tauri\target\release\chatquery.exe" -Destination "src-tauri\target\release\bundle\nsis\智询_免安装绿色版.exe"
-      }
-    displayName: '打包 Tauri Windows 应用 (NSIS .exe)'
-    env:
-      TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
+      - task: PublishBuildArtifacts@1
+        displayName: '上传 Windows 构建产物'
+        inputs:
+          PathtoPublish: 'src-tauri/target/release/bundle/nsis'
+          ArtifactName: '智询-Windows安装包'
+          publishLocation: 'Container'
 
-  # 7. 发布构建产物供网页下载
-  - task: PublishBuildArtifacts@1
-    displayName: '上传 Windows 安装包'
-    inputs:
-      PathtoPublish: 'src-tauri/target/release/bundle/nsis'
-      ArtifactName: '智询-Windows安装包'
-      publishLocation: 'Container'
+      - powershell: |
+          if (-not $env:OSS_ACCESS_KEY_ID -or -not $env:OSS_ACCESS_KEY_SECRET -or -not $env:OSS_BUCKET) {
+            Write-Host "##vso[task.logissue type=warning]未检测到完整 OSS 变量配置 (OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET / OSS_BUCKET)，跳过 OSS 自动上传。"
+          } else {
+            node scripts/upload-oss.mjs
+          }
+        displayName: '上传 Windows 安装包到阿里云 OSS'
+        condition: succeeded()
+        env:
+          OSS_ACCESS_KEY_ID: $(OSS_ACCESS_KEY_ID)
+          OSS_ACCESS_KEY_SECRET: $(OSS_ACCESS_KEY_SECRET)
+          OSS_BUCKET: $(OSS_BUCKET)
+          OSS_REGION: $(OSS_REGION)
+          OSS_PREFIX: $(OSS_PREFIX)
+          OSS_PUBLIC_DOMAIN: $(OSS_PUBLIC_DOMAIN)
+          TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
 
-  # 8. 自动同步发布到阿里云 OSS (当配置了 OSS 凭据变量时自动上传)
-  - powershell: |
-      if (-not $env:OSS_ACCESS_KEY_ID -or -not $env:OSS_ACCESS_KEY_SECRET -or -not $env:OSS_BUCKET) {
-        Write-Host "##vso[task.logissue type=warning]未检测到完整 OSS 变量配置 (OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET / OSS_BUCKET)，跳过 OSS 自动上传。"
-      } else {
-        node scripts/upload-oss.mjs
-      }
-    displayName: '上传安装包到阿里云 OSS'
-    condition: succeeded()
-    env:
-      OSS_ACCESS_KEY_ID: $(OSS_ACCESS_KEY_ID)
-      OSS_ACCESS_KEY_SECRET: $(OSS_ACCESS_KEY_SECRET)
-      OSS_BUCKET: $(OSS_BUCKET)
-      OSS_REGION: $(OSS_REGION)
-      OSS_PREFIX: $(OSS_PREFIX)
-      OSS_PUBLIC_DOMAIN: $(OSS_PUBLIC_DOMAIN)
-      TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
+  # =========================================================================
+  # 2. macOS 构建 (Apple Silicon arm64 .dmg + 应用内热更包)
+  # =========================================================================
+  - job: build_macos
+    displayName: 'macOS 构建 (Apple Silicon)'
+    pool:
+      vmImage: 'macos-14'
+    steps:
+      - checkout: self
+        fetchDepth: 1
 
+      - task: NodeTool@0
+        displayName: '设置 Node.js 20'
+        inputs:
+          versionSpec: '20.x'
+
+      - script: |
+          rustup default stable
+          rustup target add aarch64-apple-darwin
+          cargo --version
+          rustc --version
+        displayName: '配置 Rust 工具链 (aarch64-apple-darwin)'
+
+      - script: |
+          cd frontend
+          npm install --registry=https://registry.npmjs.org
+        displayName: '安装前端依赖 (npm install)'
+
+      - script: |
+          npx --prefix frontend tauri build
+        displayName: '打包 Tauri macOS 应用 (.dmg)'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
+
+      - task: PublishBuildArtifacts@1
+        displayName: '上传 macOS 构建产物'
+        inputs:
+          PathtoPublish: 'src-tauri/target/release/bundle/dmg'
+          ArtifactName: '智询-macOS安装包'
+          publishLocation: 'Container'
+
+      - script: |
+          if [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_ACCESS_KEY_SECRET" ] || [ -z "$OSS_BUCKET" ]; then
+            echo "##vso[task.logissue type=warning]未检测到完整 OSS 变量配置，跳过 OSS 自动上传。"
+          else
+            node scripts/upload-oss.mjs
+          fi
+        displayName: '上传 macOS 安装包到阿里云 OSS'
+        condition: succeeded()
+        env:
+          OSS_ACCESS_KEY_ID: $(OSS_ACCESS_KEY_ID)
+          OSS_ACCESS_KEY_SECRET: $(OSS_ACCESS_KEY_SECRET)
+          OSS_BUCKET: $(OSS_BUCKET)
+          OSS_REGION: $(OSS_REGION)
+          OSS_PREFIX: $(OSS_PREFIX)
+          OSS_PUBLIC_DOMAIN: $(OSS_PUBLIC_DOMAIN)
+          TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
+
+  # =========================================================================
+  # 3. Linux 构建 (Ubuntu x86_64 .AppImage 与 .deb)
+  # =========================================================================
+  - job: build_linux
+    displayName: 'Linux 构建 (x86_64 AppImage & deb)'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - checkout: self
+        fetchDepth: 1
+
+      - task: NodeTool@0
+        displayName: '设置 Node.js 20'
+        inputs:
+          versionSpec: '20.x'
+
+      - script: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config build-essential libwebkit2gtk-4.1-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libfuse2
+        displayName: '安装 Linux WebKitGTK 与系统依赖'
+
+      - script: |
+          rustup default stable
+          cargo --version
+          rustc --version
+        displayName: '配置 Rust 工具链'
+
+      - script: |
+          cd frontend
+          npm install --registry=https://registry.npmjs.org
+        displayName: '安装前端依赖 (npm install)'
+
+      - script: |
+          npx --prefix frontend tauri build
+        displayName: '打包 Tauri Linux 应用 (AppImage & deb)'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
+
+      - task: PublishBuildArtifacts@1
+        displayName: '上传 Linux 构建产物'
+        inputs:
+          PathtoPublish: 'src-tauri/target/release/bundle'
+          ArtifactName: '智询-Linux安装包'
+          publishLocation: 'Container'
+
+      - script: |
+          if [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_ACCESS_KEY_SECRET" ] || [ -z "$OSS_BUCKET" ]; then
+            echo "##vso[task.logissue type=warning]未检测到完整 OSS 变量配置，跳过 OSS 自动上传。"
+          else
+            node scripts/upload-oss.mjs
+          fi
+        displayName: '上传 Linux 安装包到阿里云 OSS'
+        condition: succeeded()
+        env:
+          OSS_ACCESS_KEY_ID: $(OSS_ACCESS_KEY_ID)
+          OSS_ACCESS_KEY_SECRET: $(OSS_ACCESS_KEY_SECRET)
+          OSS_BUCKET: $(OSS_BUCKET)
+          OSS_REGION: $(OSS_REGION)
+          OSS_PREFIX: $(OSS_PREFIX)
+          OSS_PUBLIC_DOMAIN: $(OSS_PUBLIC_DOMAIN)
+          TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)

@@ -315,11 +315,51 @@ function scanArtifacts(privateKey, password = '') {
     const files = fs.readdirSync(appImageDir);
     for (const f of files) {
       if (f.endsWith('.AppImage')) {
-        artifacts.push({
+        const fullPath = path.join(appImageDir, f);
+        const sigFile = `${fullPath}.sig`;
+        let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
+        if (!sig && privateKey) {
+          sig = ensureSignature(fullPath, privateKey, password);
+        }
+        const art = {
           platform: 'linux-appimage',
           targetPlatform: 'linux-x86_64',
           name: f,
-          filePath: path.join(appImageDir, f),
+          filePath: fullPath,
+          signature: sig,
+        };
+        artifacts.push(art);
+        if (sig) updaterArtifacts.push(art);
+      } else if (f.endsWith('.AppImage.tar.gz')) {
+        const fullPath = path.join(appImageDir, f);
+        const sigFile = `${fullPath}.sig`;
+        let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
+        if (!sig && privateKey) {
+          sig = ensureSignature(fullPath, privateKey, password);
+        }
+        const art = {
+          platform: 'linux-updater',
+          targetPlatform: 'linux-x86_64',
+          name: f,
+          filePath: fullPath,
+          signature: sig,
+        };
+        artifacts.push(art);
+        updaterArtifacts.push(art);
+      }
+    }
+  }
+
+  const debDir = path.join(bundleDir, 'deb');
+  if (fs.existsSync(debDir)) {
+    const files = fs.readdirSync(debDir);
+    for (const f of files) {
+      if (f.endsWith('.deb')) {
+        artifacts.push({
+          platform: 'linux-deb',
+          targetPlatform: 'linux-x86_64',
+          name: f,
+          filePath: path.join(debDir, f),
         });
       }
     }
@@ -334,6 +374,7 @@ function getContentType(filename) {
   if (filename.endsWith('.dmg')) return 'application/x-apple-diskimage';
   if (filename.endsWith('.zip')) return 'application/zip';
   if (filename.endsWith('.tar.gz')) return 'application/gzip';
+  if (filename.endsWith('.deb')) return 'application/vnd.debian.binary-package';
   if (filename.endsWith('.json')) return 'application/json; charset=utf-8';
   if (filename.endsWith('.txt')) return 'text/plain; charset=utf-8';
   if (filename.endsWith('.sig')) return 'text/plain; charset=utf-8';
