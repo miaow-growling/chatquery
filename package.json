@@ -10,7 +10,7 @@
     "release:oss": "node scripts/upload-oss.mjs --build",
     "bump": "node scripts/bump-version.mjs",
     "get-version": "node -p \"require('./src-tauri/tauri.conf.json').version\"",
-    "deploy:website": "python3 scripts/upload-ftp.py",
+    "deploy:website": "node website/inject-latest.mjs && python3 scripts/upload-ftp.py",
     "build:website-docker": "docker build -t chatquery-website ."
   }
 }

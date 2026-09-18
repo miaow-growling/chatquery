@@ -449,6 +449,12 @@
       color: var(--brand);
     }
 
+    .download-menu-item[aria-disabled="true"] {
+      opacity: 0.52;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
     .download-menu-item:hover .dl-item-sub {
       color: var(--brand);
     }
@@ -1590,7 +1596,7 @@
 
       <div class="hero-actions" aria-label="首屏导航">
         <div class="download-combo-btn" id="downloadComboBtn">
-          <a href="#" class="btn-hero-primary download-primary-btn" id="heroDownloadBtn" target="_blank" rel="noopener">
+          <a href="https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/v0.1.0/%E6%99%BA%E8%AF%A2_0.1.0_aarch64.dmg" class="btn-hero-primary download-primary-btn" id="heroDownloadBtn" target="_blank" rel="noopener">
             <span id="heroDownloadIcon">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -1609,36 +1615,36 @@
           <!-- 展开后的全平台下载菜单 -->
           <div class="download-dropdown-menu" id="downloadDropdownMenu">
             <div class="download-menu-group-title">macOS</div>
-            <a href="https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest/智询_0.2.0_aarch64.dmg" class="download-menu-item" id="linkMacArm" target="_blank" rel="noopener">
+            <a href="https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/v0.1.0/智询_0.1.0_aarch64.dmg" class="download-menu-item" id="linkMacArm" target="_blank" rel="noopener">
               <span class="dl-os-icon">🍏</span>
               <div class="dl-item-info">
                 <div class="dl-item-title">Apple Silicon (M1/M2/M3/M4)</div>
                 <div class="dl-item-sub" id="sizeMacArm">9.91 MB · .dmg 镜像</div>
               </div>
             </a>
-            <a href="https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest/智询_0.2.0_x64.dmg" class="download-menu-item" id="linkMacIntel" target="_blank" rel="noopener">
+            <a href="#" class="download-menu-item" id="linkMacIntel" aria-disabled="true" tabindex="-1">
               <span class="dl-os-icon">🍏</span>
               <div class="dl-item-info">
                 <div class="dl-item-title">Intel 芯片</div>
-                <div class="dl-item-sub" id="sizeMacIntel">.dmg 安装包</div>
+                <div class="dl-item-sub" id="sizeMacIntel">尚未发布</div>
               </div>
             </a>
 
             <div class="download-menu-sep"></div>
 
             <div class="download-menu-group-title">Windows</div>
-            <a href="https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest/智询_0.2.0_x64-setup.exe" class="download-menu-item" id="linkWinSetup" target="_blank" rel="noopener">
+            <a href="#" class="download-menu-item" id="linkWinSetup" aria-disabled="true" tabindex="-1">
               <span class="dl-os-icon">🪟</span>
               <div class="dl-item-info">
                 <div class="dl-item-title">Windows x64 安装版</div>
-                <div class="dl-item-sub" id="sizeWinSetup">.exe 安装包</div>
+                <div class="dl-item-sub" id="sizeWinSetup">尚未发布</div>
               </div>
             </a>
-            <a href="https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest/智询_免安装绿色版.exe" class="download-menu-item" id="linkWinPortable" target="_blank" rel="noopener">
+            <a href="#" class="download-menu-item" id="linkWinPortable" aria-disabled="true" tabindex="-1">
               <span class="dl-os-icon">🪟</span>
               <div class="dl-item-info">
                 <div class="dl-item-title">Windows 免安装绿色版</div>
-                <div class="dl-item-sub" id="sizeWinPortable">免安装直接运行</div>
+                <div class="dl-item-sub" id="sizeWinPortable">尚未发布</div>
               </div>
             </a>
           </div>
@@ -2011,7 +2017,10 @@
     // 官网全自动版本拉取与全平台智能下载接入 (自动连接 OSS latest.json)
     // =========================================================================
     (function initOfficialReleaseDownloader() {
-      const LATEST_RELEASE_URL = "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json";
+      const RELEASE_MANIFEST_URLS = [
+        "/chatquery/releases/latest.json",
+        "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json",
+      ];
 
       const triggerBtn = document.getElementById("downloadDropdownTrigger");
       const menu = document.getElementById("downloadDropdownMenu");
@@ -2022,115 +2031,142 @@
       const heroMeta = document.getElementById("heroVersionLabel");
       const ctaBtn = document.getElementById("ctaDownloadBtn");
       const navBtn = document.getElementById("navDownloadBtn");
+      const fallbackVersion = (document.querySelector(".brand-pill")?.textContent || "v0.1.0").replace(/^v/, "");
 
-      // 下拉菜单显隐控制
+      const applyVersion = (version) => {
+        const normalized = String(version || fallbackVersion).replace(/^v/, "");
+        const versionStr = `v${normalized}`;
+        document.querySelectorAll(".brand-pill").forEach((el) => {
+          el.textContent = versionStr;
+        });
+        if (heroMeta) heroMeta.textContent = `最新版本 ${versionStr} 已就绪`;
+        return versionStr;
+      };
+
+      const setMenuOpen = (open) => {
+        if (!menu || !triggerBtn) return;
+        menu.classList.toggle("open", open);
+        triggerBtn.setAttribute("aria-expanded", String(open));
+      };
+
+      // 当运行时版本清单不可用时，顶部与底部入口仍能安全定位并展开下载菜单。
+      const revealDownloadPicker = (event) => {
+        const href = event.currentTarget.getAttribute("href") || "";
+        if (!href.startsWith("#")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        combo?.scrollIntoView({
+          behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+          block: "center",
+        });
+        setMenuOpen(true);
+      };
+
+      [navBtn, ctaBtn].forEach((button) => button?.addEventListener("click", revealDownloadPicker));
+
       if (triggerBtn && menu) {
-        triggerBtn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          menu.classList.toggle("open");
+        triggerBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          setMenuOpen(!menu.classList.contains("open"));
         });
 
-        document.addEventListener("click", (e) => {
-          if (combo && !combo.contains(e.target)) {
-            menu.classList.remove("open");
+        document.addEventListener("click", (event) => {
+          if (combo && !combo.contains(event.target)) setMenuOpen(false);
+        });
+
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") {
+            setMenuOpen(false);
+            triggerBtn.focus();
           }
-        });
-
-        document.addEventListener("keydown", (e) => {
-          if (e.key === "Escape") menu.classList.remove("open");
         });
       }
 
-      // 动态拉取 OSS 最新版本清单 (Cache-Busting 无缓存加载)
-      fetch(`${LATEST_RELEASE_URL}?t=${Date.now()}`)
-        .then((res) => {
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return res.json();
-        })
-        .then((release) => {
-          if (!release || !release.version) return;
-
-          const versionStr = `v${release.version.replace(/^v/, "")}`;
-
-          // 1. 同步全站所有版本标签
-          document.querySelectorAll(".brand-pill").forEach((el) => {
-            el.textContent = versionStr;
-          });
-          if (heroMeta) {
-            heroMeta.textContent = `最新版本 ${versionStr} 已就绪`;
+      const loadLatestRelease = async () => {
+        let lastError = null;
+        for (const url of RELEASE_MANIFEST_URLS) {
+          try {
+            const separator = url.includes("?") ? "&" : "?";
+            const response = await fetch(`${url}${separator}t=${Date.now()}`, { cache: "no-store" });
+            if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+            const contentType = response.headers.get("content-type") || "";
+            if (!contentType.includes("application/json")) throw new Error(`${url}: 返回内容不是 JSON`);
+            const release = await response.json();
+            if (!release?.version) throw new Error(`${url}: 缺少 version`);
+            return release;
+          } catch (error) {
+            lastError = error;
           }
+        }
+        throw lastError || new Error("无法获取最新版本清单");
+      };
 
-          const files = release.files || [];
-          const macArm = files.find((f) => f.name.includes("aarch64") || f.name.includes("arm64") || (f.platform && f.platform.includes("arm")));
-          const macIntel = files.find((f) => f.name.endsWith(".dmg") && !f.name.includes("aarch64") && !f.name.includes("arm64"));
-          const winSetup = files.find((f) => f.name.includes("setup.exe") || (f.name.endsWith(".exe") && !f.name.includes("绿色") && !f.name.includes("portable")));
-          const winPortable = files.find((f) => f.name.includes("绿色") || f.name.includes("portable"));
+      const applyRelease = (release) => {
+        const versionStr = applyVersion(release.version);
+        const files = Array.isArray(release.files) ? release.files : [];
+        const platformOf = (file) => String(file?.platform || "").toLowerCase();
+        const nameOf = (file) => String(file?.name || "").toLowerCase();
+        const macArm = files.find((file) => platformOf(file).includes("macos-arm") || /aarch64|arm64/.test(nameOf(file)));
+        const macIntel = files.find((file) => platformOf(file).includes("macos-x64") || (nameOf(file).endsWith(".dmg") && !/aarch64|arm64/.test(nameOf(file))));
+        const winSetup = files.find((file) => platformOf(file).includes("windows-installer") || nameOf(file).includes("setup.exe") || (nameOf(file).endsWith(".exe") && !/绿色|portable/.test(nameOf(file))));
+        const winPortable = files.find((file) => platformOf(file).includes("windows-portable") || /绿色|portable/.test(nameOf(file)));
 
-          // 2. 更新下拉菜单中的各文件直链与文件大小
-          const updateLink = (id, sizeId, fileObj) => {
-            const a = document.getElementById(id);
-            const s = document.getElementById(sizeId);
-            if (a && fileObj && fileObj.url) {
-              a.href = fileObj.url;
-              if (s && fileObj.size) {
-                s.textContent = `${fileObj.size} · ${fileObj.name.endsWith(".dmg") ? ".dmg 镜像" : ".exe 安装包"}`;
-              }
-            }
-          };
-
-          updateLink("linkMacArm", "sizeMacArm", macArm);
-          updateLink("linkMacIntel", "sizeMacIntel", macIntel);
-          updateLink("linkWinSetup", "sizeWinSetup", winSetup);
-          updateLink("linkWinPortable", "sizeWinPortable", winPortable);
-
-          // 3. 智能检测客户端操作系统
-          const ua = navigator.userAgent || "";
-          const isMac = /Macintosh|Mac OS X/i.test(ua);
-          const isWin = /Windows/i.test(ua);
-
-          let targetFile = null;
-          let labelText = `下载客户端 (${versionStr})`;
-
-          if (isMac) {
-            // macOS 默认优先 Apple Silicon (M系列)，绝大多数现代 Mac 使用
-            targetFile = macArm || macIntel;
-            const sizeStr = targetFile?.size ? ` · ${targetFile.size}` : "";
-            labelText = `下载 macOS 版${sizeStr}`;
-            if (heroIcon) {
-              heroIcon.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.85c.66-.8 1.1-1.92.98-3.04-.95.04-2.1.63-2.77 1.42-.59.68-1.11 1.82-.97 2.91 1.06.08 2.14-.54 2.76-1.29z"/></svg>`;
-            }
-          } else if (isWin) {
-            targetFile = winSetup || winPortable;
-            const sizeStr = targetFile?.size ? ` · ${targetFile.size}` : "";
-            labelText = `下载 Windows 版${sizeStr}`;
-            if (heroIcon) {
-              heroIcon.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.45l7.35-1v7.19H3V5.45zm0 13.1l7.35 1v-7.19H3v7.19zM11.55 4.29L21 3v8.64h-9.45V4.29zm0 15.42L21 21v-8.64h-9.45v7.35z"/></svg>`;
-            }
-          } else {
-            targetFile = macArm || winSetup;
+        const updateLink = (id, sizeId, file) => {
+          const anchor = document.getElementById(id);
+          const size = document.getElementById(sizeId);
+          if (!anchor || !file?.url) return;
+          anchor.href = file.url;
+          anchor.removeAttribute("aria-disabled");
+          anchor.removeAttribute("tabindex");
+          anchor.target = "_blank";
+          anchor.rel = "noopener";
+          if (size && file.size) {
+            const suffix = nameOf(file).endsWith(".dmg") ? ".dmg 镜像" : nameOf(file).includes("绿色") || nameOf(file).includes("portable") ? "免安装直接运行" : ".exe 安装包";
+            size.textContent = `${file.size} · ${suffix}`;
           }
+        };
 
-          if (targetFile && targetFile.url) {
-            if (heroBtn) {
-              heroBtn.href = targetFile.url;
-            }
-            if (heroText) {
-              heroText.textContent = labelText;
-            }
-            if (ctaBtn) {
-              ctaBtn.href = targetFile.url;
-              ctaBtn.textContent = `立即${labelText}`;
-            }
-            if (navBtn) {
-              navBtn.href = targetFile.url;
-            }
+        updateLink("linkMacArm", "sizeMacArm", macArm);
+        updateLink("linkMacIntel", "sizeMacIntel", macIntel);
+        updateLink("linkWinSetup", "sizeWinSetup", winSetup);
+        updateLink("linkWinPortable", "sizeWinPortable", winPortable);
+
+        const userAgent = navigator.userAgent || "";
+        const isMac = /Macintosh|Mac OS X/i.test(userAgent);
+        const isWin = /Windows/i.test(userAgent);
+        let targetFile = macArm || macIntel || winSetup || winPortable;
+        let labelText = `下载客户端 (${versionStr})`;
+
+        if (isMac) {
+          targetFile = macArm || macIntel || targetFile;
+          labelText = `下载 macOS 版${targetFile?.size ? ` (${targetFile.size})` : ""}`;
+          if (heroIcon) {
+            heroIcon.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.85c.66-.8 1.1-1.92.98-3.04-.95.04-2.1.63-2.77 1.42-.59.68-1.11 1.82-.97 2.91 1.06.08 2.14-.54 2.76-1.29z"/></svg>`;
           }
-        })
-        .catch((err) => {
-          console.warn("未能获取远程 latest.json，使用预设备用下载地址:", err);
-          if (heroMeta) {
-            heroMeta.textContent = "最新版本 v0.2.0 开箱即用";
+        } else if (isWin) {
+          targetFile = winSetup || winPortable || targetFile;
+          labelText = `下载 Windows 版${targetFile?.size ? ` (${targetFile.size})` : ""}`;
+          if (heroIcon) {
+            heroIcon.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.45l7.35-1v7.19H3V5.45zm0 13.1l7.35 1v-7.19H3v7.19zM11.55 4.29L21 3v8.64h-9.45V4.29zm0 15.42L21 21v-8.64h-9.45v7.35z"/></svg>`;
           }
+        }
+
+        if (!targetFile?.url) return;
+        if (heroBtn) heroBtn.href = targetFile.url;
+        if (heroText) heroText.textContent = labelText;
+        if (ctaBtn) {
+          ctaBtn.href = targetFile.url;
+          ctaBtn.textContent = `立即${labelText}`;
+        }
+        if (navBtn) navBtn.href = targetFile.url;
+      };
+
+      applyVersion(fallbackVersion);
+      loadLatestRelease()
+        .then(applyRelease)
+        .catch((error) => {
+          console.warn("未能获取最新版本清单，保留构建时注入的版本与下载链接:", error);
+          applyVersion(fallbackVersion);
         });
     })();
   </script>
