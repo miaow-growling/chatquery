@@ -41,9 +41,31 @@ jobs:
           rustc --version
         displayName: '配置 Rust 工具链 (x86_64-pc-windows-msvc)'
 
+      # 缓存 npm 依赖
+      - task: Cache@2
+        displayName: '缓存 npm 依赖 (node_modules)'
+        inputs:
+          key: 'npm | "$(Agent.OS)" | frontend/package-lock.json'
+          restoreKeys: |
+            npm | "$(Agent.OS)"
+          path: $(System.DefaultWorkingDirectory)/frontend/node_modules
+
+      # 缓存 Cargo 依赖库与编译中间件
+      - task: Cache@2
+        displayName: '缓存 Cargo 依赖与 target 编译产物'
+        inputs:
+          key: 'cargo | "$(Agent.OS)" | Cargo.lock | src-tauri/Cargo.lock'
+          restoreKeys: |
+            cargo | "$(Agent.OS)"
+          path: |
+            $(USERPROFILE)/.cargo/registry/index
+            $(USERPROFILE)/.cargo/registry/cache
+            $(USERPROFILE)/.cargo/git/db
+            src-tauri/target
+
       - powershell: |
           Set-Location -Path "$(System.DefaultWorkingDirectory)\frontend"
-          npm install --registry=https://registry.npmjs.org
+          npm install --registry=https://registry.npmjs.org --prefer-offline
         displayName: '安装前端依赖 (npm install)'
 
       - powershell: |
@@ -115,9 +137,31 @@ jobs:
           rustc --version
         displayName: '配置 Rust 工具链 (aarch64-apple-darwin)'
 
+      # 缓存 npm 依赖
+      - task: Cache@2
+        displayName: '缓存 npm 依赖 (node_modules)'
+        inputs:
+          key: 'npm | "$(Agent.OS)" | frontend/package-lock.json'
+          restoreKeys: |
+            npm | "$(Agent.OS)"
+          path: $(System.DefaultWorkingDirectory)/frontend/node_modules
+
+      # 缓存 Cargo 依赖库与编译中间件
+      - task: Cache@2
+        displayName: '缓存 Cargo 依赖与 target 编译产物'
+        inputs:
+          key: 'cargo | "$(Agent.OS)" | Cargo.lock | src-tauri/Cargo.lock'
+          restoreKeys: |
+            cargo | "$(Agent.OS)"
+          path: |
+            $(HOME)/.cargo/registry/index
+            $(HOME)/.cargo/registry/cache
+            $(HOME)/.cargo/git/db
+            src-tauri/target
+
       - script: |
           cd frontend
-          npm install --registry=https://registry.npmjs.org
+          npm install --registry=https://registry.npmjs.org --prefer-offline
         displayName: '安装前端依赖 (npm install)'
 
       - script: |
@@ -189,9 +233,31 @@ jobs:
           rustc --version
         displayName: '配置 Rust 工具链'
 
+      # 缓存 npm 依赖
+      - task: Cache@2
+        displayName: '缓存 npm 依赖 (node_modules)'
+        inputs:
+          key: 'npm | "$(Agent.OS)" | frontend/package-lock.json'
+          restoreKeys: |
+            npm | "$(Agent.OS)"
+          path: $(System.DefaultWorkingDirectory)/frontend/node_modules
+
+      # 缓存 Cargo 依赖库与编译中间件
+      - task: Cache@2
+        displayName: '缓存 Cargo 依赖与 target 编译产物'
+        inputs:
+          key: 'cargo | "$(Agent.OS)" | Cargo.lock | src-tauri/Cargo.lock'
+          restoreKeys: |
+            cargo | "$(Agent.OS)"
+          path: |
+            $(HOME)/.cargo/registry/index
+            $(HOME)/.cargo/registry/cache
+            $(HOME)/.cargo/git/db
+            src-tauri/target
+
       - script: |
           cd frontend
-          npm install --registry=https://registry.npmjs.org
+          npm install --registry=https://registry.npmjs.org --prefer-offline
         displayName: '安装前端依赖 (npm install)'
 
       - script: |
