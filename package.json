@@ -9,6 +9,7 @@
     "upload:oss": "node scripts/upload-oss.mjs",
     "release:oss": "node scripts/upload-oss.mjs --build",
     "bump": "node scripts/bump-version.mjs",
-    "deploy:website": "python3 scripts/upload-ftp.py"
+    "deploy:website": "python3 scripts/upload-ftp.py",
+    "build:website-docker": "docker build -t chatquery-website ."
   }
 }

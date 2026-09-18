@@ -261,6 +261,8 @@
       padding: 72px 0 40px;
       text-align: center;
       position: relative;
+      z-index: 20;
+      overflow: visible;
     }
 
     .hero-badge {
@@ -400,7 +402,10 @@
       border-radius: var(--radius-lg);
       padding: 8px 6px;
       box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
-      z-index: 100;
+      z-index: 1000;
+      max-height: min(520px, calc(100vh - 96px));
+      overflow-y: auto;
+      overscroll-behavior: contain;
       display: none;
       flex-direction: column;
       gap: 2px;

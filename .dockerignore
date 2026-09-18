@@ -1,0 +1,9 @@
+.git
+.github
+target
+src-tauri/target
+frontend/node_modules
+frontend/dist
+.env*
+*.local
+*.log
