@@ -11,9 +11,9 @@
 #   docker build -t chatquery-website .
 # =========================================================================
 
-# 默认使用稳定高速的国内加速镜像源 (可按需通过 --build-arg 覆盖)
+# 默认使用稳定高速的国内加速镜像源 (使用 1.26-alpine 保证对 CentOS 7 老内核 3.10 完美兼容)
 ARG NODE_IMAGE=docker.m.daocloud.io/library/node:20-alpine
-ARG NGINX_IMAGE=docker.m.daocloud.io/library/nginx:alpine
+ARG NGINX_IMAGE=docker.m.daocloud.io/library/nginx:1.26-alpine
 
 # --- 阶段 1: 预构建与最新发版信息自动注入 ---
 FROM ${NODE_IMAGE} AS builder
