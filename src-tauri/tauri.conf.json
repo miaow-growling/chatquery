@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "智询",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.chatquery.app",
   "build": {
-    "beforeDevCommand": "node -e \"const fs=require('fs'),p=fs.existsSync('frontend')?'frontend':'../frontend';process.exit(require('child_process').spawnSync('npm',['--prefix',p,'run','dev'],{stdio:'inherit',shell:true}).status)\"",
+    "beforeDevCommand": "node scripts/dev-frontend.mjs",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "node -e \"const fs=require('fs'),p=fs.existsSync('frontend')?'frontend':'../frontend';process.exit(require('child_process').spawnSync('npm',['--prefix',p,'run','build'],{stdio:'inherit',shell:true}).status)\"",
+    "beforeBuildCommand": "node scripts/build-frontend.mjs",
     "frontendDist": "../frontend/dist"
   },
   "app": {

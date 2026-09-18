@@ -83,7 +83,7 @@ import { DbMemoryModal } from "./components/DbMemoryModal";
 import { McpInstallModal } from "./components/McpInstallModal";
 import { SimpleGroupedSelect } from "./components/SimpleGroupedSelect";
 
-const CURRENT_APP_VERSION = "0.1.0";
+const CURRENT_APP_VERSION = "0.1.1";
 const OSS_LATEST_RELEASE_URL = "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json";
 
 function compareVersions(v1: string, v2: string): number {

@@ -7,6 +7,8 @@
     "build": "npx --prefix frontend tauri build",
     "build:frontend": "npm --prefix frontend run build",
     "upload:oss": "node scripts/upload-oss.mjs",
-    "release:oss": "node scripts/upload-oss.mjs --build"
+    "release:oss": "node scripts/upload-oss.mjs --build",
+    "bump": "node scripts/bump-version.mjs",
+    "deploy:website": "python3 scripts/upload-ftp.py"
   }
 }

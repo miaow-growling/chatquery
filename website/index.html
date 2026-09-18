@@ -347,6 +347,155 @@
       box-shadow: var(--glow-md);
     }
 
+    /* 智能下载组合按钮与下拉菜单 */
+    .download-combo-btn {
+      position: relative;
+      display: inline-flex;
+      align-items: stretch;
+      border-radius: var(--radius-lg);
+      box-shadow: var(--glow-md);
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .download-combo-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--glow-lg);
+    }
+
+    .download-primary-btn {
+      border-top-right-radius: 0 !important;
+      border-bottom-right-radius: 0 !important;
+      border-right: 1px solid rgba(255, 255, 255, 0.22);
+      box-shadow: none !important;
+      transform: none !important;
+      text-decoration: none;
+    }
+
+    .download-arrow-btn {
+      background: var(--brand);
+      color: #ffffff;
+      border: none;
+      border-top-right-radius: var(--radius-lg);
+      border-bottom-right-radius: var(--radius-lg);
+      padding: 0 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s ease;
+      box-shadow: none;
+    }
+
+    .download-arrow-btn:hover {
+      background: var(--brand-hover);
+    }
+
+    .download-dropdown-menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 0;
+      min-width: 320px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg);
+      padding: 8px 6px;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+      z-index: 100;
+      display: none;
+      flex-direction: column;
+      gap: 2px;
+      text-align: left;
+      animation: menu-pop 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .download-dropdown-menu.open {
+      display: flex;
+    }
+
+    @keyframes menu-pop {
+      from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .download-menu-group-title {
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-tertiary);
+      padding: 6px 12px 3px;
+    }
+
+    .download-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      border-radius: var(--radius-md);
+      color: var(--text-primary);
+      text-decoration: none;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .download-menu-item:hover {
+      background: var(--brand-soft);
+      color: var(--brand);
+    }
+
+    .download-menu-item:hover .dl-item-sub {
+      color: var(--brand);
+    }
+
+    .dl-os-icon {
+      font-size: 1.25rem;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .dl-item-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .dl-item-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+      line-height: 1.35;
+    }
+
+    .dl-item-sub {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      line-height: 1.3;
+      margin-top: 2px;
+    }
+
+    .download-menu-sep {
+      height: 1px;
+      background: var(--border);
+      margin: 6px 8px;
+    }
+
+    .hero-download-meta {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+      margin-top: -14px;
+      margin-bottom: 34px;
+    }
+
+    .meta-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+      display: inline-block;
+    }
+
     .capability-chips {
       display: flex;
       flex-wrap: wrap;
@@ -1356,6 +1505,9 @@
       .hero-subtitle { font-size: 1rem; }
       .hero-actions { align-items: stretch; }
       .btn-hero-primary, .btn-hero-secondary { width: 100%; }
+      .download-combo-btn { width: 100%; }
+      .download-primary-btn { flex: 1; }
+      .download-dropdown-menu { min-width: 100%; }
       .section { padding: 64px 0; }
       .section-title { font-size: 2rem; }
       .feature-card, .compare-container { padding: 22px; }
@@ -1404,12 +1556,13 @@
           </svg>
         </button>
 
-        <a href="#workbench" class="btn-nav-primary">
+        <a href="#downloadComboBtn" class="btn-nav-primary" id="navDownloadBtn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
-            <rect x="3" y="4" width="18" height="16" rx="2"></rect>
-            <path d="M8 9l3 3-3 3M13 15h3"></path>
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
           </svg>
-          查看工作台
+          下载客户端
         </a>
       </div>
     </div>
@@ -1429,11 +1582,72 @@
       </p>
 
       <div class="hero-actions" aria-label="首屏导航">
-        <a href="#workbench" class="btn-hero-primary">
-          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M8 9l3 3-3 3M13 15h3"></path></svg>
+        <div class="download-combo-btn" id="downloadComboBtn">
+          <a href="#" class="btn-hero-primary download-primary-btn" id="heroDownloadBtn" target="_blank" rel="noopener">
+            <span id="heroDownloadIcon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+            </span>
+            <span id="heroDownloadText">下载 macOS 版 (9.91 MB)</span>
+          </a>
+          <button type="button" class="download-arrow-btn" id="downloadDropdownTrigger" aria-label="查看更多下载选项" title="所有系统与架构下载">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </button>
+
+          <!-- 展开后的全平台下载菜单 -->
+          <div class="download-dropdown-menu" id="downloadDropdownMenu">
+            <div class="download-menu-group-title">macOS</div>
+            <a href="https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest/智询_0.2.0_aarch64.dmg" class="download-menu-item" id="linkMacArm" target="_blank" rel="noopener">
+              <span class="dl-os-icon">🍏</span>
+              <div class="dl-item-info">
+                <div class="dl-item-title">Apple Silicon (M1/M2/M3/M4)</div>
+                <div class="dl-item-sub" id="sizeMacArm">9.91 MB · .dmg 镜像</div>
+              </div>
+            </a>
+            <a href="https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest/智询_0.2.0_x64.dmg" class="download-menu-item" id="linkMacIntel" target="_blank" rel="noopener">
+              <span class="dl-os-icon">🍏</span>
+              <div class="dl-item-info">
+                <div class="dl-item-title">Intel 芯片</div>
+                <div class="dl-item-sub" id="sizeMacIntel">.dmg 安装包</div>
+              </div>
+            </a>
+
+            <div class="download-menu-sep"></div>
+
+            <div class="download-menu-group-title">Windows</div>
+            <a href="https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest/智询_0.2.0_x64-setup.exe" class="download-menu-item" id="linkWinSetup" target="_blank" rel="noopener">
+              <span class="dl-os-icon">🪟</span>
+              <div class="dl-item-info">
+                <div class="dl-item-title">Windows x64 安装版</div>
+                <div class="dl-item-sub" id="sizeWinSetup">.exe 安装包</div>
+              </div>
+            </a>
+            <a href="https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest/智询_免安装绿色版.exe" class="download-menu-item" id="linkWinPortable" target="_blank" rel="noopener">
+              <span class="dl-os-icon">🪟</span>
+              <div class="dl-item-info">
+                <div class="dl-item-title">Windows 免安装绿色版</div>
+                <div class="dl-item-sub" id="sizeWinPortable">免安装直接运行</div>
+              </div>
+            </a>
+          </div>
+        </div>
+
+        <a href="#workbench" class="btn-hero-secondary">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M8 9l3 3-3 3M13 15h3"></path></svg>
           查看工作台
         </a>
-        <a href="#features" class="btn-hero-secondary">了解产品能力</a>
+      </div>
+
+      <div class="hero-download-meta" id="heroDownloadMeta">
+        <span class="meta-dot"></span>
+        <span id="heroVersionLabel">最新版本 v0.1.0 已就绪</span>
+        <span class="meta-sep">·</span>
+        <span>免费、本地优先、端到端凭据加密</span>
       </div>
 
       <div class="capability-chips" aria-label="能力概览">
@@ -1729,10 +1943,14 @@
   <!-- 7. 底部引导与页脚 -->
   <section class="container">
     <div class="cta-banner">
-      <h3>从工作台开始了解 ChatQuery</h3>
-      <p style="color:#CBD5E1; font-size:1.05rem; margin-bottom:28px;">查看真实交互，判断它是否适合你的研发查询流程。</p>
+      <h3>立即免费体验 ChatQuery 智询</h3>
+      <p style="color:#CBD5E1; font-size:1.05rem; margin-bottom:28px;">本地优先、端到端凭据加密、支持离线，开启 AI 数据库研发新流程。</p>
       <div class="hero-actions" style="margin-bottom:0;">
-        <a href="#workbench" class="btn-hero-primary">查看工作台</a>
+        <a href="#downloadComboBtn" class="btn-hero-primary" id="ctaDownloadBtn">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          立即下载客户端
+        </a>
+        <a href="#workbench" class="btn-hero-secondary">查看工作台演示</a>
       </div>
     </div>
   </section>
@@ -1781,6 +1999,133 @@
       const current = document.documentElement.getAttribute("data-theme");
       document.documentElement.setAttribute("data-theme", current === "light" ? "dark" : "light");
     });
+
+    // =========================================================================
+    // 官网全自动版本拉取与全平台智能下载接入 (自动连接 OSS latest.json)
+    // =========================================================================
+    (function initOfficialReleaseDownloader() {
+      const LATEST_RELEASE_URL = "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json";
+
+      const triggerBtn = document.getElementById("downloadDropdownTrigger");
+      const menu = document.getElementById("downloadDropdownMenu");
+      const combo = document.getElementById("downloadComboBtn");
+      const heroBtn = document.getElementById("heroDownloadBtn");
+      const heroText = document.getElementById("heroDownloadText");
+      const heroIcon = document.getElementById("heroDownloadIcon");
+      const heroMeta = document.getElementById("heroVersionLabel");
+      const ctaBtn = document.getElementById("ctaDownloadBtn");
+      const navBtn = document.getElementById("navDownloadBtn");
+
+      // 下拉菜单显隐控制
+      if (triggerBtn && menu) {
+        triggerBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          menu.classList.toggle("open");
+        });
+
+        document.addEventListener("click", (e) => {
+          if (combo && !combo.contains(e.target)) {
+            menu.classList.remove("open");
+          }
+        });
+
+        document.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") menu.classList.remove("open");
+        });
+      }
+
+      // 动态拉取 OSS 最新版本清单 (Cache-Busting 无缓存加载)
+      fetch(`${LATEST_RELEASE_URL}?t=${Date.now()}`)
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
+        .then((release) => {
+          if (!release || !release.version) return;
+
+          const versionStr = `v${release.version.replace(/^v/, "")}`;
+
+          // 1. 同步全站所有版本标签
+          document.querySelectorAll(".brand-pill").forEach((el) => {
+            el.textContent = versionStr;
+          });
+          if (heroMeta) {
+            heroMeta.textContent = `最新版本 ${versionStr} 已就绪`;
+          }
+
+          const files = release.files || [];
+          const macArm = files.find((f) => f.name.includes("aarch64") || f.name.includes("arm64") || (f.platform && f.platform.includes("arm")));
+          const macIntel = files.find((f) => f.name.endsWith(".dmg") && !f.name.includes("aarch64") && !f.name.includes("arm64"));
+          const winSetup = files.find((f) => f.name.includes("setup.exe") || (f.name.endsWith(".exe") && !f.name.includes("绿色") && !f.name.includes("portable")));
+          const winPortable = files.find((f) => f.name.includes("绿色") || f.name.includes("portable"));
+
+          // 2. 更新下拉菜单中的各文件直链与文件大小
+          const updateLink = (id, sizeId, fileObj) => {
+            const a = document.getElementById(id);
+            const s = document.getElementById(sizeId);
+            if (a && fileObj && fileObj.url) {
+              a.href = fileObj.url;
+              if (s && fileObj.size) {
+                s.textContent = `${fileObj.size} · ${fileObj.name.endsWith(".dmg") ? ".dmg 镜像" : ".exe 安装包"}`;
+              }
+            }
+          };
+
+          updateLink("linkMacArm", "sizeMacArm", macArm);
+          updateLink("linkMacIntel", "sizeMacIntel", macIntel);
+          updateLink("linkWinSetup", "sizeWinSetup", winSetup);
+          updateLink("linkWinPortable", "sizeWinPortable", winPortable);
+
+          // 3. 智能检测客户端操作系统
+          const ua = navigator.userAgent || "";
+          const isMac = /Macintosh|Mac OS X/i.test(ua);
+          const isWin = /Windows/i.test(ua);
+
+          let targetFile = null;
+          let labelText = `下载客户端 (${versionStr})`;
+
+          if (isMac) {
+            // macOS 默认优先 Apple Silicon (M系列)，绝大多数现代 Mac 使用
+            targetFile = macArm || macIntel;
+            const sizeStr = targetFile?.size ? ` · ${targetFile.size}` : "";
+            labelText = `下载 macOS 版${sizeStr}`;
+            if (heroIcon) {
+              heroIcon.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.85c.66-.8 1.1-1.92.98-3.04-.95.04-2.1.63-2.77 1.42-.59.68-1.11 1.82-.97 2.91 1.06.08 2.14-.54 2.76-1.29z"/></svg>`;
+            }
+          } else if (isWin) {
+            targetFile = winSetup || winPortable;
+            const sizeStr = targetFile?.size ? ` · ${targetFile.size}` : "";
+            labelText = `下载 Windows 版${sizeStr}`;
+            if (heroIcon) {
+              heroIcon.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.45l7.35-1v7.19H3V5.45zm0 13.1l7.35 1v-7.19H3v7.19zM11.55 4.29L21 3v8.64h-9.45V4.29zm0 15.42L21 21v-8.64h-9.45v7.35z"/></svg>`;
+            }
+          } else {
+            targetFile = macArm || winSetup;
+          }
+
+          if (targetFile && targetFile.url) {
+            if (heroBtn) {
+              heroBtn.href = targetFile.url;
+            }
+            if (heroText) {
+              heroText.textContent = labelText;
+            }
+            if (ctaBtn) {
+              ctaBtn.href = targetFile.url;
+              ctaBtn.textContent = `立即${labelText}`;
+            }
+            if (navBtn) {
+              navBtn.href = targetFile.url;
+            }
+          }
+        })
+        .catch((err) => {
+          console.warn("未能获取远程 latest.json，使用预设备用下载地址:", err);
+          if (heroMeta) {
+            heroMeta.textContent = "最新版本 v0.2.0 开箱即用";
+          }
+        });
+    })();
   </script>
 </body>
 </html>

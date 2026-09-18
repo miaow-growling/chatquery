@@ -636,6 +636,42 @@ async function main() {
     });
   }
 
+  // 5. 自动同步官网 (website/index.html) 静态直链与版本标牌
+  const websiteHtmlPath = path.join(ROOT_DIR, 'website', 'index.html');
+  if (fs.existsSync(websiteHtmlPath)) {
+    try {
+      let html = fs.readFileSync(websiteHtmlPath, 'utf-8');
+      html = html.replace(/<span class="brand-pill">v[^<]+<\/span>/g, `<span class="brand-pill">${versionTag}</span>`);
+
+      const macArm = allMergedFiles.find(f => f.name.includes('aarch64') || f.name.includes('arm64'));
+      const macIntel = allMergedFiles.find(f => f.name.endsWith('.dmg') && !f.name.includes('aarch64') && !f.name.includes('arm64'));
+      const winSetup = allMergedFiles.find(f => f.name.includes('setup.exe') || (f.name.endsWith('.exe') && !f.name.includes('绿色') && !f.name.includes('portable')));
+      const winPortable = allMergedFiles.find(f => f.name.includes('绿色') || f.name.includes('portable'));
+
+      if (macArm?.url) {
+        html = html.replace(/(id="linkMacArm"\s+href=")[^"]+(")/, `$1${macArm.url}$2`);
+        html = html.replace(/(id="linkMacArm"[\s\S]*?id="sizeMacArm">)[^<]+(<\/div>)/, `$1${macArm.size} · .dmg 镜像$2`);
+      }
+      if (macIntel?.url) {
+        html = html.replace(/(id="linkMacIntel"\s+href=")[^"]+(")/, `$1${macIntel.url}$2`);
+        html = html.replace(/(id="linkMacIntel"[\s\S]*?id="sizeMacIntel">)[^<]+(<\/div>)/, `$1${macIntel.size} · .dmg 镜像$2`);
+      }
+      if (winSetup?.url) {
+        html = html.replace(/(id="linkWinSetup"\s+href=")[^"]+(")/, `$1${winSetup.url}$2`);
+        html = html.replace(/(id="linkWinSetup"[\s\S]*?id="sizeWinSetup">)[^<]+(<\/div>)/, `$1${winSetup.size} · .exe 安装包$2`);
+      }
+      if (winPortable?.url) {
+        html = html.replace(/(id="linkWinPortable"\s+href=")[^"]+(")/, `$1${winPortable.url}$2`);
+        html = html.replace(/(id="linkWinPortable"[\s\S]*?id="sizeWinPortable">)[^<]+(<\/div>)/, `$1${winPortable.size} · 免安装直接运行$2`);
+      }
+
+      fs.writeFileSync(websiteHtmlPath, html, 'utf-8');
+      console.log('🌐 已自动同步更新官网 (website/index.html) 静态直链与版本标牌！');
+    } catch (err) {
+      console.warn('⚠️ 同步更新官网 HTML 静态直链异常 (不影响 OSS 发布):', err);
+    }
+  }
+
   console.log('\n====================================================');
   console.log('🎉 智询 (ChatQuery) 安装包与应用内自动更新发布成功！');
   console.log('====================================================');
