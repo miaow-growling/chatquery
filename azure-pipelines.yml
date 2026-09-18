@@ -46,6 +46,12 @@ jobs:
 
       - powershell: |
           Set-Location -Path "$(System.DefaultWorkingDirectory)"
+          if ($env:TAURI_SIGNING_PRIVATE_KEY -like '$(*') {
+            $env:TAURI_SIGNING_PRIVATE_KEY = $null
+          }
+          if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -like '$(*') {
+            $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
+          }
           npx --prefix frontend tauri build --bundles nsis
           if (Test-Path "src-tauri\target\release\chatquery.exe") {
             Copy-Item -Path "src-tauri\target\release\chatquery.exe" -Destination "src-tauri\target\release\bundle\nsis\智询_免安装绿色版.exe"
@@ -63,9 +69,12 @@ jobs:
           publishLocation: 'Container'
 
       - powershell: |
-          if (-not $env:OSS_ACCESS_KEY_ID -or -not $env:OSS_ACCESS_KEY_SECRET -or -not $env:OSS_BUCKET) {
-            Write-Host "##vso[task.logissue type=warning]未检测到完整 OSS 变量配置 (OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET / OSS_BUCKET)，跳过 OSS 自动上传。"
+          if ($env:OSS_ACCESS_KEY_ID -like '$(*' -or -not $env:OSS_ACCESS_KEY_ID -or -not $env:OSS_BUCKET) {
+            Write-Host "##vso[task.logissue type=warning]未检测到完整 OSS 变量配置，跳过 OSS 自动上传。"
           } else {
+            if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -like '$(*') {
+              $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
+            }
             node scripts/upload-oss.mjs
           }
         displayName: '上传 Windows 安装包到阿里云 OSS'
@@ -109,6 +118,12 @@ jobs:
         displayName: '安装前端依赖 (npm install)'
 
       - script: |
+          if [[ "$TAURI_SIGNING_PRIVATE_KEY" == "\$(TAURI_SIGNING_PRIVATE_KEY)" ]]; then
+            unset TAURI_SIGNING_PRIVATE_KEY
+          fi
+          if [[ "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" == "\$(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)" ]]; then
+            export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          fi
           npx --prefix frontend tauri build
         displayName: '打包 Tauri macOS 应用 (.dmg)'
         env:
@@ -123,9 +138,12 @@ jobs:
           publishLocation: 'Container'
 
       - script: |
-          if [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_ACCESS_KEY_SECRET" ] || [ -z "$OSS_BUCKET" ]; then
+          if [[ "$OSS_ACCESS_KEY_ID" == "\$(OSS_ACCESS_KEY_ID)" ]] || [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_BUCKET" ]; then
             echo "##vso[task.logissue type=warning]未检测到完整 OSS 变量配置，跳过 OSS 自动上传。"
           else
+            if [[ "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" == "\$(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)" ]]; then
+              export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+            fi
             node scripts/upload-oss.mjs
           fi
         displayName: '上传 macOS 安装包到阿里云 OSS'
@@ -173,6 +191,12 @@ jobs:
         displayName: '安装前端依赖 (npm install)'
 
       - script: |
+          if [[ "$TAURI_SIGNING_PRIVATE_KEY" == "\$(TAURI_SIGNING_PRIVATE_KEY)" ]]; then
+            unset TAURI_SIGNING_PRIVATE_KEY
+          fi
+          if [[ "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" == "\$(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)" ]]; then
+            export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          fi
           npx --prefix frontend tauri build
         displayName: '打包 Tauri Linux 应用 (AppImage & deb)'
         env:
@@ -187,9 +211,12 @@ jobs:
           publishLocation: 'Container'
 
       - script: |
-          if [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_ACCESS_KEY_SECRET" ] || [ -z "$OSS_BUCKET" ]; then
+          if [[ "$OSS_ACCESS_KEY_ID" == "\$(OSS_ACCESS_KEY_ID)" ]] || [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_BUCKET" ]; then
             echo "##vso[task.logissue type=warning]未检测到完整 OSS 变量配置，跳过 OSS 自动上传。"
           else
+            if [[ "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" == "\$(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)" ]]; then
+              export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+            fi
             node scripts/upload-oss.mjs
           fi
         displayName: '上传 Linux 安装包到阿里云 OSS'

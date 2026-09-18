@@ -107,7 +107,7 @@ pub fn is_stale_connection_err(e: &sqlx::Error) -> bool {
 /// }).await
 /// ```
 async fn with_stale_retry<F, Fut, T>(
-    label: &str,
+    #[allow(unused_variables)] label: &str,
     cfg: &ConnectionConfig,
     database: &str,
     mut op: F,
