@@ -16,6 +16,8 @@ variables:
     value: always
   - name: CI
     value: 'true'
+  - name: CARGO_HOME
+    value: $(Pipeline.Workspace)/.cargo
 
 jobs:
   # =========================================================================
@@ -50,18 +52,14 @@ jobs:
             npm | "$(Agent.OS)"
           path: $(System.DefaultWorkingDirectory)/frontend/node_modules
 
-      # 缓存 Cargo 依赖库与编译中间件
+      # 缓存 Cargo 依赖库
       - task: Cache@2
-        displayName: '缓存 Cargo 依赖与 target 编译产物'
+        displayName: '缓存 Cargo 依赖'
         inputs:
           key: 'cargo | "$(Agent.OS)" | Cargo.lock | src-tauri/Cargo.lock'
           restoreKeys: |
             cargo | "$(Agent.OS)"
-          path: |
-            $(USERPROFILE)/.cargo/registry/index
-            $(USERPROFILE)/.cargo/registry/cache
-            $(USERPROFILE)/.cargo/git/db
-            src-tauri/target
+          path: $(CARGO_HOME)
 
       - powershell: |
           Set-Location -Path "$(System.DefaultWorkingDirectory)\frontend"
@@ -146,18 +144,14 @@ jobs:
             npm | "$(Agent.OS)"
           path: $(System.DefaultWorkingDirectory)/frontend/node_modules
 
-      # 缓存 Cargo 依赖库与编译中间件
+      # 缓存 Cargo 依赖库
       - task: Cache@2
-        displayName: '缓存 Cargo 依赖与 target 编译产物'
+        displayName: '缓存 Cargo 依赖'
         inputs:
           key: 'cargo | "$(Agent.OS)" | Cargo.lock | src-tauri/Cargo.lock'
           restoreKeys: |
             cargo | "$(Agent.OS)"
-          path: |
-            $(HOME)/.cargo/registry/index
-            $(HOME)/.cargo/registry/cache
-            $(HOME)/.cargo/git/db
-            src-tauri/target
+          path: $(CARGO_HOME)
 
       - script: |
           cd frontend
@@ -242,18 +236,14 @@ jobs:
             npm | "$(Agent.OS)"
           path: $(System.DefaultWorkingDirectory)/frontend/node_modules
 
-      # 缓存 Cargo 依赖库与编译中间件
+      # 缓存 Cargo 依赖库
       - task: Cache@2
-        displayName: '缓存 Cargo 依赖与 target 编译产物'
+        displayName: '缓存 Cargo 依赖'
         inputs:
           key: 'cargo | "$(Agent.OS)" | Cargo.lock | src-tauri/Cargo.lock'
           restoreKeys: |
             cargo | "$(Agent.OS)"
-          path: |
-            $(HOME)/.cargo/registry/index
-            $(HOME)/.cargo/registry/cache
-            $(HOME)/.cargo/git/db
-            src-tauri/target
+          path: $(CARGO_HOME)
 
       - script: |
           cd frontend
