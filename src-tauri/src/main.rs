@@ -240,10 +240,17 @@ fn main() {
 	            delete_conversation,
 	            get_conversation,
 	            append_chat_messages,
-		            get_memory_usage,
-		            clean_cache,
-		            get_mcp_install_info,
-		        ])
+			            get_memory_usage,
+			            clean_cache,
+			            get_mcp_install_info,
+			            get_git_sync_config,
+			            save_git_sync_config,
+				            test_git_connection,
+				            backup_to_git,
+				            restore_from_git,
+				            list_backup_versions,
+				            rollback_to_version,
+				        ])
         .run(tauri::generate_context!())
         .expect("error while running ChatQuery");
 }

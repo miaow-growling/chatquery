@@ -5,9 +5,12 @@ import type {
   DataAssistant,
   DataAssistantInput,
   KbDocDto,
+  TreeModel,
 } from "../types";
+import { SimpleGroupedSelect } from "./SimpleGroupedSelect";
 
 export interface DataAssistantEditorProps {
+  tree?: TreeModel;
   initialAssistant: DataAssistant | null;
   isNew: boolean;
   allConns: ConnSummary[];
@@ -20,6 +23,7 @@ export interface DataAssistantEditorProps {
 }
 
 export const DataAssistantEditor: React.FC<DataAssistantEditorProps> = ({
+  tree,
   initialAssistant,
   isNew,
   allConns,
@@ -37,6 +41,7 @@ export const DataAssistantEditor: React.FC<DataAssistantEditorProps> = ({
   const [boundDbs, setBoundDbs] = useState<AssistantDbBinding[]>(
     initialAssistant?.bound_databases ? [...initialAssistant.bound_databases] : []
   );
+  const [boundDbsExpanded, setBoundDbsExpanded] = useState(false);
   const [boundKbs, setBoundKbs] = useState<string[]>(
     initialAssistant?.bound_knowledge_base_ids ? [...initialAssistant.bound_knowledge_base_ids] : []
   );
@@ -59,6 +64,7 @@ export const DataAssistantEditor: React.FC<DataAssistantEditorProps> = ({
     setBoundDbs(
       initialAssistant?.bound_databases ? [...initialAssistant.bound_databases] : []
     );
+    setBoundDbsExpanded(false);
     setBoundKbs(
       initialAssistant?.bound_knowledge_base_ids
         ? [...initialAssistant.bound_knowledge_base_ids]
@@ -258,7 +264,7 @@ export const DataAssistantEditor: React.FC<DataAssistantEditorProps> = ({
             </div>
           </div>
 
-          <div className="ast-bindings-list">
+          <div className={"ast-bindings-list" + (boundDbsExpanded ? " expanded" : " collapsed")}>
             {boundDbs.length === 0 ? (
               <div
                 style={{
@@ -270,58 +276,84 @@ export const DataAssistantEditor: React.FC<DataAssistantEditorProps> = ({
                 未关联具体数据库（执行时将自动继承当前会话数据库）
               </div>
             ) : (
-              boundDbs.map((b, i) => {
-                const c = allConns.find((x) => x.id === b.conn_id);
-                const isRedis = c?.db_type === "redis";
-                const dbName = b.database || "默认库";
-                return (
-                  <div
-                    className="ast-binding-chip"
-                    key={i}
-                    title={`${c?.name ?? b.conn_id} / ${dbName}`}
-                  >
-                    <span className="ast-binding-chip-icon">
-                      {isRedis ? "🔴" : "🐬"}
-                    </span>
-                    <span className="ast-binding-chip-conn">
-                      {c ? c.name : b.conn_id}
-                    </span>
-                    <span className="ast-binding-chip-sep">/</span>
-                    <span className="ast-binding-chip-db">
-                      {dbName}
-                    </span>
-                    <button
-                      type="button"
-                      className="ast-binding-chip-del"
-                      title="移除此绑定"
-                      onClick={() => removeBinding(i)}
+              <>
+                {(boundDbsExpanded ? boundDbs : boundDbs.slice(0, 3)).map((b, i) => {
+                  const c = allConns.find((x) => x.id === b.conn_id);
+                  const isRedis = c?.db_type === "redis";
+                  const dbName = b.database || "默认库";
+                  return (
+                    <div
+                      className="ast-binding-chip"
+                      key={i}
+                      title={`${c?.name ?? b.conn_id} / ${dbName}`}
                     >
-                      ×
-                    </button>
-                  </div>
-                );
-              })
+                      <span className="ast-binding-chip-icon">
+                        {isRedis ? "🔴" : "🐬"}
+                      </span>
+                      <span className="ast-binding-chip-conn">
+                        {c ? c.name : b.conn_id}
+                      </span>
+                      <span className="ast-binding-chip-sep">/</span>
+                      <span className="ast-binding-chip-db">
+                        {dbName}
+                      </span>
+                      <button
+                        type="button"
+                        className="ast-binding-chip-del"
+                        title="移除此绑定"
+                        onClick={() => removeBinding(i)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })}
+                {boundDbs.length > 3 && (
+                  <button
+                    type="button"
+                    className="ast-bindings-toggle-btn"
+                    onClick={() => setBoundDbsExpanded(!boundDbsExpanded)}
+                  >
+                    {boundDbsExpanded
+                      ? "收起 ▴"
+                      : `展开剩余 ${boundDbs.length - 3} 项 ▾`}
+                  </button>
+                )}
+              </>
             )}
           </div>
 
           <div className="ast-bind-bar">
-            <select
-              className="ast-select-native"
-              value={newConn}
-              onChange={(e) => {
-                setNewConn(e.target.value);
-                setNewDb("");
-                if (e.target.value) void loadKbDbs(e.target.value);
-              }}
-            >
-              <option value="">请选择连接实例…</option>
-              {allConns.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.db_type === "redis" ? "🔴 " : "🐬 "}
-                  {c.name}
-                </option>
-              ))}
-            </select>
+            {tree ? (
+              <SimpleGroupedSelect
+                tree={tree}
+                allConns={allConns}
+                value={newConn}
+                onChange={(val) => {
+                  setNewConn(val);
+                  setNewDb("");
+                  if (val) void loadKbDbs(val);
+                }}
+              />
+            ) : (
+              <select
+                className="ast-select-native"
+                value={newConn}
+                onChange={(e) => {
+                  setNewConn(e.target.value);
+                  setNewDb("");
+                  if (e.target.value) void loadKbDbs(e.target.value);
+                }}
+              >
+                <option value="">请选择连接实例…</option>
+                {allConns.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.db_type === "redis" ? "🔴 " : "🐬 "}
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            )}
 
             <span style={{ color: "var(--text-tertiary, #64748b)", fontSize: "12px", flexShrink: 0 }}>/</span>
 

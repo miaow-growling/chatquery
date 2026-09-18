@@ -16,6 +16,7 @@ pub mod mcp;
 pub mod model;
 pub mod sql_guard;
 pub mod store;
+pub mod sync;
 pub mod system;
 
 // The terminal UI is optional: the Tauri desktop build pulls in this crate

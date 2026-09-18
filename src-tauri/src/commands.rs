@@ -336,12 +336,34 @@ pub fn list_tree(state: State<AppState>) -> TreeModel {
 
 #[tauri::command]
 pub fn add_connection(state: State<AppState>, cfg: ConnInput) -> Result<(), String> {
-    state
-        .store
-        .lock()
-        .unwrap()
-        .add(to_cfg(cfg))
-        .map_err(|e| e.to_string())
+    let new_cfg = to_cfg(cfg);
+    let mut store = state.store.lock().unwrap();
+
+    // 检查重复连接：同分组同类型下，名称重复或物理端点完全相同
+    let dup = store.list().iter().find(|c| {
+        c.db_type == new_cfg.db_type
+            && c.group_id == new_cfg.group_id
+            && (c.name.trim() == new_cfg.name.trim()
+                || (!new_cfg.host.trim().is_empty()
+                    && c.host.trim() == new_cfg.host.trim()
+                    && c.port == new_cfg.port
+                    && c.user.trim() == new_cfg.user.trim()
+                    && c.database.trim() == new_cfg.database.trim()))
+    });
+
+    if let Some(existing) = dup {
+        let reason = if existing.name.trim() == new_cfg.name.trim() {
+            "连接名称已存在"
+        } else {
+            "目标主机、端口与数据库端点完全一致"
+        };
+        return Err(format!(
+            "当前分组下已存在连接「{}」（{}），请勿重复添加",
+            existing.name, reason
+        ));
+    }
+
+    store.add(new_cfg).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2498,4 +2520,189 @@ pub fn get_mcp_install_info() -> Result<McpInstallInfo, String> {
         cursor_config_path,
     })
 }
+
+// -----------------------------------------------------------------------------
+// Git 加密备份与同步设置 (#GitSync)
+// -----------------------------------------------------------------------------
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct GitSyncConfigDto {
+    pub git_url: String,
+    pub has_key: bool,
+    pub sync_connections: bool,
+    pub sync_models: bool,
+    pub sync_snippets: bool,
+    pub sync_history: bool,
+    pub last_backup_time: Option<i64>,
+    pub last_restore_time: Option<i64>,
+    pub last_status: Option<String>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct GitSyncConfigInput {
+    pub git_url: String,
+    #[serde(default)]
+    pub encryption_key: Option<String>,
+    pub sync_connections: bool,
+    pub sync_models: bool,
+    pub sync_snippets: bool,
+    pub sync_history: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct SyncResultDto {
+    pub success: bool,
+    pub message: String,
+    pub timestamp: i64,
+    pub connections_count: usize,
+    pub models_count: usize,
+    pub snippets_count: usize,
+    pub history_count: usize,
+}
+
+#[tauri::command]
+pub fn get_git_sync_config() -> Result<GitSyncConfigDto, String> {
+    let cfg = chatquery::sync::load_git_sync_config();
+    let has_key = !cfg.encryption_key_enc.is_empty();
+    Ok(GitSyncConfigDto {
+        git_url: cfg.git_url,
+        has_key,
+        sync_connections: cfg.sync_connections,
+        sync_models: cfg.sync_models,
+        sync_snippets: cfg.sync_snippets,
+        sync_history: cfg.sync_history,
+        last_backup_time: cfg.last_backup_time,
+        last_restore_time: cfg.last_restore_time,
+        last_status: cfg.last_status,
+    })
+}
+
+#[tauri::command]
+pub fn save_git_sync_config(input: GitSyncConfigInput) -> Result<(), String> {
+    if !input.git_url.trim().is_empty() {
+        chatquery::sync::git::validate_git_url(&input.git_url).map_err(|e| e.to_string())?;
+    }
+    let mut cfg = chatquery::sync::load_git_sync_config();
+    cfg.git_url = input.git_url.trim().to_string();
+    cfg.sync_connections = input.sync_connections;
+    cfg.sync_models = input.sync_models;
+    cfg.sync_snippets = input.sync_snippets;
+    cfg.sync_history = input.sync_history;
+
+    if let Some(ref key) = input.encryption_key {
+        chatquery::sync::set_encrypted_encryption_key(&mut cfg, key)
+            .map_err(|e| e.to_string())?;
+    }
+
+    chatquery::sync::save_git_sync_config(&cfg).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn test_git_connection(git_url: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        chatquery::sync::git::test_git_remote(&git_url).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("测试连接任务执行失败: {}", e))?
+}
+
+#[tauri::command]
+pub async fn backup_to_git(
+    _state: State<'_, AppState>,
+    encryption_key: Option<String>,
+) -> Result<SyncResultDto, String> {
+    tokio::task::spawn_blocking(move || {
+        let storage = chatquery::store::Storage::open().map_err(|e| e.to_string())?;
+        let res = chatquery::sync::execute_backup_to_git(&storage, encryption_key.as_deref())
+            .map_err(|e| e.to_string())?;
+        Ok(SyncResultDto {
+            success: res.success,
+            message: res.message,
+            timestamp: res.timestamp,
+            connections_count: res.connections_count,
+            models_count: res.models_count,
+            snippets_count: res.snippets_count,
+            history_count: res.history_count,
+        })
+    })
+    .await
+    .map_err(|e| format!("执行备份任务失败: {}", e))?
+}
+
+#[tauri::command]
+pub async fn restore_from_git(
+    state: State<'_, AppState>,
+    encryption_key: Option<String>,
+) -> Result<SyncResultDto, String> {
+    let res = tokio::task::spawn_blocking(move || {
+        let storage = chatquery::store::Storage::open().map_err(|e| e.to_string())?;
+        chatquery::sync::execute_restore_from_git(&storage, encryption_key.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("执行恢复任务失败: {}", e))??;
+
+    // 恢复成功后，自动重新加载内存中的连接树和模型配置
+    if let Ok(mut store) = state.store.lock() {
+        let _ = store.reload();
+    }
+    if let Ok(mut llm) = state.llm.lock() {
+        *llm = chatquery::config::LlmConfig::load();
+    }
+
+    Ok(SyncResultDto {
+        success: res.success,
+        message: res.message,
+        timestamp: res.timestamp,
+        connections_count: res.connections_count,
+        models_count: res.models_count,
+        snippets_count: res.snippets_count,
+        history_count: res.history_count,
+    })
+}
+
+#[tauri::command]
+pub async fn list_backup_versions() -> Result<Vec<chatquery::sync::BackupVersionDto>, String> {
+    tokio::task::spawn_blocking(move || {
+        chatquery::sync::list_backup_history(20).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("获取历史版本失败: {}", e))?
+}
+
+#[tauri::command]
+pub async fn rollback_to_version(
+    state: State<'_, AppState>,
+    commit_hash: String,
+    encryption_key: Option<String>,
+) -> Result<SyncResultDto, String> {
+    let res = tokio::task::spawn_blocking(move || {
+        let storage = chatquery::store::Storage::open().map_err(|e| e.to_string())?;
+        chatquery::sync::rollback_to_commit(&storage, &commit_hash, encryption_key.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("执行版本回滚失败: {}", e))??;
+
+    // 回滚成功后，刷新内存连接与模型
+    if let Ok(mut store) = state.store.lock() {
+        let _ = store.reload();
+    }
+    if let Ok(mut llm) = state.llm.lock() {
+        *llm = chatquery::config::LlmConfig::load();
+    }
+
+    Ok(SyncResultDto {
+        success: res.success,
+        message: res.message,
+        timestamp: res.timestamp,
+        connections_count: res.connections_count,
+        models_count: res.models_count,
+        snippets_count: res.snippets_count,
+        history_count: res.history_count,
+    })
+}
+
+
 

@@ -272,6 +272,24 @@ impl Storage {
         Ok(())
     }
 
+    pub fn upsert_container(&self, c: &Container) -> Result<()> {
+        let kind_str = match c.kind {
+            ContainerKind::Env => "env",
+            ContainerKind::Group => "group",
+        };
+        let db_type_str = c.db_type.map(|t| match t {
+            DbType::Mysql => "mysql",
+            DbType::Redis => "redis",
+        });
+        self.conn.execute(
+            "INSERT INTO containers (id, kind, name, parent, ord, db_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET kind = ?2, name = ?3, parent = ?4, ord = ?5, db_type = ?6",
+            params![c.id, kind_str, c.name, c.parent, c.ord, db_type_str],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_topology_atomic(
         &mut self,
         connection_ids: &[String],
@@ -503,6 +521,86 @@ impl Storage {
                     .execute("DELETE FROM queries WHERE id = ?1", params![id])?;
             }
         }
+        Ok(())
+    }
+
+    pub fn list_all_snippets(&self) -> Result<Vec<QueryRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, sql, conn_id, db, created FROM queries
+             WHERE name IS NOT NULL ORDER BY created ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(QueryRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                sql: r.get(2)?,
+                conn_id: r.get(3)?,
+                db: r.get(4)?,
+                created: r.get(5)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn upsert_snippet_full(
+        &self,
+        id: &str,
+        name: &str,
+        sql: &str,
+        conn_id: Option<&str>,
+        db: Option<&str>,
+        created: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO queries (id, name, sql, conn_id, db, created)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET name = ?2, sql = ?3, conn_id = ?4, db = ?5",
+            params![id, name, sql, conn_id, db, created],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_queries_history_raw(&self, limit: usize) -> Result<Vec<QueryRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, sql, conn_id, db, created FROM queries
+             WHERE name IS NULL ORDER BY created DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(QueryRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                sql: r.get(2)?,
+                conn_id: r.get(3)?,
+                db: r.get(4)?,
+                created: r.get(5)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn insert_query_history_raw(
+        &self,
+        id: &str,
+        sql: &str,
+        conn_id: Option<&str>,
+        db: Option<&str>,
+        created: i64,
+    ) -> Result<()> {
+        let hash = sql_norm_hash(sql);
+        self.conn.execute(
+            "INSERT INTO queries (id, name, sql, conn_id, db, created, norm_hash)
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO NOTHING",
+            params![id, sql, conn_id, db, created, hash],
+        )?;
         Ok(())
     }
 
@@ -1247,6 +1345,43 @@ impl Storage {
     /// 释放 SQLite 引擎未使用的内部内存缓存（PRAGMA shrink_memory）。
     pub fn shrink_memory(&self) -> Result<()> {
         let _ = self.conn.execute_batch("PRAGMA shrink_memory;");
+        Ok(())
+    }
+
+    pub fn upsert_conversation_raw(
+        &self,
+        id: &str,
+        title: &str,
+        conn_id: Option<&str>,
+        created: i64,
+        updated: i64,
+        pinned: bool,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO conversations (id, title, conn_id, created, updated, pinned)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET title = ?2, conn_id = ?3, updated = ?5, pinned = ?6",
+            params![id, title, conn_id, created, updated, if pinned { 1 } else { 0 }],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_chat_message_raw(
+        &self,
+        id: &str,
+        conv_id: &str,
+        seq: i64,
+        role: &str,
+        content: &str,
+        meta: Option<&str>,
+        ts: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO chat_messages (id, conv_id, seq, role, content, meta, ts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET content = ?5, meta = ?6",
+            params![id, conv_id, seq, role, content, meta, ts],
+        )?;
         Ok(())
     }
 }

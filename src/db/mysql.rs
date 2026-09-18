@@ -1904,6 +1904,22 @@ pub struct TableStructure {
     pub table_comment: Option<String>,
 }
 
+fn get_mysql_int_col(row: &sqlx::mysql::MySqlRow, col: &str) -> i64 {
+    row.try_get::<i64, _>(col)
+        .or_else(|_| row.try_get::<u32, _>(col).map(|v| v as i64))
+        .or_else(|_| row.try_get::<i32, _>(col).map(|v| v as i64))
+        .or_else(|_| row.try_get::<u64, _>(col).map(|v| v as i64))
+        .or_else(|_| row.try_get::<i16, _>(col).map(|v| v as i64))
+        .or_else(|_| row.try_get::<u16, _>(col).map(|v| v as i64))
+        .or_else(|_| row.try_get::<i8, _>(col).map(|v| v as i64))
+        .or_else(|_| row.try_get::<u8, _>(col).map(|v| v as i64))
+        .or_else(|_| {
+            row.try_get::<String, _>(col)
+                .map(|s| s.parse::<i64>().unwrap_or(0))
+        })
+        .unwrap_or(0)
+}
+
 /// Fetch the full structure of a table: column details (with full type and
 /// extra), index list, and the CREATE TABLE DDL. This is the backend for the
 /// "表结构" view — distinct from `list_columns` (used by the tree/autocomplete,
@@ -1965,10 +1981,19 @@ pub async fn describe_table(
             .map_err(AppError::Sqlx)?;
         let mut indexes = Vec::with_capacity(idx_rows.len());
         for row in idx_rows {
-            let name: String = row.try_get("Key_name").map_err(AppError::Sqlx)?;
-            let non_unique: i64 = row.try_get("Non_unique").map_err(AppError::Sqlx)?;
-            let seq: i64 = row.try_get("Seq_in_index").map_err(AppError::Sqlx)?;
-            let column: String = row.try_get("Column_name").map_err(AppError::Sqlx)?;
+            let name: String = row
+                .try_get::<String, _>("Key_name")
+                .unwrap_or_else(|_| "index".to_string());
+            let non_unique = get_mysql_int_col(&row, "Non_unique");
+            let seq = get_mysql_int_col(&row, "Seq_in_index");
+            let column: String = row
+                .try_get::<String, _>("Column_name")
+                .or_else(|_| {
+                    row.try_get::<Option<String>, _>("Column_name")
+                        .map(|o| o.unwrap_or_default())
+                })
+                .or_else(|_| row.try_get::<String, _>("Expression"))
+                .unwrap_or_else(|_| String::new());
             indexes.push(IndexInfo {
                 name,
                 column,

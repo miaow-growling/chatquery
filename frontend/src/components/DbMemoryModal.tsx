@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { api } from "../api";
-import type { ConnSummary, DbMemoryDto } from "../types";
+import type { ConnSummary, DbMemoryDto, TreeModel } from "../types";
+import { buildGroupedConnOptions } from "../types";
 
 export interface SelectOption {
   value: string;
@@ -159,17 +160,21 @@ function CustomSelect({
 }
 
 interface DbMemoryModalProps {
+  tree?: TreeModel;
   conns: ConnSummary[];
   activeConnId?: string | null;
   activeDb?: string | null;
   onClose: () => void;
+  embedded?: boolean;
 }
 
 export function DbMemoryModal({
+  tree,
   conns,
   activeConnId,
   activeDb,
   onClose,
+  embedded = false,
 }: DbMemoryModalProps) {
   const [selectedConnId, setSelectedConnId] = useState<string>(activeConnId || "");
   const [selectedDb, setSelectedDb] = useState<string>(activeDb || "");
@@ -289,16 +294,31 @@ export function DbMemoryModal({
   }, [conns]);
 
   const connOptions: SelectOption[] = useMemo(() => {
-    return [
-      { value: "", label: "全部连接", icon: "🌐" },
-      ...conns.map((c) => ({
-        value: c.id,
-        label: c.name,
-        tag: c.db_type,
-        icon: c.db_type === "redis" ? "🔴" : "🐬",
-      })),
-    ];
-  }, [conns]);
+    const list: SelectOption[] = [{ value: "", label: "全部连接", icon: "🌐" }];
+    if (tree) {
+      const groups = buildGroupedConnOptions(tree, conns);
+      for (const g of groups) {
+        for (const c of g.conns) {
+          list.push({
+            value: c.id,
+            label: c.name,
+            tag: g.label.replace(/^🌐\s*/, "").replace(/^📁\s*/, ""),
+            icon: c.db_type === "redis" ? "🔴" : "🐬",
+          });
+        }
+      }
+    } else {
+      for (const c of conns) {
+        list.push({
+          value: c.id,
+          label: c.name,
+          tag: c.db_type,
+          icon: c.db_type === "redis" ? "🔴" : "🐬",
+        });
+      }
+    }
+    return list;
+  }, [tree, conns]);
 
   const dbOptions: SelectOption[] = useMemo(() => {
     return [
@@ -312,13 +332,31 @@ export function DbMemoryModal({
   }, [availableDbs]);
 
   const newConnOptions: SelectOption[] = useMemo(() => {
-    return conns.map((c) => ({
-      value: c.id,
-      label: c.name,
-      tag: c.db_type,
-      icon: c.db_type === "redis" ? "🔴" : "🐬",
-    }));
-  }, [conns]);
+    const list: SelectOption[] = [];
+    if (tree) {
+      const groups = buildGroupedConnOptions(tree, conns);
+      for (const g of groups) {
+        for (const c of g.conns) {
+          list.push({
+            value: c.id,
+            label: c.name,
+            tag: g.label.replace(/^🌐\s*/, "").replace(/^📁\s*/, ""),
+            icon: c.db_type === "redis" ? "🔴" : "🐬",
+          });
+        }
+      }
+    } else {
+      for (const c of conns) {
+        list.push({
+          value: c.id,
+          label: c.name,
+          tag: c.db_type,
+          icon: c.db_type === "redis" ? "🔴" : "🐬",
+        });
+      }
+    }
+    return list;
+  }, [tree, conns]);
 
   const newDbOptions: SelectOption[] = useMemo(() => {
     return [
@@ -388,26 +426,26 @@ export function DbMemoryModal({
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   };
 
-  return (
-    <div className="modal-mask" onClick={onClose}>
-      <div
-        className="modal wide db-memory-modal"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Modal Header */}
-        <div className="mem-modal-head">
-          <div className="mem-modal-title-wrap">
-            <div className="mem-modal-title-row">
-              <span className="mem-modal-icon">🧠</span>
-              <h3 className="mem-modal-title">数据库记忆管理</h3>
-              <span className="mem-count-badge">
-                {filteredMemories.length} 条规则
-              </span>
-            </div>
-            <div className="mem-modal-desc">
-              沉淀您在日常对话中对 AI 的纠错、业务偏好与防坑约束，在后续查询中强制遵循
-            </div>
+  const innerContent = (
+    <div
+      className={embedded ? "db-memory-embedded" : "modal wide db-memory-modal"}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* Modal Header */}
+      <div className="mem-modal-head">
+        <div className="mem-modal-title-wrap">
+          <div className="mem-modal-title-row">
+            <span className="mem-modal-icon">🧠</span>
+            <h3 className="mem-modal-title">数据库记忆管理</h3>
+            <span className="mem-count-badge">
+              {filteredMemories.length} 条规则
+            </span>
           </div>
+          <div className="mem-modal-desc">
+            沉淀您在日常对话中对 AI 的纠错、业务偏好与防坑约束，在后续查询中强制遵循
+          </div>
+        </div>
+        {!embedded && (
           <button
             type="button"
             className="mem-modal-close-btn"
@@ -416,9 +454,10 @@ export function DbMemoryModal({
           >
             ×
           </button>
-        </div>
+        )}
+      </div>
 
-        {/* Toolbar & Filters */}
+      {/* Toolbar & Filters */}
         <div className="mem-modal-toolbar">
           <div className="mem-filter-group">
             {/* Connection Filter */}
@@ -431,8 +470,8 @@ export function DbMemoryModal({
                   setSelectedConnId(val);
                   setSelectedDb("");
                 }}
-                minWidth="140px"
-                maxWidth="210px"
+                minWidth="160px"
+                maxWidth="260px"
               />
             </div>
 
@@ -724,16 +763,27 @@ export function DbMemoryModal({
             <span>💡</span>
             <span>已记忆规则已持久化保存，针对该连接/库的后续对话将强制优先遵守</span>
           </span>
-          <button
-            type="button"
-            className="btn btn-primary"
-            style={{ height: "30px", padding: "0 22px", fontSize: "12px" }}
-            onClick={onClose}
-          >
-            完成
-          </button>
+          {!embedded && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ height: "30px", padding: "0 22px", fontSize: "12px" }}
+              onClick={onClose}
+            >
+              完成
+            </button>
+          )}
         </div>
       </div>
+  );
+
+  if (embedded) {
+    return innerContent;
+  }
+
+  return (
+    <div className="modal-mask" onClick={onClose}>
+      {innerContent}
     </div>
   );
 }

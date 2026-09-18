@@ -602,4 +602,82 @@ export interface CleanCacheResult {
   freed_mb: number;
 }
 
+/// Git 加密备份与同步配置 (#GitSync)
+export interface GitSyncConfigDto {
+  git_url: string;
+  has_key: boolean;
+  sync_connections: boolean;
+  sync_models: boolean;
+  sync_snippets: boolean;
+  sync_history: boolean;
+  last_backup_time: number | null;
+  last_restore_time: number | null;
+  last_status: string | null;
+}
+
+export interface GitSyncConfigInput {
+  git_url: string;
+  encryption_key?: string;
+  sync_connections: boolean;
+  sync_models: boolean;
+  sync_snippets: boolean;
+  sync_history: boolean;
+}
+
+export interface SyncResultDto {
+  success: boolean;
+  message: string;
+  timestamp: number;
+  connections_count: number;
+  models_count: number;
+  snippets_count: number;
+  history_count: number;
+}
+
+export interface BackupVersionDto {
+  hash: string;
+  short_hash: string;
+  timestamp: number;
+  message: string;
+  app_version: string | null;
+  included_items: string[];
+}
+
+export interface GroupedConnOption {
+  label: string;
+  conns: ConnSummary[];
+}
+
+export function buildGroupedConnOptions(
+  tree: TreeModel,
+  allConns: ConnSummary[]
+): GroupedConnOption[] {
+  const groups: GroupedConnOption[] = [];
+  const groupedIds = new Set<string>();
+
+  for (const env of tree.environments) {
+    for (const g of env.groups) {
+      const conns = g.connections;
+      if (conns.length > 0) {
+        for (const c of conns) {
+          groupedIds.add(c.id);
+        }
+        const label =
+          env.name === g.name || g.name === "默认分组"
+            ? `🌐 ${env.name}`
+            : `🌐 ${env.name} · 📁 ${g.name}`;
+        groups.push({ label, conns });
+      }
+    }
+  }
+
+  const ungrouped = allConns.filter((c) => !groupedIds.has(c.id));
+  if (ungrouped.length > 0) {
+    groups.push({ label: "📁 未分组连接", conns: ungrouped });
+  }
+
+  return groups;
+}
+
+
 

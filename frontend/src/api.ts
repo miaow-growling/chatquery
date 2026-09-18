@@ -16,6 +16,10 @@ import type {
   ForeignKeyInfo,
   ImportResult,
   CleanCacheResult,
+  GitSyncConfigDto,
+  GitSyncConfigInput,
+  SyncResultDto,
+  BackupVersionDto,
   MemoryStats,
   McpInstallInfo,
   ModelEntryDto,
@@ -338,6 +342,15 @@ export const api = {
     onToken: (delta: string) => void
   ) => inlineGenerateSql(prompt, selectedSql, connId, db, onToken),
   getMcpInstallInfo: () => invoke<McpInstallInfo>("get_mcp_install_info"),
+  // --- Git Encrypted Backup & Sync (#GitSync) ---
+  getGitSyncConfig: () => invoke<GitSyncConfigDto>("get_git_sync_config"),
+  saveGitSyncConfig: (input: GitSyncConfigInput) => invoke("save_git_sync_config", { input }),
+  testGitConnection: (gitUrl: string) => invoke<string>("test_git_connection", { gitUrl }),
+  backupToGit: (encryptionKey?: string) => invoke<SyncResultDto>("backup_to_git", { encryptionKey }),
+  restoreFromGit: (encryptionKey?: string) => invoke<SyncResultDto>("restore_from_git", { encryptionKey }),
+  listBackupVersions: () => invoke<BackupVersionDto[]>("list_backup_versions"),
+  rollbackToVersion: (commitHash: string, encryptionKey?: string) =>
+    invoke<SyncResultDto>("rollback_to_version", { commitHash, encryptionKey }),
 };
 
 export function onChatToken(cb: (t: string) => void): Promise<UnlistenFn> {
@@ -459,4 +472,61 @@ export async function cleanCache(): Promise<CleanCacheResult> {
     };
   }
 }
+
+/**
+ * 获取 Git 加密备份与同步配置
+ */
+export async function getGitSyncConfig(): Promise<GitSyncConfigDto> {
+  return await invoke<GitSyncConfigDto>("get_git_sync_config");
+}
+
+/**
+ * 保存 Git 加密备份与同步配置
+ */
+export async function saveGitSyncConfig(input: GitSyncConfigInput): Promise<void> {
+  await invoke("save_git_sync_config", { input });
+}
+
+/**
+ * 测试指定 Git 仓库的连通性与权限
+ */
+export async function testGitConnection(gitUrl: string): Promise<string> {
+  return await invoke<string>("test_git_connection", { gitUrl });
+}
+
+/**
+ * 执行立即备份到 Git
+ */
+export async function backupToGit(encryptionKey?: string): Promise<SyncResultDto> {
+  return await invoke<SyncResultDto>("backup_to_git", { encryptionKey });
+}
+
+/**
+ * 执行从 Git 恢复数据
+ */
+export async function restoreFromGit(encryptionKey?: string): Promise<SyncResultDto> {
+  return await invoke<SyncResultDto>("restore_from_git", { encryptionKey });
+}
+
+/**
+ * 获取 Git 备份的历史版本列表
+ */
+export async function listBackupVersions(): Promise<BackupVersionDto[]> {
+  return await invoke<BackupVersionDto[]>("list_backup_versions");
+}
+
+/**
+ * 回滚到指定的历史版本
+ */
+export async function rollbackToVersion(
+  commitHash: string,
+  encryptionKey?: string
+): Promise<SyncResultDto> {
+  return await invoke<SyncResultDto>("rollback_to_version", {
+    commitHash,
+    encryptionKey,
+  });
+}
+
+
 

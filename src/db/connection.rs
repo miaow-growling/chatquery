@@ -229,6 +229,15 @@ impl ConnectionStore {
         self.storage.rotate_key(field)
     }
 
+    /// Reload in-memory connections and containers from underlying storage.
+    pub fn reload(&mut self) -> Result<()> {
+        let connections = self.storage.load_connections()?;
+        let containers = self.storage.load_containers()?;
+        self.connections = connections;
+        self.containers = containers;
+        Ok(())
+    }
+
     // --- Query history / saved snippets ----------------------------------
 
     pub fn log_query(

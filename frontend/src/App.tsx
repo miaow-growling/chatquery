@@ -37,6 +37,8 @@ import type {
   ExplainNode,
   ExplainVisual,
   ForeignKeyInfo,
+  GitSyncConfigDto,
+  BackupVersionDto,
   KbBindingDto,
   KbDocDto,
   KeyStatus,
@@ -79,6 +81,7 @@ import { InlineFilterRow } from "./components/InlineFilterRow";
 import { QuickOpenModal } from "./components/QuickOpenModal";
 import { DbMemoryModal } from "./components/DbMemoryModal";
 import { McpInstallModal } from "./components/McpInstallModal";
+import { SimpleGroupedSelect } from "./components/SimpleGroupedSelect";
 
 const CURRENT_APP_VERSION = "0.1.0";
 const OSS_LATEST_RELEASE_URL = "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json";
@@ -2077,6 +2080,8 @@ export function App() {
   // which one the body renders.
   const [resultTab, setResultTab] =
     useState<"data" | "structure" | "relation" | "explain">("data");
+  const [structSubTab, setStructSubTab] =
+    useState<"columns" | "indexes" | "ddl">("columns");
   // EXPLAIN execution-plan visualisation (#6), populated by `explainQuery`.
   const [explainView, setExplainView] = useState<ExplainVisual | null>(null);
 
@@ -2381,8 +2386,26 @@ export function App() {
   // page on the right. Keeping this as explicit buttons (not a <select>
   // dropdown) makes the module list scannable and easy to extend.
   const [settingsTab, setSettingsTab] = useState<
-    "model" | "key" | "general" | "kb" | "assistant"
+    "model" | "key" | "general" | "kb" | "assistant" | "sync" | "memory"
   >("model");
+  const [gitSyncConfig, setGitSyncConfig] = useState<GitSyncConfigDto | null>(null);
+  const [gitUrl, setGitUrl] = useState("");
+  const [gitEncryptionKey, setGitEncryptionKey] = useState("");
+  const [syncConnections, setSyncConnections] = useState(true);
+  const [syncModels, setSyncModels] = useState(true);
+  const [syncSnippets, setSyncSnippets] = useState(true);
+  const [syncHistory, setSyncHistory] = useState(false);
+  const [gitSyncTesting, setGitSyncTesting] = useState(false);
+  const [gitSyncBackingUp, setGitSyncBackingUp] = useState(false);
+  const [gitSyncRestoring, setGitSyncRestoring] = useState(false);
+  const [gitSyncMsg, setGitSyncMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [gitTestStatus, setGitTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
+  const [gitTestMsg, setGitTestMsg] = useState<string | null>(null);
+  const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
+  const [versionModalOpen, setVersionModalOpen] = useState(false);
+  const [backupVersions, setBackupVersions] = useState<BackupVersionDto[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(false);
+  const [rollingBackHash, setRollingBackHash] = useState<string | null>(null);
   const [presets, setPresets] = useState<VendorPreset[]>([]);
   const [llmCfg, setLlmCfg] = useState<LlmConfigDto | null>(null);
   const [vendorProfiles, setVendorProfiles] = useState<VendorProfileDto[]>([]);
@@ -2554,20 +2577,175 @@ export function App() {
     try {
       const profiles = await api.listModelAliases();
       setVendorProfiles(profiles);
-      const [ps, cfg, ks] = await Promise.all([
+      const [ps, cfg, ks, syncCfg] = await Promise.all([
         api.getVendorPresets(),
         api.getLlmConfig(),
         api.getKeyStatus(),
+        api.getGitSyncConfig().catch(() => null),
       ]);
       setPresets(ps);
       setLlmCfg(cfg);
       setKeyStatus(ks);
+      if (syncCfg) {
+        setGitSyncConfig(syncCfg);
+        setGitUrl(syncCfg.git_url);
+        setSyncConnections(syncCfg.sync_connections);
+        setSyncModels(syncCfg.sync_models);
+        setSyncSnippets(syncCfg.sync_snippets);
+        setSyncHistory(syncCfg.sync_history);
+      }
     } catch (e) {
       showToast("加载设置失败: " + String(e));
     }
     setSettingsTab("model");
     setSettingsOpen(true);
   }, []);
+
+  const handleSaveGitSync = async () => {
+    try {
+      setGitSyncMsg(null);
+      await api.saveGitSyncConfig({
+        git_url: gitUrl,
+        encryption_key: gitEncryptionKey ? gitEncryptionKey : undefined,
+        sync_connections: syncConnections,
+        sync_models: syncModels,
+        sync_snippets: syncSnippets,
+        sync_history: syncHistory,
+      });
+      const updated = await api.getGitSyncConfig();
+      setGitSyncConfig(updated);
+      setGitEncryptionKey("");
+      setGitSyncMsg({ ok: true, text: "同步设置已保存" });
+    } catch (e) {
+      setGitSyncMsg({ ok: false, text: "保存失败: " + String(e) });
+    }
+  };
+
+  const handleTestGitConnection = async () => {
+    if (!gitUrl.trim()) {
+      setGitTestStatus("error");
+      setGitTestMsg("请先输入 Git 仓库地址");
+      setGitSyncMsg({ ok: false, text: "请先输入 Git 仓库地址" });
+      showToast("请先输入 Git 仓库地址");
+      return;
+    }
+    setGitSyncTesting(true);
+    setGitTestStatus("testing");
+    setGitTestMsg(null);
+    setGitSyncMsg(null);
+    try {
+      const res = await api.testGitConnection(gitUrl);
+      setGitTestStatus("success");
+      setGitTestMsg(res);
+      setGitSyncMsg({ ok: true, text: res });
+      showToast("✓ " + res);
+    } catch (e) {
+      const err = String(e);
+      setGitTestStatus("error");
+      setGitTestMsg(err);
+      setGitSyncMsg({ ok: false, text: err });
+      showToast("✗ 连接测试失败");
+    } finally {
+      setGitSyncTesting(false);
+    }
+  };
+
+  const handleBackupToGit = async () => {
+    if (!gitUrl.trim()) {
+      setGitSyncMsg({ ok: false, text: "请先输入 Git 仓库地址" });
+      return;
+    }
+    setGitSyncBackingUp(true);
+    setGitSyncMsg(null);
+    try {
+      await api.saveGitSyncConfig({
+        git_url: gitUrl,
+        encryption_key: gitEncryptionKey ? gitEncryptionKey : undefined,
+        sync_connections: syncConnections,
+        sync_models: syncModels,
+        sync_snippets: syncSnippets,
+        sync_history: syncHistory,
+      });
+      const res = await api.backupToGit(gitEncryptionKey || undefined);
+      const updated = await api.getGitSyncConfig();
+      setGitSyncConfig(updated);
+      setGitEncryptionKey("");
+      setGitSyncMsg({ ok: res.success, text: res.message });
+    } catch (e) {
+      setGitSyncMsg({ ok: false, text: "备份失败: " + String(e) });
+    } finally {
+      setGitSyncBackingUp(false);
+    }
+  };
+
+  const handleRestoreFromGit = async () => {
+    setShowRestoreConfirm(false);
+    if (!gitUrl.trim()) {
+      setGitSyncMsg({ ok: false, text: "请先配置 Git 仓库地址" });
+      return;
+    }
+    setGitSyncRestoring(true);
+    setGitSyncMsg(null);
+    try {
+      const res = await api.restoreFromGit(gitEncryptionKey || undefined);
+      const updated = await api.getGitSyncConfig();
+      setGitSyncConfig(updated);
+      setGitEncryptionKey("");
+      setGitSyncMsg({ ok: res.success, text: res.message });
+      void refresh();
+      const profiles = await api.listModelAliases();
+      setVendorProfiles(profiles);
+      showToast("数据已从 Git 成功恢复并刷新！");
+    } catch (e) {
+      setGitSyncMsg({ ok: false, text: "恢复失败: " + String(e) });
+    } finally {
+      setGitSyncRestoring(false);
+    }
+  };
+
+  const openVersionHistory = async () => {
+    if (!gitUrl.trim()) {
+      setGitSyncMsg({ ok: false, text: "请先配置 Git 仓库地址" });
+      return;
+    }
+    setVersionModalOpen(true);
+    setLoadingVersions(true);
+    try {
+      const list = await api.listBackupVersions();
+      setBackupVersions(list);
+    } catch (e) {
+      showToast("获取历史版本失败: " + String(e));
+    } finally {
+      setLoadingVersions(false);
+    }
+  };
+
+  const handleRollbackVersion = async (v: BackupVersionDto) => {
+    if (
+      !(await confirmAsync(
+        `确定将数据回滚至历史版本 [${v.short_hash}]（${new Date(v.timestamp * 1000).toLocaleString()}）吗？本地已选中的连接、模型配置、代码片段和历史记录将会按该历史备份同步更新。`,
+        "版本回滚确认"
+      ))
+    ) {
+      return;
+    }
+    setRollingBackHash(v.hash);
+    try {
+      const res = await api.rollbackToVersion(v.hash, gitEncryptionKey || undefined);
+      const updated = await api.getGitSyncConfig();
+      setGitSyncConfig(updated);
+      setGitEncryptionKey("");
+      showToast(res.message);
+      void refresh();
+      const profiles = await api.listModelAliases();
+      setVendorProfiles(profiles);
+      setVersionModalOpen(false);
+    } catch (e) {
+      showToast("回滚失败: " + String(e));
+    } finally {
+      setRollingBackHash(null);
+    }
+  };
 
   /// Auto-save the current vendor draft. Only safe to call when an
   /// existing vendor is being edited (`editingVendor` truthy) — for new
@@ -2937,6 +3115,7 @@ export function App() {
   const [kbName, setKbName] = useState("");
   const [kbContent, setKbContent] = useState("");
   const [kbBindings, setKbBindings] = useState<KbBindingDto[]>([]);
+  const [kbBindingsExpanded, setKbBindingsExpanded] = useState(false);
   const [kbMsg, setKbMsg] = useState<{ ok: boolean; text: string } | null>(null);
   // Distinguishes "list empty state" from "actively creating a new draft" — both
   // have kbEditing=null and empty name/content, so we need an explicit flag or
@@ -2990,6 +3169,7 @@ export function App() {
     setKbName("");
     setKbContent("");
     setKbBindings([]);
+    setKbBindingsExpanded(false);
     setKbMsg(null);
   };
 
@@ -2999,6 +3179,7 @@ export function App() {
     setKbName(doc.name);
     setKbContent(doc.content);
     setKbBindings(doc.bindings.map((b) => ({ ...b })));
+    setKbBindingsExpanded(false);
     setKbMsg(null);
   };
 
@@ -4711,22 +4892,108 @@ export function App() {
   );
 
   // Fetch and display the full table structure (columns, indexes, DDL) in
-  // the result panel. Replaces the data grid view until the user navigates
-  // away (browse/query/tab switch all clear it via clearEditState).
+  // the result panel. If not already on this table tab, jumps to existing
+  // tab or opens a dedicated new tab so the current query tab isn't stomped.
   const showStructure = useCallback(
     async (connId: string, db: string, table: string) => {
       clearEditState();
+      setSelDb(db);
+      setSelId((prev) => (prev === connId ? prev : connId));
+      setStructSubTab("columns");
+
+      // Track recently visited table (max 5 items, latest first)
+      setRecentTables((prev) => {
+        const next = [
+          { connId, db, table },
+          ...prev.filter(
+            (x) => !(x.connId === connId && x.db === db && x.table === table)
+          ),
+        ].slice(0, 5);
+        try {
+          localStorage.setItem("cq_recent_tables", JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
+      const currentTabs = tabsRef.current;
+      const currentActiveId = activeTabIdRef.current;
+      const currentActive = currentTabs.find((t) => t.id === currentActiveId);
+
+      const isAlreadyInThisTableTab =
+        currentActive?.kind === "table" &&
+        currentActive?.browseCtx?.connId === connId &&
+        currentActive?.browseCtx?.db === db &&
+        currentActive?.browseCtx?.table === table;
+
+      const existingTab = currentTabs.find(
+        (t) =>
+          t.kind === "table" &&
+          t.browseCtx?.connId === connId &&
+          t.browseCtx?.db === db &&
+          t.browseCtx?.table === table
+      );
+
+      // Save current tab filter state before switching
+      if (!isAlreadyInThisTableTab) {
+        tabFiltersRef.current[currentActiveId] = {
+          conditions: filterConditions,
+          inlineFilters: inlineColFilters,
+          filterRowOpen: filterRowVisible,
+        };
+      }
+
+      if (isAlreadyInThisTableTab) {
+        setResultTab("structure");
+      } else if (existingTab) {
+        // 如果该表已经在某个 tab 中打开，直接跳转到该页签！
+        activeTabIdRef.current = existingTab.id;
+        setActiveTabId(existingTab.id);
+        const saved = tabFiltersRef.current[existingTab.id];
+        if (saved) {
+          setFilterConditions(saved.conditions || []);
+          setInlineColFilters(saved.inlineFilters || {});
+          setFilterRowVisible(saved.filterRowOpen !== false);
+        } else {
+          setFilterConditions([]);
+          setInlineColFilters({});
+          setFilterRowVisible(true);
+        }
+        setResultTab("structure");
+      } else {
+        // 否则新开一个 Tab 页签展示该表！
+        const targetTabId = genTabId();
+        const newTab: QueryTab = {
+          id: targetTabId,
+          name: table,
+          kind: "table",
+          sql: `SELECT * FROM \`${db}\`.\`${table}\` LIMIT ${PAGE_SIZE};`,
+          result: null,
+          browseCtx: { connId, db, table, page: 0, pageSize: PAGE_SIZE },
+          connId,
+          db,
+          qid: genQid(),
+          loading: false,
+        };
+
+        activeTabIdRef.current = targetTabId;
+        setTabs((prev) => [...prev, newTab]);
+        setActiveTabId(targetTabId);
+        setFilterConditions([]);
+        setInlineColFilters({});
+        setFilterRowVisible(true);
+        setResultTab("structure");
+      }
+
+      // 拉取表结构数据
       try {
         const data = await api.describeTable(connId, db, table);
         setStructureView({ connId, db, table, data });
         setResultTab("structure");
       } catch (e) {
-        // Keep the data grid; surface the failure in the status bar instead of
-        // blowing away the result panel.
         setRunInfo({ kind: "err", text: "加载表结构失败: " + String(e) });
       }
     },
-    []
+    [filterConditions, inlineColFilters, filterRowVisible]
   );
 
   // Fetch and display all FK relationships in a database (ADR-021). Shows a
@@ -5349,8 +5616,7 @@ export function App() {
     if (!structureView) return null;
     const { data, db, table } = structureView;
 
-    // Group index entries by index name — SHOW INDEX returns one row per
-    // (index, column), so we aggregate columns and preserve uniqueness.
+    // Group index entries by index name
     const idxMap = new Map<string, { columns: string[]; unique: boolean }>();
     for (const idx of data.indexes) {
       const e = idxMap.get(idx.name) ?? { columns: [], unique: idx.unique };
@@ -5358,71 +5624,240 @@ export function App() {
       idxMap.set(idx.name, e);
     }
 
+    const indexesList = [...idxMap.entries()].map(([name, e]) => {
+      const isPk = name === "PRIMARY";
+      const isUnique = e.unique;
+      const typeLabel = isPk ? "PRIMARY KEY" : isUnique ? "UNIQUE KEY" : "INDEX";
+      const badgeClass = isPk ? "pk" : isUnique ? "uni" : "idx";
+      return {
+        name,
+        columns: e.columns,
+        unique: isUnique,
+        isPk,
+        typeLabel,
+        badgeClass,
+      };
+    });
+
     return (
-      <div className="structure-view">
-        <table className="result-table struct-table">
-          <caption>
-            {db}.{table}
-            {data.table_comment ? (
-              <span style={{ marginLeft: 8, color: "var(--brand)", fontWeight: 500 }}>
-                （{data.table_comment}）
+      <div className="structure-view-pro">
+        {/* 1. 顶部表信息条 (Header Bar) */}
+        <div className="struct-top-bar">
+          <div className="struct-title-group">
+            <span className="struct-table-icon">📋</span>
+            <span className="struct-table-name" title={`${db}.${table}`}>
+              <span className="struct-db-dim">{db}.</span>{table}
+            </span>
+            {data.table_comment && (
+              <span className="struct-table-comment" title={data.table_comment}>
+                🏷️ {data.table_comment}
               </span>
-            ) : null}
-            {" "}— 列结构
-          </caption>
-          <thead>
-            <tr>
-              <th>Field</th>
-              <th>Type</th>
-              <th>说明</th>
-              <th>Null</th>
-              <th>Key</th>
-              <th>Default</th>
-              <th>Extra</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.columns.map((c, i) => (
-              <tr key={i}>
-                <td className="col-name">{c.name}</td>
-                <td className="col-type">{c.column_type}</td>
-                <td className="col-comment" style={{ color: c.comment ? "var(--brand)" : "var(--text-tertiary)", fontWeight: c.comment ? 500 : "normal" }}>
-                  {c.comment || "—"}
-                </td>
-                <td>{c.nullable ? "YES" : "NO"}</td>
-                <td>{c.key || "—"}</td>
-                <td>{c.default ?? "—"}</td>
-                <td>{c.extra || "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            )}
+          </div>
 
-        {idxMap.size > 0 && (
-          <table className="result-table struct-table">
-            <caption>索引</caption>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Columns</th>
-                <th>Unique</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...idxMap.entries()].map(([name, e]) => (
-                <tr key={name}>
-                  <td className="col-name">{name}</td>
-                  <td>{e.columns.join(", ")}</td>
-                  <td>{e.unique ? "✓" : ""}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+          <div className="struct-header-actions">
+            <button
+              type="button"
+              className="struct-action-btn"
+              onClick={() => {
+                void copyText(`${db}.${table}`);
+                showToast("已复制表名");
+              }}
+              title="复制表名"
+            >
+              📋 复制表名
+            </button>
+            <button
+              type="button"
+              className="struct-action-btn"
+              onClick={() => {
+                void copyText(data.create_sql);
+                showToast("已复制建表 DDL");
+              }}
+              title="复制完整 DDL"
+            >
+              📝 复制 DDL
+            </button>
+          </div>
+        </div>
 
-        <div className="ddl-section">
-          <div className="ddl-head">DDL — SHOW CREATE TABLE</div>
-          <pre className="ddl-block">{data.create_sql}</pre>
+        {/* 2. 子标签切换器 (Segmented Pills) */}
+        <div className="struct-subtabs-bar">
+          <button
+            type="button"
+            className={"struct-subtab-btn" + (structSubTab === "columns" ? " active" : "")}
+            onClick={() => setStructSubTab("columns")}
+          >
+            <span>📋 字段列表</span>
+            <span className="struct-tab-pill">{data.columns.length}</span>
+          </button>
+          <button
+            type="button"
+            className={"struct-subtab-btn" + (structSubTab === "indexes" ? " active" : "")}
+            onClick={() => setStructSubTab("indexes")}
+          >
+            <span>⚡ 索引列表</span>
+            <span className="struct-tab-pill">{indexesList.length}</span>
+          </button>
+          <button
+            type="button"
+            className={"struct-subtab-btn" + (structSubTab === "ddl" ? " active" : "")}
+            onClick={() => setStructSubTab("ddl")}
+          >
+            <span>📝 建表 DDL</span>
+          </button>
+        </div>
+
+        {/* 3. 子标签内容区 */}
+        <div className="struct-body-scroll">
+          {/* TAB 1: 字段列表 */}
+          {structSubTab === "columns" && (
+            <div className="struct-table-container">
+              <table className="struct-data-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 42, textAlign: "center" }}>#</th>
+                    <th style={{ minWidth: 150 }}>字段名 (Field)</th>
+                    <th style={{ minWidth: 130 }}>类型 (Type)</th>
+                    <th style={{ minWidth: 220 }}>说明 / 业务注释 (Comment)</th>
+                    <th style={{ width: 100 }}>键 (Key)</th>
+                    <th style={{ width: 90 }}>允许空 (Null)</th>
+                    <th style={{ minWidth: 120 }}>默认值 (Default)</th>
+                    <th style={{ minWidth: 140 }}>额外属性 (Extra)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.columns.map((c, i) => {
+                    const isPk = c.key === "PRI";
+                    const isUni = c.key === "UNI";
+                    const isMul = c.key === "MUL";
+                    const isAutoInc = c.extra.toLowerCase().includes("auto_increment");
+
+                    return (
+                      <tr key={i} className={isPk ? "row-pk" : ""}>
+                        <td className="cell-num">{i + 1}</td>
+                        <td className="cell-field">
+                          <span className="field-name-wrap">
+                            {isPk && <span className="pk-key-icon" title="主键">🔑</span>}
+                            <span className={"field-name" + (isPk ? " is-pk" : "")}>{c.name}</span>
+                          </span>
+                        </td>
+                        <td className="cell-type">
+                          <span className="type-badge">{c.column_type}</span>
+                        </td>
+                        <td className="cell-comment">
+                          {c.comment ? (
+                            <span className="comment-text">{c.comment}</span>
+                          ) : (
+                            <span className="dim-dash">—</span>
+                          )}
+                        </td>
+                        <td className="cell-key">
+                          {isPk ? (
+                            <span className="key-badge pk">PRI</span>
+                          ) : isUni ? (
+                            <span className="key-badge uni">UNI</span>
+                          ) : isMul ? (
+                            <span className="key-badge mul">MUL</span>
+                          ) : (
+                            <span className="dim-dash">—</span>
+                          )}
+                        </td>
+                        <td className="cell-null">
+                          {c.nullable ? (
+                            <span className="null-tag yes">NULL</span>
+                          ) : (
+                            <span className="null-tag no">NOT NULL</span>
+                          )}
+                        </td>
+                        <td className="cell-default">
+                          {c.default != null ? (
+                            <span className="default-val">{c.default}</span>
+                          ) : (
+                            <span className="dim-dash">—</span>
+                          )}
+                        </td>
+                        <td className="cell-extra">
+                          {isAutoInc ? (
+                            <span className="extra-badge auto-inc">auto_increment</span>
+                          ) : c.extra ? (
+                            <span className="extra-text">{c.extra}</span>
+                          ) : (
+                            <span className="dim-dash">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* TAB 2: 索引列表 */}
+          {structSubTab === "indexes" && (
+            <div className="struct-indexes-wrapper">
+              {indexesList.length === 0 ? (
+                <div className="struct-empty-box">暂无索引信息</div>
+              ) : (
+                <table className="struct-data-table compact-index-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 42, textAlign: "center" }}>#</th>
+                      <th style={{ minWidth: 180 }}>索引名 (Name)</th>
+                      <th style={{ width: 140 }}>索引类型 (Type)</th>
+                      <th style={{ minWidth: 260 }}>包含列 (Columns)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {indexesList.map((idx, i) => (
+                      <tr key={idx.name}>
+                        <td className="cell-num">{i + 1}</td>
+                        <td className="cell-idx-name">
+                          {idx.isPk && <span style={{ marginRight: 5 }}>🔑</span>}
+                          <span className={"idx-name-text" + (idx.isPk ? " is-pk" : "")}>{idx.name}</span>
+                        </td>
+                        <td>
+                          <span className={`idx-type-badge ${idx.badgeClass}`}>
+                            {idx.typeLabel}
+                          </span>
+                        </td>
+                        <td className="cell-idx-cols">
+                          <div className="idx-col-chips">
+                            {idx.columns.map((colName) => (
+                              <span key={colName} className="idx-col-chip">
+                                {colName}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* TAB 3: DDL 语句 */}
+          {structSubTab === "ddl" && (
+            <div className="struct-ddl-wrapper">
+              <div className="struct-ddl-toolbar">
+                <span className="ddl-lang-badge">SQL (MySQL DDL)</span>
+                <button
+                  type="button"
+                  className="struct-action-btn"
+                  onClick={() => {
+                    void copyText(data.create_sql);
+                    showToast("已复制全部 DDL");
+                  }}
+                >
+                  📋 复制全部 DDL
+                </button>
+              </div>
+              <pre className="struct-ddl-code">{data.create_sql}</pre>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -8064,7 +8499,12 @@ export function App() {
             <div className="result-tabs">
               <button
                 className={"rtab" + (resultTab === "data" ? " active" : "")}
-                onClick={() => setResultTab("data")}
+                onClick={() => {
+                  setResultTab("data");
+                  if (!result && browseCtx) {
+                    void browseTable(browseCtx.connId, browseCtx.db, browseCtx.table);
+                  }
+                }}
               >
                 数据
                 {active?.loading ? (
@@ -9844,45 +10284,55 @@ export function App() {
                 className={"nav-item" + (settingsTab === "model" ? " active" : "")}
                 onClick={() => setSettingsTab("model")}
               >
-                模型设置
+                <span className="nav-item-icon">✨</span>
+                <span>模型设置</span>
               </button>
               <button
                 className={"nav-item" + (settingsTab === "key" ? " active" : "")}
                 onClick={() => setSettingsTab("key")}
               >
-                连接加密
+                <span className="nav-item-icon">🔐</span>
+                <span>连接加密</span>
+              </button>
+              <button
+                className={"nav-item" + (settingsTab === "sync" ? " active" : "")}
+                onClick={() => setSettingsTab("sync")}
+              >
+                <span className="nav-item-icon">🔄</span>
+                <span>同步设置</span>
               </button>
               <button
                 className={"nav-item" + (settingsTab === "general" ? " active" : "")}
                 onClick={() => setSettingsTab("general")}
               >
-                通用
+                <span className="nav-item-icon">⚙️</span>
+                <span>通用设置</span>
               </button>
               <button
                 className={"nav-item" + (settingsTab === "kb" ? " active" : "")}
                 onClick={() => setSettingsTab("kb")}
               >
-                知识库
+                <span className="nav-item-icon">📚</span>
+                <span>知识库</span>
               </button>
               <button
                 className={"nav-item" + (settingsTab === "assistant" ? " active" : "")}
                 onClick={() => setSettingsTab("assistant")}
               >
-                数据助手
+                <span className="nav-item-icon">🤖</span>
+                <span>数据助手</span>
               </button>
               <button
                 type="button"
-                className="nav-item"
-                onClick={() => {
-                  setSettingsOpen(false);
-                  setDbMemoryOpen(true);
-                }}
+                className={"nav-item" + (settingsTab === "memory" ? " active" : "")}
+                onClick={() => setSettingsTab("memory")}
               >
-                🧠 记忆管理
+                <span className="nav-item-icon">🧠</span>
+                <span>记忆管理</span>
               </button>
             </div>
 
-            <div className={"settings-content" + (settingsTab === "kb" || settingsTab === "assistant" ? " kb-content-flush" : "")}>
+            <div className={"settings-content" + (settingsTab === "kb" || settingsTab === "assistant" || settingsTab === "memory" ? " kb-content-flush" : "")}>
               {/* --- 模块一：模型设置（LLM） --- */}
               {settingsTab === "model" && (
                 <div className="settings-page">
@@ -10495,6 +10945,226 @@ export function App() {
                 </div>
               )}
 
+              {/* --- 模块：Git 加密备份与同步设置 (#GitSync) --- */}
+              {settingsTab === "sync" && (
+                <div className="settings-page">
+                  <h3>Git 加密备份与同步</h3>
+                  <div className="dim" style={{ fontSize: "var(--fs-xs)", marginBottom: 14 }}>
+                    通过私有 Git 仓库备份和跨设备同步配置。所有数据均采用 <b>AES-256-GCM</b> 高强度端到端加密，Git 远端仅存储密文，换新设备只要输入相同密钥即可安全恢复。
+                  </div>
+
+                  <div className="settings-group">
+                    <div className={"key-status " + (gitSyncConfig?.last_status ? "on" : "off")}>
+                      当前状态：{gitSyncConfig?.last_status ?? "未同步"}
+                      {gitSyncConfig?.last_backup_time ? ` · 上次备份：${new Date(gitSyncConfig.last_backup_time * 1000).toLocaleString()}` : ""}
+                      {gitSyncConfig?.last_restore_time ? ` · 上次恢复：${new Date(gitSyncConfig.last_restore_time * 1000).toLocaleString()}` : ""}
+                    </div>
+
+                    {/* Git 地址 */}
+                    <label className="cfg-input">
+                      <span>
+                        Git 仓库地址（只支持 Git 协议）
+                        <small>
+                          支持 SSH（如 <code>git@github.com:user/repo.git</code>）或 HTTPS（如 <code>https://github.com/user/repo.git</code>）。
+                        </small>
+                      </span>
+                      <div className="sync-input-row" style={{ marginTop: 6 }}>
+                        <input
+                          type="text"
+                          value={gitUrl}
+                          placeholder="例如: git@github.com:yourname/chatquery-backup.git"
+                          onChange={(e) => {
+                            setGitUrl(e.target.value);
+                            setGitTestStatus("idle");
+                            setGitTestMsg(null);
+                          }}
+                          className="sync-git-url-input"
+                        />
+                        <button
+                          type="button"
+                          className={
+                            "sync-test-btn" +
+                            (gitTestStatus === "success"
+                              ? " success"
+                              : gitTestStatus === "error"
+                              ? " error"
+                              : "")
+                          }
+                          disabled={gitSyncTesting}
+                          onClick={() => void handleTestGitConnection()}
+                        >
+                          {gitSyncTesting ? (
+                            <>
+                              <span className="vendor-edit-cta-spinner" />
+                              测试中…
+                            </>
+                          ) : gitTestStatus === "success" ? (
+                            <>
+                              <span style={{ color: "#22c55e", fontWeight: 700 }}>✓</span>
+                              已连通
+                            </>
+                          ) : gitTestStatus === "error" ? (
+                            <>
+                              <span style={{ color: "#ef4444", fontWeight: 700 }}>✗</span>
+                              重试
+                            </>
+                          ) : (
+                            <>
+                              <span>⚡</span>
+                              测试连通性
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      {/* 就地直接显示连通性测试结果提示条 */}
+                      {gitTestMsg && (
+                        <div
+                          className={
+                            "sync-test-feedback " +
+                            (gitTestStatus === "success" ? "ok" : "err")
+                          }
+                        >
+                          <span className="sync-feedback-icon">
+                            {gitTestStatus === "success" ? "✓" : "⚠️"}
+                          </span>
+                          <span className="sync-feedback-text">{gitTestMsg}</span>
+                        </div>
+                      )}
+                    </label>
+
+                    {/* 加密密钥 */}
+                    <label className="cfg-input" style={{ marginTop: 14 }}>
+                      <span>
+                        端到端加密密钥（Passphrase）
+                        <small>
+                          用于派生 256 位 AES-GCM 数据备份密钥。{gitSyncConfig?.has_key ? "当前已配置密钥（留空则沿用现有密钥；若需更改请输入新口令）。" : "尚未设置密钥，首次备份前必须输入口令。换机器时输入相同口令即可解密恢复。"}
+                        </small>
+                      </span>
+                      <input
+                        type="password"
+                        value={gitEncryptionKey}
+                        placeholder={gitSyncConfig?.has_key ? "已配置密钥（••••••••，输入新口令可覆盖修改）" : "设置一个安全的加密口令"}
+                        onChange={(e) => setGitEncryptionKey(e.target.value)}
+                        style={{ marginTop: 6 }}
+                      />
+                    </label>
+
+                    {/* 同步内容选中 */}
+                    <div className="cfg-input" style={{ marginTop: 16 }}>
+                      <span>
+                        同步内容选中
+                        <small>勾选需要纳入 Git 加密备份与恢复同步的数据范围：</small>
+                      </span>
+                      <div className="sync-checkbox-grid">
+                        <label className="sync-checkbox-item">
+                          <input
+                            type="checkbox"
+                            checked={syncConnections}
+                            onChange={(e) => setSyncConnections(e.target.checked)}
+                          />
+                          <div className="sync-checkbox-text">
+                            <strong>连接 (Connections)</strong>
+                            <small>数据库连接配置（MySQL / Redis）、密码凭据与环境分组树</small>
+                          </div>
+                        </label>
+
+                        <label className="sync-checkbox-item">
+                          <input
+                            type="checkbox"
+                            checked={syncModels}
+                            onChange={(e) => setSyncModels(e.target.checked)}
+                          />
+                          <div className="sync-checkbox-text">
+                            <strong>模型配置 (Model Configs)</strong>
+                            <small>当前 LLM 运行参数及所有自定义供应商 Profiles 与 API Key</small>
+                          </div>
+                        </label>
+
+                        <label className="sync-checkbox-item">
+                          <input
+                            type="checkbox"
+                            checked={syncSnippets}
+                            onChange={(e) => setSyncSnippets(e.target.checked)}
+                          />
+                          <div className="sync-checkbox-text">
+                            <strong>片段 (Snippets)</strong>
+                            <small>所有已保存的命名 SQL 代码片段与自定义查询库</small>
+                          </div>
+                        </label>
+
+                        <label className="sync-checkbox-item">
+                          <input
+                            type="checkbox"
+                            checked={syncHistory}
+                            onChange={(e) => setSyncHistory(e.target.checked)}
+                          />
+                          <div className="sync-checkbox-text">
+                            <strong>历史 (History)</strong>
+                            <small>SQL 执行历史记录与 AI 助手多轮会话及消息内容</small>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="modal-actions" style={{ marginTop: 22 }}>
+                    <button
+                      type="button"
+                      className="sec-btn"
+                      onClick={() => void handleSaveGitSync()}
+                    >
+                      💾 保存设置
+                    </button>
+                    <div className="spacer" />
+                    <button
+                      type="button"
+                      className="sec-btn"
+                      disabled={gitSyncRestoring || gitSyncBackingUp}
+                      onClick={() => void openVersionHistory()}
+                    >
+                      🕒 历史版本
+                    </button>
+                    <button
+                      type="button"
+                      className="sec-btn"
+                      disabled={gitSyncRestoring || gitSyncBackingUp}
+                      onClick={() => setShowRestoreConfirm(true)}
+                    >
+                      {gitSyncRestoring ? (
+                        <>
+                          <span className="vendor-edit-cta-spinner" style={{ marginRight: 6 }} />
+                          恢复中…
+                        </>
+                      ) : (
+                        "📥 从 Git 恢复数据"
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="primary"
+                      disabled={gitSyncBackingUp || gitSyncRestoring}
+                      onClick={() => void handleBackupToGit()}
+                    >
+                      {gitSyncBackingUp ? (
+                        <>
+                          <span className="vendor-edit-cta-spinner" style={{ marginRight: 6 }} />
+                          加密备份中…
+                        </>
+                      ) : (
+                        "📤 立即备份到 Git"
+                      )}
+                    </button>
+                  </div>
+
+                  {gitSyncMsg && (
+                    <div className={"cfg-msg " + (gitSyncMsg.ok ? "ok" : "err")} style={{ marginTop: 12 }}>
+                      {gitSyncMsg.text}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* --- 模块三：通用偏好 --- */}
               {settingsTab === "general" && (
                 <div className="settings-page">
@@ -10665,26 +11335,21 @@ export function App() {
                       ) : (
                         <div className="ast-form-container">
                           <div className="ast-form-scroll">
-                            {/* 卡片 1：基础信息 */}
+                            {/* 卡片 1：文档名称 */}
                             <div className="ast-section-card">
                               <div className="ast-section-header">
                                 <span className="ast-section-title">
-                                  <span>📄</span> 文档信息
+                                  <span>📄</span> 文档名称 <span className="req" style={{ color: "var(--danger-500, #ef4444)", marginLeft: 4 }}>*</span>
                                 </span>
                               </div>
-                              <div>
-                                <label className="kb-label" style={{ marginBottom: "6px" }}>
-                                  文档名称 <span className="req" style={{ color: "var(--danger-500, #ef4444)" }}>*</span>
-                                </label>
-                                <input
-                                  className="kb-input"
-                                  value={kbName}
-                                  placeholder="例如：电商订单业务与核心表说明、会员状态口径"
-                                  onChange={(e) => setKbName(e.target.value)}
-                                  spellCheck={false}
-                                  autoCorrect="off"
-                                />
-                              </div>
+                              <input
+                                className="kb-input"
+                                value={kbName}
+                                placeholder="例如：电商订单业务与核心表说明、会员状态口径"
+                                onChange={(e) => setKbName(e.target.value)}
+                                spellCheck={false}
+                                autoCorrect="off"
+                              />
                             </div>
 
                             {/* 卡片 2：文档内容 */}
@@ -10707,13 +11372,13 @@ export function App() {
                                 className="kb-textarea"
                                 style={{ minHeight: "180px", fontFamily: "var(--font-mono, monospace)", fontSize: "13px", resize: "vertical" }}
                                 value={kbContent}
-                                placeholder="编写表含义、核心字段业务口径、常用关联 SQL 等知识内容…&#10;&#10;示例：&#10;## 订单库 (order_db) 业务说明&#10;- orders: 订单主表，status: 1 待支付，2 已完成，3 已取消&#10;- order_items: 订单明细表，以 order_id 关联主表&#10;&#10;## 常用统计口径&#10;- GMV 计算：status IN (1, 2) 且 is_deleted = 0"
+                                placeholder="编写表含义、核心字段业务口径、常用关联 SQL 等知识内容…&#10;&#10;示例：&#10;## 订单库（order_db）业务说明&#10;- t_order 表：核心订单主表，注意 status=3 表示退款订单&#10;- user_id 对应 user_db.t_user_base.id"
                                 onChange={(e) => setKbContent(e.target.value)}
                                 spellCheck={false}
                                 autoCorrect="off"
                               />
-                              <div className="ast-section-desc">
-                                💡 提示：支持标准 Markdown。AI 会在提问时结合语义检索最相关的片段辅助 SQL 生成与业务口径理解。
+                              <div className="ast-section-desc" style={{ marginTop: 2 }}>
+                                提示：支持标准 Markdown。AI 会在提问时结合语义检索最相关的片段辅助 SQL 生成与业务口径理解。
                               </div>
                             </div>
 
@@ -10731,54 +11396,58 @@ export function App() {
                                 绑定后，AI 仅在选中的连接或具体数据库中对话时才自动引用本文档；未绑定时文档处于闲置状态。
                               </div>
 
-                              <div className="ast-bindings-list">
+                              <div className={"ast-bindings-list" + (kbBindingsExpanded ? " expanded" : " collapsed")}>
                                 {kbBindings.length === 0 ? (
                                   <div style={{ fontSize: "12px", color: "var(--text-tertiary, #888)", padding: "6px 0" }}>
                                     ⚠️ 尚未绑定任何数据库连接（文档当前未生效，请在下方选择连接进行绑定）
                                   </div>
                                 ) : (
-                                  kbBindings.map((b, i) => {
-                                    const c = allConns.find((x) => x.id === b.conn_id);
-                                    const isRedis = c?.db_type === "redis";
-                                    const dbName = b.database || "整条连接（默认库）";
-                                    return (
-                                      <div className="ast-binding-chip" key={i} title={`${c?.name ?? b.conn_id} / ${dbName}`}>
-                                        <span className="ast-binding-chip-icon">{isRedis ? "🔴" : "🐬"}</span>
-                                        <span className="ast-binding-chip-conn">{c ? c.name : b.conn_id}</span>
-                                        <span className="ast-binding-chip-sep">/</span>
-                                        <span className="ast-binding-chip-db">{dbName}</span>
-                                        <button
-                                          type="button"
-                                          className="ast-binding-chip-del"
-                                          title="移除此绑定"
-                                          onClick={() => removeKbBinding(i)}
-                                        >
-                                          ×
-                                        </button>
-                                      </div>
-                                    );
-                                  })
+                                  <>
+                                    {(kbBindingsExpanded ? kbBindings : kbBindings.slice(0, 3)).map((b, i) => {
+                                      const c = allConns.find((x) => x.id === b.conn_id);
+                                      const isRedis = c?.db_type === "redis";
+                                      const dbName = b.database || "整条连接（默认库）";
+                                      return (
+                                        <div className="ast-binding-chip" key={i} title={`${c?.name ?? b.conn_id} / ${dbName}`}>
+                                          <span className="ast-binding-chip-icon">{isRedis ? "🔴" : "🐬"}</span>
+                                          <span className="ast-binding-chip-conn">{c ? c.name : b.conn_id}</span>
+                                          <span className="ast-binding-chip-sep">/</span>
+                                          <span className="ast-binding-chip-db">{dbName}</span>
+                                          <button
+                                            type="button"
+                                            className="ast-binding-chip-del"
+                                            title="移除此绑定"
+                                            onClick={() => removeKbBinding(i)}
+                                          >
+                                            ×
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
+                                    {kbBindings.length > 3 && (
+                                      <button
+                                        type="button"
+                                        className="ast-bindings-toggle-btn"
+                                        onClick={() => setKbBindingsExpanded(!kbBindingsExpanded)}
+                                      >
+                                        {kbBindingsExpanded ? "收起 ▴" : `展开剩余 ${kbBindings.length - 3} 项 ▾`}
+                                      </button>
+                                    )}
+                                  </>
                                 )}
                               </div>
 
                               <div className="ast-bind-bar">
-                                <select
-                                  className="ast-select-native"
+                                <SimpleGroupedSelect
+                                  tree={tree}
+                                  allConns={allConns}
                                   value={kbNewConn}
-                                  onChange={(e) => {
-                                    setKbNewConn(e.target.value);
+                                  onChange={(val) => {
+                                    setKbNewConn(val);
                                     setKbNewDb("");
-                                    if (e.target.value) void loadKbDbs(e.target.value);
+                                    if (val) void loadKbDbs(val);
                                   }}
-                                >
-                                  <option value="">请选择连接实例…</option>
-                                  {allConns.map((c) => (
-                                    <option key={c.id} value={c.id}>
-                                      {c.db_type === "redis" ? "🔴 " : "🐬 "}
-                                      {c.name}
-                                    </option>
-                                  ))}
-                                </select>
+                                />
 
                                 <span style={{ color: "var(--text-tertiary, #64748b)", fontSize: "12px", flexShrink: 0 }}>/</span>
 
@@ -10825,7 +11494,7 @@ export function App() {
                                 </div>
                               )}
                             </div>
-                            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                            <div className="ast-footer-btns">
                               {kbEditing && (
                                 <button
                                   type="button"
@@ -10951,6 +11620,7 @@ export function App() {
                             key={astIsNew ? "new" : astEditing?.id}
                             initialAssistant={astEditing}
                             isNew={astIsNew}
+                            tree={tree}
                             allConns={allConns}
                             kbDocs={kbDocs}
                             kbDbCache={kbDbCache}
@@ -10963,6 +11633,20 @@ export function App() {
                       </div>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* --- 模块七：数据库记忆管理 --- */}
+              {settingsTab === "memory" && (
+                <div className="settings-page kb-page" style={{ height: "100%", padding: 0, overflow: "hidden" }}>
+                  <DbMemoryModal
+                    embedded
+                    tree={tree}
+                    conns={allConns}
+                    activeConnId={chatConnId || active?.connId || selId || null}
+                    activeDb={chatDb !== undefined ? chatDb : (active?.db || null)}
+                    onClose={() => setSettingsOpen(false)}
+                  />
                 </div>
               )}
             </div>
@@ -11207,6 +11891,7 @@ export function App() {
 
       {dbMemoryOpen && (
         <DbMemoryModal
+          tree={tree}
           conns={allConns}
           activeConnId={chatConnId || active?.connId || selId || null}
           activeDb={chatDb !== undefined ? chatDb : (active?.db || null)}
@@ -11580,6 +12265,141 @@ export function App() {
         </div>
       )}
 
+      {showRestoreConfirm && (
+        <div className="modal-mask" onClick={() => setShowRestoreConfirm(false)}>
+          <div className="modal dialog-modal" onClick={(e) => e.stopPropagation()} style={{ width: 440 }}>
+            <h3>从 Git 恢复数据确认</h3>
+            <p className="modal-msg" style={{ marginTop: 12, lineHeight: 1.6 }}>
+              即将从 Git 远端拉取最新加密备份并解密还原到本地。本地已选中的连接、模型配置、代码片段和历史记录将会按备份内容同步更新。是否确认继续？
+            </p>
+            <div className="modal-actions" style={{ marginTop: 18 }}>
+              <button type="button" onClick={() => setShowRestoreConfirm(false)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void handleRestoreFromGit()}
+              >
+                确认恢复
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {versionModalOpen && (
+        <div className="modal-mask" onClick={() => setVersionModalOpen(false)}>
+          <div
+            className="modal wide version-modal"
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: 680, maxHeight: "80vh" }}
+          >
+            <div className="version-modal-head">
+              <div className="version-head-title">
+                <span>🕒</span>
+                <span>Git 备份历史版本与回滚</span>
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setVersionModalOpen(false)}
+                title="关闭 (Esc)"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="version-modal-body" style={{ flex: 1, overflowY: "auto", padding: "12px 0" }}>
+              {loadingVersions ? (
+                <div style={{ textAlign: "center", padding: "40px 0", color: "var(--text-tertiary)" }}>
+                  <span className="vendor-edit-cta-spinner" style={{ marginRight: 8 }} />
+                  正在从 Git 仓库拉取历史备份提交记录…
+                </div>
+              ) : backupVersions.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--text-tertiary)" }}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>📦</div>
+                  <div style={{ fontWeight: 600, color: "var(--text-primary)" }}>暂无历史备份版本</div>
+                  <div style={{ fontSize: 12, marginTop: 4 }}>
+                    请先在同步设置中执行「立即备份到 Git」以创建第一个历史版本节点。
+                  </div>
+                </div>
+              ) : (
+                <div className="version-list">
+                  {backupVersions.map((v) => {
+                    const isRolling = rollingBackHash === v.hash;
+                    return (
+                      <div key={v.hash} className="version-card">
+                        <div className="version-card-main">
+                          <div className="version-meta-row">
+                            <span className="version-time">
+                              {new Date(v.timestamp * 1000).toLocaleString()}
+                            </span>
+                            <span className="version-hash" title={v.hash}>
+                              {v.short_hash}
+                            </span>
+                            {v.app_version && (
+                              <span className="version-tag app-ver">v{v.app_version}</span>
+                            )}
+                          </div>
+                          <div className="version-msg-row">
+                            <span className="version-commit-msg">{formatCommitMsg(v.message)}</span>
+                          </div>
+                          {v.included_items.length > 0 && (
+                            <div className="version-tags-row">
+                              {v.included_items.map((it) => (
+                                <span key={it} className="version-tag item-tag">
+                                  {it === "connections"
+                                    ? "连接"
+                                    : it === "models"
+                                    ? "模型配置"
+                                    : it === "snippets"
+                                    ? "片段"
+                                    : it === "history"
+                                    ? "历史"
+                                    : it}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="version-card-action">
+                          <button
+                            type="button"
+                            className="sec-btn"
+                            disabled={isRolling || !!rollingBackHash}
+                            style={{ padding: "5px 14px", fontSize: 12 }}
+                            onClick={() => void handleRollbackVersion(v)}
+                          >
+                            {isRolling ? (
+                              <>
+                                <span className="vendor-edit-cta-spinner" style={{ marginRight: 6 }} />
+                                回滚中…
+                              </>
+                            ) : (
+                              "回滚到此版本"
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="modal-actions" style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 12 }}>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", flex: 1 }}>
+                * 回滚将使用该 Commit 对应的加密备份还原当前设备配置
+              </div>
+              <button type="button" onClick={() => setVersionModalOpen(false)}>
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showUpdateModal && latestRelease && (
         <UpdateModal
           currentVersion={CURRENT_APP_VERSION}
@@ -11590,6 +12410,20 @@ export function App() {
     </div>
     </div>
   );
+}
+
+function formatCommitMsg(msg: string): string {
+  const m = msg.match(/^(chore\(backup\):\s*(?:encrypted backup at|加密备份于)?\s*)(\d{9,12})(.*)$/i);
+  if (m) {
+    const ts = parseInt(m[2], 10);
+    if (!isNaN(ts)) {
+      const d = new Date(ts * 1000);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      return `chore(backup): 加密备份于 ${dateStr}${m[3] || ""}`;
+    }
+  }
+  return msg;
 }
 
 /// Serialize a table result to CSV with proper RFC-4180 quoting.
