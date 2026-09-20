@@ -55,7 +55,12 @@ const envFromFile = {
 };
 
 function getEnv(key, defaultVal = '') {
-  return process.env[key] || envFromFile[key] || defaultVal;
+  const val = process.env[key] || envFromFile[key];
+  // 过滤 Azure Pipelines 未解析的 $(VAR) 或 GitHub Actions 未解析的 ${{...}}
+  if (!val || /^\s*(\$\([A-Za-z0-9_.]+\)|\$\{\{.*\}\})\s*$/.test(val)) {
+    return defaultVal;
+  }
+  return val;
 }
 
 // 命令行参数解析
@@ -231,6 +236,7 @@ function scanArtifacts(privateKey, password = '') {
       fs.copyFileSync(rawExe, targetPortable);
       artifacts.push({
         platform: 'windows-portable',
+        targetPlatform: 'windows-x86_64',
         name: portableName,
         filePath: targetPortable,
       });
@@ -389,7 +395,8 @@ async function main() {
 
   const version = resolveVersion();
   const versionTag = `v${version}`;
-  const prefix = (getArgValue('--prefix') || getEnv('OSS_PREFIX', 'chatquery/releases')).replace(/\/+$/, '');
+  // 默认固定使用 chatquery/releases，避免受未配置 CI 变量的干扰
+  const prefix = (getArgValue('--prefix') || 'chatquery/releases').replace(/\/+$/, '');
 
   const privateKey = getEnv('TAURI_SIGNING_PRIVATE_KEY');
   const privateKeyPassword = getEnv('TAURI_SIGNING_PRIVATE_KEY_PASSWORD', '');
@@ -466,6 +473,24 @@ async function main() {
     });
   }
 
+  // 辅助函数：根据文件/产物信息判定其所属平台操作系统子目录 (windows / macos / linux)
+  function resolvePlatformCategory(art) {
+    const p = (art.platform || '').toLowerCase();
+    const tp = (art.targetPlatform || '').toLowerCase();
+    const name = (art.name || '').toLowerCase();
+
+    if (p.includes('windows') || tp.includes('windows') || name.endsWith('.exe') || name.endsWith('.msi') || name.includes('.nsis.zip')) {
+      return 'windows';
+    }
+    if (p.includes('macos') || p.includes('darwin') || tp.includes('darwin') || name.endsWith('.dmg') || name.includes('.app.tar.gz')) {
+      return 'macos';
+    }
+    if (p.includes('linux') || tp.includes('linux') || name.endsWith('.appimage') || name.endsWith('.deb') || name.endsWith('.rpm') || name.includes('.appimage.tar.gz')) {
+      return 'linux';
+    }
+    return '';
+  }
+
   // 1. 先上传本次本地构建的安装包二进制文件及对应签名文件
   const uploadedArtifacts = [];
   const filesToUpload = [...artifacts];
@@ -476,7 +501,8 @@ async function main() {
     if (fs.existsSync(sigPath) && !filesToUpload.some(f => f.filePath === sigPath)) {
       filesToUpload.push({
         name: `${art.name}.sig`,
-        platform: 'signature',
+        platform: art.platform || 'signature',
+        targetPlatform: art.targetPlatform,
         filePath: sigPath,
         sizeFormatted: '0.1 KB',
         sha256: crypto.createHash('sha256').update(fs.readFileSync(sigPath)).digest('hex'),
@@ -486,7 +512,9 @@ async function main() {
 
   for (let i = 0; i < filesToUpload.length; i++) {
     const art = filesToUpload[i];
-    const ossKey = `${prefix}/${versionTag}/${art.name}`;
+    const category = resolvePlatformCategory(art);
+    const relativePath = category ? `${category}/${art.name}` : art.name;
+    const ossKey = `${prefix}/${versionTag}/${relativePath}`;
     const progressText = `[${i + 1}/${filesToUpload.length}]`;
     console.log(`\n⬆️  ${progressText} 正在上传文件: \x1b[36m${art.name}\x1b[0m (${art.sizeFormatted})...`);
     console.log(`   目标路径: ${ossKey}`);
@@ -523,6 +551,7 @@ async function main() {
 
     uploadedArtifacts.push({
       name: art.name,
+      path: relativePath,
       platform: art.platform,
       targetPlatform: art.targetPlatform,
       size: art.sizeFormatted,
@@ -615,8 +644,9 @@ async function main() {
   }
 
   // 3. 生成并上传合并后的 SHA256SUMS.txt
-  const mergedSha256Content = Array.from(mergedSha256Map.entries())
-    .map(([name, hash]) => `${hash}  ${name}`)
+  const mergedSha256Content = Array.from(mergedFilesMap.values())
+    .filter(f => f.sha256 && f.name)
+    .map(f => `${f.sha256}  ${f.path || f.name}`)
     .join('\n') + '\n';
 
   const sha256FilePath = path.join(ROOT_DIR, 'src-tauri', 'target', 'release', 'SHA256SUMS.txt');

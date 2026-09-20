@@ -84,13 +84,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
 
-      - task: PublishBuildArtifacts@1
-        displayName: '上传 Windows 构建产物'
-        inputs:
-          PathtoPublish: 'src-tauri/target/release/bundle/nsis'
-          ArtifactName: '智询-Windows安装包'
-          publishLocation: 'Container'
-
       - powershell: |
           if ($env:OSS_ACCESS_KEY_ID -like '$(*' -or -not $env:OSS_ACCESS_KEY_ID -or -not $env:OSS_BUCKET) {
             Write-Host "##vso[task.logissue type=warning]未检测到完整 OSS 变量配置，跳过 OSS 自动上传。"
@@ -107,7 +100,6 @@ jobs:
           OSS_ACCESS_KEY_SECRET: $(OSS_ACCESS_KEY_SECRET)
           OSS_BUCKET: $(OSS_BUCKET)
           OSS_REGION: $(OSS_REGION)
-          OSS_PREFIX: $(OSS_PREFIX)
           OSS_PUBLIC_DOMAIN: $(OSS_PUBLIC_DOMAIN)
           TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
@@ -172,13 +164,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
 
-      - task: PublishBuildArtifacts@1
-        displayName: '上传 macOS 构建产物'
-        inputs:
-          PathtoPublish: 'src-tauri/target/release/bundle/dmg'
-          ArtifactName: '智询-macOS安装包'
-          publishLocation: 'Container'
-
       - script: |
           if [[ "$OSS_ACCESS_KEY_ID" == "\$(OSS_ACCESS_KEY_ID)" ]] || [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_BUCKET" ]; then
             echo "##vso[task.logissue type=warning]未检测到完整 OSS 变量配置，跳过 OSS 自动上传。"
@@ -195,7 +180,6 @@ jobs:
           OSS_ACCESS_KEY_SECRET: $(OSS_ACCESS_KEY_SECRET)
           OSS_BUCKET: $(OSS_BUCKET)
           OSS_REGION: $(OSS_REGION)
-          OSS_PREFIX: $(OSS_PREFIX)
           OSS_PUBLIC_DOMAIN: $(OSS_PUBLIC_DOMAIN)
           TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
@@ -259,17 +243,12 @@ jobs:
             export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
           fi
           npx --prefix frontend tauri build --ci
+          # 清理 AppImage 打包过程中生成的未压缩临时目录（约 270MB），避免作为构建产物被上传
+          rm -rf src-tauri/target/release/bundle/appimage/*.AppDir
         displayName: '打包 Tauri Linux 应用 (AppImage & deb)'
         env:
           TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
-
-      - task: PublishBuildArtifacts@1
-        displayName: '上传 Linux 构建产物'
-        inputs:
-          PathtoPublish: 'src-tauri/target/release/bundle'
-          ArtifactName: '智询-Linux安装包'
-          publishLocation: 'Container'
 
       - script: |
           if [[ "$OSS_ACCESS_KEY_ID" == "\$(OSS_ACCESS_KEY_ID)" ]] || [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_BUCKET" ]; then
@@ -287,7 +266,6 @@ jobs:
           OSS_ACCESS_KEY_SECRET: $(OSS_ACCESS_KEY_SECRET)
           OSS_BUCKET: $(OSS_BUCKET)
           OSS_REGION: $(OSS_REGION)
-          OSS_PREFIX: $(OSS_PREFIX)
           OSS_PUBLIC_DOMAIN: $(OSS_PUBLIC_DOMAIN)
           TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
