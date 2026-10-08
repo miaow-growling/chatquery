@@ -14,6 +14,7 @@ pub mod llm;
 pub mod mask;
 pub mod mcp;
 pub mod model;
+pub mod script;
 pub mod sql_guard;
 pub mod store;
 pub mod sync;

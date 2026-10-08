@@ -237,3 +237,93 @@ pub struct DataAssistant {
     pub updated: i64,
 }
 
+/// 自动化脚本类型：shell, webhook, python, javascript
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ScriptType {
+    #[default]
+    Shell,
+    Webhook,
+    Python,
+    Javascript,
+}
+
+impl ScriptType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ScriptType::Shell => "shell",
+            ScriptType::Webhook => "webhook",
+            ScriptType::Python => "python",
+            ScriptType::Javascript => "javascript",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "webhook" => ScriptType::Webhook,
+            "python" => ScriptType::Python,
+            "javascript" | "js" => ScriptType::Javascript,
+            _ => ScriptType::Shell,
+        }
+    }
+}
+
+/// 数据库自动化脚本与生命周期钩子模型
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbScript {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub script_type: ScriptType,
+    /// 脚本代码内容或 Webhook 配置 JSON
+    #[serde(default)]
+    pub content: String,
+    /// 超时时间（秒，默认 30）
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+    /// 自定义环境变量或 Webhook Headers (JSON 字符串)
+    #[serde(default)]
+    pub env_vars: String,
+    /// 绑定的数据库连接 ID 列表
+    #[serde(default)]
+    pub bound_conn_ids: Vec<String>,
+    /// 是否在连接/查询鉴权报错时触发自愈
+    #[serde(default)]
+    pub trigger_on_error: bool,
+    /// 错误匹配正则或关键词（如 "Access denied|password.*expired|1045"）
+    #[serde(default)]
+    pub error_pattern: String,
+    /// 脚本成功后是否自动重试刚才的查询
+    #[serde(default = "default_true")]
+    pub auto_retry_query: bool,
+    pub created: i64,
+    pub updated: i64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_timeout_secs() -> u64 {
+    30
+}
+
+/// 脚本执行结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptExecResult {
+    pub success: bool,
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub duration_ms: u64,
+    /// 是否检测到新凭证并自动更新了连接密码
+    pub updated_credentials: bool,
+    /// 更新后的简要提示信息（如有）
+    pub update_message: Option<String>,
+}
+
+

@@ -11,6 +11,9 @@ import type {
   ConversationSummary,
   DataAssistant,
   DataAssistantInput,
+  DbScript,
+  DbScriptInput,
+  ScriptExecResult,
   EditPayload,
   ExplainVisual,
   ForeignKeyInfo,
@@ -316,6 +319,25 @@ export const api = {
     invoke<DataAssistant>("save_data_assistant", { input }),
   deleteDataAssistant: (id: string) =>
     invoke("delete_data_assistant", { id }),
+  // --- Database Automation Scripts & Lifecycle Hooks ---
+  listDbScripts: () => invoke<DbScript[]>("list_db_scripts"),
+  getDbScript: (id: string) => invoke<DbScript | null>("get_db_script", { id }),
+  saveDbScript: (input: DbScriptInput) => invoke<DbScript>("save_db_script", { input }),
+  deleteDbScript: (id: string) => invoke<void>("delete_db_script", { id }),
+  getScriptsForConnection: (connId: string) =>
+    invoke<DbScript[]>("get_scripts_for_connection", { connId }),
+  runDbScript: (
+    scriptId: string,
+    connId?: string | null,
+    trigger: string = "manual",
+    errorMsg?: string | null
+  ) =>
+    invoke<ScriptExecResult>("run_db_script", {
+      scriptId,
+      connId: connId ?? null,
+      trigger,
+      errorMsg: errorMsg ?? null,
+    }),
   // --- Conversations (docs/chat-conversation-design.md) ---
   listConversations: () => invoke<ConversationSummary[]>("list_conversations"),
   createConversation: (connId: string | null, title?: string | null) =>

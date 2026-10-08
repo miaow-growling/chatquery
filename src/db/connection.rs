@@ -391,6 +391,22 @@ impl ConnectionStore {
         self.storage.get_kb_docs_by_ids(ids)
     }
 
+    pub fn list_db_scripts(&self) -> Result<Vec<crate::model::DbScript>> {
+        self.storage.list_db_scripts()
+    }
+    pub fn get_db_script(&self, id: &str) -> Result<Option<crate::model::DbScript>> {
+        self.storage.get_db_script(id)
+    }
+    pub fn save_db_script(&self, s: &crate::model::DbScript) -> Result<()> {
+        self.storage.save_db_script(s)
+    }
+    pub fn delete_db_script(&self, id: &str) -> Result<()> {
+        self.storage.delete_db_script(id)
+    }
+    pub fn get_scripts_for_connection(&self, conn_id: &str) -> Result<Vec<crate::model::DbScript>> {
+        self.storage.get_scripts_for_connection(conn_id)
+    }
+
     pub fn add_audit(
         &self,
         conn_id: &str,

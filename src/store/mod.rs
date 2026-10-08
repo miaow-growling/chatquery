@@ -3,7 +3,8 @@ use crate::db::connection::{ConnectionConfig, DbType};
 use crate::db::container::{gen_id, Container, ContainerKind, LegacyConnection};
 use crate::error::{AppError, Result};
 use crate::model::{
-    AssistantDbBinding, ConversationSummary, DataAssistant, NewChatMessage, StoredChatMessage,
+    AssistantDbBinding, ConversationSummary, DataAssistant, DbScript, NewChatMessage, ScriptType,
+    StoredChatMessage,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -1342,6 +1343,115 @@ impl Storage {
         Ok(out)
     }
 
+    // --- DbScript (自动化脚本与生命周期钩子) -----------------------------------
+
+    pub fn save_db_script(&self, s: &DbScript) -> Result<()> {
+        let bound_conns_json = serde_json::to_string(&s.bound_conn_ids).unwrap_or_else(|_| "[]".into());
+        self.conn.execute(
+            "INSERT INTO db_scripts (
+                id, name, description, enabled, script_type, content,
+                timeout_secs, env_vars, bound_conn_ids, trigger_on_error,
+                error_pattern, auto_retry_query, created, updated
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               description = excluded.description,
+               enabled = excluded.enabled,
+               script_type = excluded.script_type,
+               content = excluded.content,
+               timeout_secs = excluded.timeout_secs,
+               env_vars = excluded.env_vars,
+               bound_conn_ids = excluded.bound_conn_ids,
+               trigger_on_error = excluded.trigger_on_error,
+               error_pattern = excluded.error_pattern,
+               auto_retry_query = excluded.auto_retry_query,
+               updated = excluded.updated",
+            params![
+                s.id,
+                s.name,
+                s.description,
+                if s.enabled { 1 } else { 0 },
+                s.script_type.as_str(),
+                s.content,
+                s.timeout_secs as i64,
+                s.env_vars,
+                bound_conns_json,
+                if s.trigger_on_error { 1 } else { 0 },
+                s.error_pattern,
+                if s.auto_retry_query { 1 } else { 0 },
+                s.created,
+                s.updated,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_db_script(&self, id: &str) -> Result<Option<DbScript>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, enabled, script_type, content,
+                    timeout_secs, env_vars, bound_conn_ids, trigger_on_error,
+                    error_pattern, auto_retry_query, created, updated
+             FROM db_scripts WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(Self::row_to_db_script(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn list_db_scripts(&self) -> Result<Vec<DbScript>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, enabled, script_type, content,
+                    timeout_secs, env_vars, bound_conn_ids, trigger_on_error,
+                    error_pattern, auto_retry_query, created, updated
+             FROM db_scripts ORDER BY updated DESC",
+        )?;
+        let rows = stmt.query_map([], |row| Self::row_to_db_script(row))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_db_script(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM db_scripts WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn get_scripts_for_connection(&self, conn_id: &str) -> Result<Vec<DbScript>> {
+        let all = self.list_db_scripts()?;
+        Ok(all
+            .into_iter()
+            .filter(|s| s.enabled && s.bound_conn_ids.iter().any(|c| c == conn_id))
+            .collect())
+    }
+
+fn row_to_db_script(r: &rusqlite::Row) -> rusqlite::Result<DbScript> {
+    let script_type_str: String = r.get(4)?;
+    let bound_conn_ids_str: String = r.get(8)?;
+    let bound_conn_ids: Vec<String> =
+        serde_json::from_str(&bound_conn_ids_str).unwrap_or_default();
+    Ok(DbScript {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        description: r.get(2)?,
+        enabled: r.get::<_, i64>(3)? != 0,
+        script_type: ScriptType::from_str(&script_type_str),
+        content: r.get(5)?,
+        timeout_secs: r.get::<_, i64>(6)? as u64,
+        env_vars: r.get(7)?,
+        bound_conn_ids,
+        trigger_on_error: r.get::<_, i64>(9)? != 0,
+        error_pattern: r.get(10)?,
+        auto_retry_query: r.get::<_, i64>(11)? != 0,
+        created: r.get(12)?,
+        updated: r.get(13)?,
+    })
+}
+
     /// 释放 SQLite 引擎未使用的内部内存缓存（PRAGMA shrink_memory）。
     pub fn shrink_memory(&self) -> Result<()> {
         let _ = self.conn.execute_batch("PRAGMA shrink_memory;");
@@ -1656,6 +1766,25 @@ fn init_schema(conn: &Connection) -> Result<()> {
             updated  INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_db_memories_conn_db ON db_memories(conn_id, database);",
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS db_scripts (
+            id                  TEXT PRIMARY KEY,
+            name                TEXT NOT NULL,
+            description         TEXT NOT NULL DEFAULT '',
+            enabled             INTEGER NOT NULL DEFAULT 1,
+            script_type         TEXT NOT NULL DEFAULT 'shell',
+            content             TEXT NOT NULL DEFAULT '',
+            timeout_secs        INTEGER NOT NULL DEFAULT 30,
+            env_vars            TEXT NOT NULL DEFAULT '{}',
+            bound_conn_ids      TEXT NOT NULL DEFAULT '[]',
+            trigger_on_error    INTEGER NOT NULL DEFAULT 0,
+            error_pattern       TEXT NOT NULL DEFAULT '',
+            auto_retry_query    INTEGER NOT NULL DEFAULT 1,
+            created             INTEGER NOT NULL,
+            updated             INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_db_scripts_updated ON db_scripts(updated DESC);",
     )?;
     Ok(())
 }
@@ -2228,6 +2357,64 @@ mod tests {
         // 不匹配连接
         let text_other = s.search_kb_docs("connB", None, "refund").unwrap();
         assert!(text_other.contains("没有匹配"));
+    }
+
+    #[test]
+    fn db_script_crud() {
+        let s = mem_store();
+        assert!(s.list_db_scripts().unwrap().is_empty());
+
+        let script = DbScript {
+            id: "sc_1".to_string(),
+            name: "测试续期脚本".to_string(),
+            description: "用于测试连接续期".to_string(),
+            enabled: true,
+            script_type: ScriptType::Shell,
+            content: "echo hello".to_string(),
+            timeout_secs: 30,
+            env_vars: "{}".to_string(),
+            bound_conn_ids: vec!["conn_1".to_string(), "conn_2".to_string()],
+            trigger_on_error: true,
+            error_pattern: "Access denied".to_string(),
+            auto_retry_query: true,
+            created: 1000,
+            updated: 1000,
+        };
+
+        s.save_db_script(&script).unwrap();
+
+        let got = s.get_db_script("sc_1").unwrap().expect("should find script");
+        assert_eq!(got.name, "测试续期脚本");
+        assert_eq!(got.script_type, ScriptType::Shell);
+        assert_eq!(got.bound_conn_ids, vec!["conn_1", "conn_2"]);
+        assert!(got.trigger_on_error);
+
+        // 绑定查询测试
+        let for_c1 = s.get_scripts_for_connection("conn_1").unwrap();
+        assert_eq!(for_c1.len(), 1);
+        assert_eq!(for_c1[0].id, "sc_1");
+
+        let for_c3 = s.get_scripts_for_connection("conn_3").unwrap();
+        assert_eq!(for_c3.len(), 0);
+
+        // 更新
+        let mut updated = got;
+        updated.name = "已重命名脚本".to_string();
+        updated.enabled = false;
+        s.save_db_script(&updated).unwrap();
+
+        let got_updated = s.get_db_script("sc_1").unwrap().unwrap();
+        assert_eq!(got_updated.name, "已重命名脚本");
+        assert!(!got_updated.enabled);
+
+        // 停用后不应被连接匹配
+        let for_c1_after = s.get_scripts_for_connection("conn_1").unwrap();
+        assert_eq!(for_c1_after.len(), 0);
+
+        // 删除
+        s.delete_db_script("sc_1").unwrap();
+        assert!(s.get_db_script("sc_1").unwrap().is_none());
+        assert!(s.list_db_scripts().unwrap().is_empty());
     }
 }
 

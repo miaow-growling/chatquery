@@ -2704,5 +2704,209 @@ pub async fn rollback_to_version(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Database Automation Scripts & Lifecycle Hooks (ADR: 自动化脚本与账号续期)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbScriptInput {
+    #[serde(default)]
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "default_script_bool_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub script_type: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default = "default_script_timeout")]
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub env_vars: String,
+    #[serde(default)]
+    pub bound_conn_ids: Vec<String>,
+    #[serde(default)]
+    pub trigger_on_error: bool,
+    #[serde(default)]
+    pub error_pattern: String,
+    #[serde(default = "default_script_bool_true")]
+    pub auto_retry_query: bool,
+}
+
+fn default_script_bool_true() -> bool {
+    true
+}
+
+fn default_script_timeout() -> u64 {
+    30
+}
+
+#[tauri::command]
+pub fn list_db_scripts(state: State<AppState>) -> Result<Vec<chatquery::model::DbScript>, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .list_db_scripts()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_db_script(
+    state: State<AppState>,
+    id: String,
+) -> Result<Option<chatquery::model::DbScript>, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .get_db_script(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_db_script(
+    state: State<AppState>,
+    input: DbScriptInput,
+) -> Result<chatquery::model::DbScript, String> {
+    if input.name.trim().is_empty() {
+        return Err("脚本名称不能为空".to_string());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let id = if input.id.trim().is_empty() {
+        chatquery::db::container::gen_id("script")
+    } else {
+        input.id
+    };
+
+    let item = chatquery::model::DbScript {
+        id,
+        name: input.name.trim().to_string(),
+        description: input.description.trim().to_string(),
+        enabled: input.enabled,
+        script_type: chatquery::model::ScriptType::from_str(&input.script_type),
+        content: input.content,
+        timeout_secs: if input.timeout_secs == 0 { 30 } else { input.timeout_secs },
+        env_vars: input.env_vars,
+        bound_conn_ids: input.bound_conn_ids,
+        trigger_on_error: input.trigger_on_error,
+        error_pattern: input.error_pattern,
+        auto_retry_query: input.auto_retry_query,
+        created: now,
+        updated: now,
+    };
+
+    state
+        .store
+        .lock()
+        .unwrap()
+        .save_db_script(&item)
+        .map_err(|e| e.to_string())?;
+    Ok(item)
+}
+
+#[tauri::command]
+pub fn delete_db_script(state: State<AppState>, id: String) -> Result<(), String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .delete_db_script(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_scripts_for_connection(
+    state: State<AppState>,
+    conn_id: String,
+) -> Result<Vec<chatquery::model::DbScript>, String> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .get_scripts_for_connection(&conn_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn run_db_script(
+    state: State<'_, AppState>,
+    script_id: String,
+    conn_id: Option<String>,
+    trigger: String,
+    error_msg: Option<String>,
+) -> Result<chatquery::model::ScriptExecResult, String> {
+    let script = {
+        let store = state.store.lock().unwrap();
+        store.get_db_script(&script_id).map_err(|e| e.to_string())?
+    }
+    .ok_or_else(|| "脚本未找到".to_string())?;
+
+    let target_conn = if let Some(ref cid) = conn_id {
+        let store = state.store.lock().unwrap();
+        store.list().iter().find(|c| c.id == *cid).cloned()
+    } else {
+        None
+    };
+
+    let (exec_res, cred_update) = chatquery::script::execute_script(
+        &script,
+        target_conn.as_ref(),
+        &trigger,
+        error_msg.as_deref(),
+    )
+    .await;
+
+    // 动态回传并热更新凭证
+    if let (Some(update), Some(mut conn)) = (cred_update, target_conn.clone()) {
+        let mut modified = false;
+        if let Some(p) = update.password {
+            if !p.is_empty() {
+                conn.password = p;
+                modified = true;
+            }
+        }
+        if let Some(u) = update.user {
+            if !u.is_empty() {
+                conn.user = u;
+                modified = true;
+            }
+        }
+        if let Some(h) = update.host {
+            if !h.is_empty() {
+                conn.host = h;
+                modified = true;
+            }
+        }
+        if let Some(port) = update.port {
+            if port > 0 {
+                conn.port = port;
+                modified = true;
+            }
+        }
+
+        if modified {
+            let mut store = state.store.lock().unwrap();
+            let _ = store.update(conn.clone());
+            // 失效缓存的旧连接池
+            if conn.db_type == DbType::Mysql {
+                chatquery::db::mysql::invalidate_pool_cache(&conn, &conn.database);
+            }
+        }
+    } else if let Some(ref conn) = target_conn {
+        // 纯接口续期模式（密码未变更）：执行成功后依然主动失效旧池，确保下一次查询建立全新连接
+        if exec_res.success && conn.db_type == DbType::Mysql {
+            chatquery::db::mysql::invalidate_pool_cache(conn, &conn.database);
+        }
+    }
+
+    Ok(exec_res)
+}
+
 
 

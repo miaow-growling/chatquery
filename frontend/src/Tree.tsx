@@ -446,6 +446,7 @@ interface TreeProps {
   onShowStructure: (connId: string, db: string, table: string) => void;
   onShowRelationships: (connId: string, db: string) => void;
   onOpenQuickOpen?: () => void;
+  onManageScripts?: (connId: string) => void;
   recentTables?: { connId: string; db: string; table: string }[];
   onRemoveRecentTable?: (connId: string, db: string, table: string) => void;
   onClearRecentTables?: () => void;
@@ -1364,6 +1365,11 @@ export function Tree(props: TreeProps) {
             onClick: () => props.onNewQuery?.(id, null),
           },
           { type: "item", label: "编辑连接", onClick: () => props.onEditConn(id) },
+          {
+            type: "item",
+            label: "⚡ 自动化脚本与续期...",
+            onClick: () => props.onManageScripts?.(id),
+          },
           { type: "sep" },
           { type: "item", label: "删除连接", danger: true, onClick: () => props.onDeleteConn(id) },
         ];

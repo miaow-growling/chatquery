@@ -547,6 +547,55 @@ export interface ConversationDetail {
   messages: StoredChatMessage[];
 }
 
+// ---------------------------------------------------------------------------
+// Database Automation Scripts & Lifecycle Hooks
+// ---------------------------------------------------------------------------
+
+export type ScriptType = "shell" | "webhook" | "python" | "javascript";
+
+export interface DbScript {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  script_type: ScriptType;
+  content: string;
+  timeout_secs: number;
+  env_vars: string;
+  bound_conn_ids: string[];
+  trigger_on_error: boolean;
+  error_pattern: string;
+  auto_retry_query: boolean;
+  created: number;
+  updated: number;
+}
+
+export interface DbScriptInput {
+  id?: string;
+  name: string;
+  description?: string;
+  enabled?: boolean;
+  script_type?: string;
+  content?: string;
+  timeout_secs?: number;
+  env_vars?: string;
+  bound_conn_ids?: string[];
+  trigger_on_error?: boolean;
+  error_pattern?: string;
+  auto_retry_query?: boolean;
+}
+
+export interface ScriptExecResult {
+  success: boolean;
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  duration_ms: number;
+  updated_credentials: boolean;
+  update_message?: string | null;
+}
+
+
 /// Cross-conversation reference (@-mention, docs/chat-conversation-design.md
 /// §6). `scope` is "session" (whole conversation tail) or "message" (one
 /// stored message); `message_id` present only for the latter.

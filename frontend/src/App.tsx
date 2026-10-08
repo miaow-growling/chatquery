@@ -34,6 +34,7 @@ import type {
   ConvRefCard,
   DataAssistant,
   DataAssistantInput,
+  DbScript,
   ExplainNode,
   ExplainVisual,
   ForeignKeyInfo,
@@ -77,11 +78,13 @@ import { MemoryWidget } from "./components/MemoryWidget";
 import { UpdateNotification } from "./components/UpdateNotification";
 import { UpdateModal, type LatestReleaseInfo } from "./components/UpdateModal";
 import { TableFilterBar, buildWhereSql } from "./components/TableFilterBar";
+import { MermaidDiagram } from "./components/MermaidDiagram";
 import { InlineFilterRow } from "./components/InlineFilterRow";
 import { QuickOpenModal } from "./components/QuickOpenModal";
 import { DbMemoryModal } from "./components/DbMemoryModal";
 import { McpInstallModal } from "./components/McpInstallModal";
 import { SimpleGroupedSelect } from "./components/SimpleGroupedSelect";
+import { DbScriptsManager } from "./components/DbScriptsManager";
 
 const CURRENT_APP_VERSION = "0.1.1";
 const OSS_LATEST_RELEASE_URL = "https://chatquery.oss-cn-shenzhen.aliyuncs.com/chatquery/releases/latest.json";
@@ -212,8 +215,34 @@ function nodeText(node: React.ReactNode): string {
   return "";
 }
 
-/** AI 消息里的代码块：在右上角支持复制代码、新Tab打开、直接运行与一键导入到查询。
- *  用 useMemo 缓存一次，codeText 在 children 引用变化时才重算。 */
+/** 从 children 节点中解析出 code 标签的语言类名（如 language-mermaid -> mermaid） */
+function extractCodeLanguage(node: React.ReactNode): string {
+  const arr = React.Children.toArray(node);
+  for (const item of arr) {
+    if (React.isValidElement(item)) {
+      const cls = (item.props as any)?.className;
+      if (typeof cls === "string") {
+        const m = /language-([a-zA-Z0-9_-]+)/.exec(cls);
+        if (m) return m[1].toLowerCase();
+      }
+      if ((item.props as any)?.children) {
+        const sub = extractCodeLanguage((item.props as any).children);
+        if (sub) return sub;
+      }
+    }
+  }
+  return "";
+}
+
+/** 常见 SQL / Redis 开始关键字正则，用于未标注语言代码块的保守意图嗅探 */
+const SQL_START_RE =
+  /^\s*(--[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*(SELECT|INSERT|UPDATE|DELETE|REPLACE|SHOW|DESCRIBE|DESC|EXPLAIN|CREATE|ALTER|DROP|TRUNCATE|WITH|USE|SET|CALL|BEGIN|START|COMMIT|ROLLBACK|GRANT|REVOKE|FLUSH|KILL|OPTIMIZE|REPAIR|ANALYZE)\b/i;
+const REDIS_START_RE =
+  /^\s*(GET|SET|HGET|HSET|HGETALL|HDEL|KEYS|SCAN|DEL|EXISTS|EXPIRE|TTL|TYPE|LPUSH|RPUSH|LPOP|RPOP|LRANGE|LLEN|SADD|SMEMBERS|SREM|ZADD|ZRANGE|ZREVRANGE|ZCARD|INCR|DECR|PING|INFO|DBSIZE)\b/i;
+const MERMAID_START_RE =
+  /^\s*(erDiagram|flowchart|graph|sequenceDiagram|classDiagram|stateDiagram(-v2)?|gantt|pie|gitGraph|mindmap|timeline|quadrantChart|zenuml|sankey-beta|kanban|architecture-beta)\b/i;
+
+/** AI 消息里的代码块：精准区分 Mermaid 图表、SQL 执行块与普通代码块。 */
 function CodeBlock({
   children,
   onImport,
@@ -231,21 +260,66 @@ function CodeBlock({
   const [openedTab, setOpenedTab] = useState(false);
   const [execState, setExecState] = useState<"idle" | "running" | "done" | "dismissed">("idle");
   const codeText = useMemo(() => nodeText(children).replace(/\n$/, ""), [children]);
-  const isWrite = /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(codeText);
-  const canExecute = !!onExecute;
+  const language = useMemo(() => extractCodeLanguage(children), [children]);
+
+  // 1. 判断是否为 Mermaid 图表（优先识别，避免当成 SQL 或普通代码）
+  const isMermaid = useMemo(() => {
+    if (language === "mermaid" || language === "erdiagram") return true;
+    return MERMAID_START_RE.test(codeText);
+  }, [language, codeText]);
+
+  // 若为 Mermaid 图表，交给专门的图表渲染组件（支持可视关系图、缩放、源码查看及复制）
+  if (isMermaid) {
+    return <MermaidDiagram code={codeText} onCopy={copyText} />;
+  }
+
+  // 2. 判断是否确认为 SQL/数据库查询语句
+  const isSql = useMemo(() => {
+    // 显式指定了数据库相关语言
+    if (["sql", "mysql", "pgsql", "postgresql", "sqlite", "plsql", "redis"].includes(language)) {
+      return true;
+    }
+    // 显式指定为常规非 SQL 编程语言，坚决不误判为 SQL
+    if (
+      [
+        "json", "javascript", "js", "typescript", "ts", "python", "py",
+        "bash", "sh", "shell", "yaml", "yml", "html", "css", "xml",
+        "markdown", "md", "diff", "text", "txt"
+      ].includes(language)
+    ) {
+      return false;
+    }
+    // 未标注语言时，仅当代码开头严格符合 SQL 或 Redis 语法关键字时才判定为 SQL
+    return SQL_START_RE.test(codeText) || REDIS_START_RE.test(codeText);
+  }, [language, codeText]);
+
+  const isWrite = isSql && /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(codeText);
+  const canExecute = isSql && !!onExecute;
   const lineCount = useMemo(() => codeText.split("\n").length, [codeText]);
   const isLong = lineCount > 6 || codeText.length > 220;
   const [collapsed, setCollapsed] = useState(isLong);
 
+  // 语言标签名
+  const displayLang = useMemo(() => {
+    if (isSql) return "SQL";
+    if (language) return language.toUpperCase();
+    return "CODE";
+  }, [isSql, language]);
+
   return (
-    <div className={"md-code" + (collapsed ? " collapsed" : "")}>
+    <div className={"md-code" + (collapsed ? " collapsed" : "") + (isSql ? " is-sql" : "")}>
+      <div className="md-code-header-badge">
+        <span className={"md-code-lang-tag " + (isSql ? "tag-sql" : "tag-generic")}>
+          {displayLang}
+        </span>
+      </div>
       <div className="md-code-actions">
         {isLong && (
           <button
             type="button"
             className="md-code-btn md-code-toggle"
-            title={collapsed ? "展开完整 SQL" : "收起 SQL"}
-            aria-label={collapsed ? "展开完整 SQL" : "收起 SQL"}
+            title={collapsed ? (isSql ? "展开完整 SQL" : "展开完整代码") : (isSql ? "收起 SQL" : "收起代码")}
+            aria-label={collapsed ? "展开代码" : "收起代码"}
             onClick={() => setCollapsed(!collapsed)}
           >
             {collapsed ? "▾ 展开" : "▴ 收起"}
@@ -272,7 +346,7 @@ function CodeBlock({
             {execState === "running" ? "…" : execState === "done" ? "✓" : <RunCodeIcon />}
           </button>
         )}
-        {onOpenNewTab && (
+        {isSql && onOpenNewTab && (
           <button
             type="button"
             className={"md-code-btn md-code-newtab" + (openedTab ? " opened" : "")}
@@ -287,7 +361,7 @@ function CodeBlock({
             {openedTab ? "✓" : <NewTabIcon />}
           </button>
         )}
-        {onImport && (
+        {isSql && onImport && (
           <button
             type="button"
             className={"md-code-btn md-code-import" + (imported ? " imported" : "")}
@@ -355,16 +429,16 @@ function CodeBlock({
       )}
       <pre>{children}</pre>
       {collapsed && isLong && (
-        <div className="md-code-expand-bar" onClick={() => setCollapsed(false)} title="点击展开完整 SQL">
+        <div className="md-code-expand-bar" onClick={() => setCollapsed(false)} title={isSql ? "点击展开完整 SQL" : "点击展开完整代码"}>
           <span className="md-code-expand-btn">
-            ▾ 展开完整 SQL（共 {lineCount} 行，{codeText.length.toLocaleString()} 字符）
+            ▾ 展开完整{isSql ? " SQL" : "代码"}（共 {lineCount} 行，{codeText.length.toLocaleString()} 字符）
           </span>
         </div>
       )}
       {!collapsed && isLong && (
         <div className="md-code-collapse-bar">
           <span className="md-code-collapse-btn" onClick={() => setCollapsed(true)}>
-            ▴ 收起 SQL
+            ▴ 收起{isSql ? " SQL" : "代码"}
           </span>
         </div>
       )}
@@ -2386,7 +2460,7 @@ export function App() {
   // page on the right. Keeping this as explicit buttons (not a <select>
   // dropdown) makes the module list scannable and easy to extend.
   const [settingsTab, setSettingsTab] = useState<
-    "model" | "key" | "general" | "kb" | "assistant" | "sync" | "memory"
+    "model" | "key" | "general" | "kb" | "assistant" | "sync" | "memory" | "scripts"
   >("model");
   const [gitSyncConfig, setGitSyncConfig] = useState<GitSyncConfigDto | null>(null);
   const [gitUrl, setGitUrl] = useState("");
@@ -2409,6 +2483,15 @@ export function App() {
   const [presets, setPresets] = useState<VendorPreset[]>([]);
   const [llmCfg, setLlmCfg] = useState<LlmConfigDto | null>(null);
   const [vendorProfiles, setVendorProfiles] = useState<VendorProfileDto[]>([]);
+  const [cachedScripts, setCachedScripts] = useState<DbScript[]>([]);
+  const [autoHealing, setAutoHealing] = useState(false);
+
+  const refreshScripts = useCallback(async () => {
+    try {
+      const list = await api.listDbScripts();
+      setCachedScripts(list);
+    } catch {}
+  }, []);
   // Composer toolbar state — + menu, model dropdown.
   const [plusOpen, setPlusOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
@@ -3971,11 +4054,12 @@ export function App() {
   const refresh = useCallback(async () => {
     const t = await api.listTree();
     setTree(t);
+    void refreshScripts();
     if (!selId) {
       const first = t.environments[0]?.groups[0]?.connections[0];
       if (first) setSelId(first.id);
     }
-  }, [selId]);
+  }, [selId, refreshScripts]);
 
   const loadSchema = useCallback(
     async (id: string, db?: string | null) => {
@@ -4231,6 +4315,51 @@ export function App() {
   useEffect(() => {
     runQueryRef.current = runQuery;
   }, [runQuery]);
+
+  const findAutoHealScript = useCallback(
+    (connId: string | null | undefined, errorText: string | null | undefined): DbScript | null => {
+      if (!connId || !errorText) return null;
+      const candidates = cachedScripts.filter(
+        (s) => s.enabled && s.trigger_on_error && s.bound_conn_ids.includes(connId)
+      );
+      for (const s of candidates) {
+        if (!s.error_pattern) return s;
+        try {
+          const reg = new RegExp(s.error_pattern, "i");
+          if (reg.test(errorText)) return s;
+        } catch {
+          if (errorText.toLowerCase().includes(s.error_pattern.toLowerCase())) return s;
+        }
+      }
+      return null;
+    },
+    [cachedScripts]
+  );
+
+  const handleAutoHealAndRetry = useCallback(
+    async (script: DbScript, connId: string, errorText: string) => {
+      setAutoHealing(true);
+      try {
+        showToast(`⚡ 正在运行续期自愈脚本「${script.name}」...`);
+        const res = await api.runDbScript(script.id, connId, "auth_expired", errorText);
+        if (res.success) {
+          showToast(
+            `✓「${script.name}」执行成功！${res.updated_credentials ? " 已刷新连接凭证。" : ""}`
+          );
+          if (script.auto_retry_query) {
+            void runQuery();
+          }
+        } else {
+          showToast(`✗ 续期脚本未成功: ${res.stderr || `退出码 ${res.exit_code}`}`);
+        }
+      } catch (e) {
+        showToast("✗ 运行自愈脚本失败: " + String(e));
+      } finally {
+        setAutoHealing(false);
+      }
+    },
+    [showToast, runQuery]
+  );
 
   /// Build the SQL-editor right-click menu (Navicat-style). `hasSel` reflects
   /// whether text is selected and gates the selection-only commands.
@@ -5178,14 +5307,39 @@ export function App() {
             >
               <span>{result.note}</span>
               {result.lines.length === 0 && (
-                <button
-                  type="button"
-                  className="btn-diagnose-fix"
-                  onClick={() => diagnoseSqlError(active?.sql, result.note)}
-                  title="让 AI 分析该报错原因并提供修复 SQL"
-                >
-                  💡 AI 诊断并修复
-                </button>
+                <div style={{ display: "inline-flex", gap: 6, marginLeft: "auto", flexShrink: 0 }}>
+                  {(() => {
+                    const healScript = findAutoHealScript(active?.connId, result.note);
+                    if (!healScript) return null;
+                    return (
+                      <button
+                        type="button"
+                        className="btn-diagnose-fix"
+                        style={{
+                          background: "rgba(99, 102, 241, 0.2)",
+                          borderColor: "var(--brand, #6366f1)",
+                          color: "#818cf8",
+                        }}
+                        disabled={autoHealing}
+                        onClick={() =>
+                          active?.connId &&
+                          handleAutoHealAndRetry(healScript, active.connId, result.note)
+                        }
+                        title={`执行「${healScript.name}」刷新凭证并自动重试`}
+                      >
+                        {autoHealing ? "⚡ 正在续期…" : `⚡ 运行续期脚本「${healScript.name}」并重试`}
+                      </button>
+                    );
+                  })()}
+                  <button
+                    type="button"
+                    className="btn-diagnose-fix"
+                    onClick={() => diagnoseSqlError(active?.sql, result.note)}
+                    title="让 AI 分析该报错原因并提供修复 SQL"
+                  >
+                    💡 AI 诊断并修复
+                  </button>
+                </div>
               )}
             </div>
           )}
@@ -7937,6 +8091,10 @@ export function App() {
           onSelectDb={onSelectDb}
           onNewQuery={onNewQuery}
           onOpenQuickOpen={() => setQuickOpenOpen(true)}
+          onManageScripts={() => {
+            setSettingsTab("scripts");
+            setSettingsOpen(true);
+          }}
           recentTables={recentTables}
           onRemoveRecentTable={removeRecentTable}
           onClearRecentTables={clearRecentTables}
@@ -8689,14 +8847,39 @@ export function App() {
             <div className={"run-banner run-" + runInfo.kind}>
               <span className="run-banner-text">{runInfo.text}</span>
               {runInfo.kind === "err" && (
-                <button
-                  type="button"
-                  className="btn-diagnose-fix"
-                  onClick={() => diagnoseSqlError()}
-                  title="让 AI 分析该报错原因并提供修复 SQL"
-                >
-                  💡 AI 诊断并修复
-                </button>
+                <div style={{ display: "inline-flex", gap: 6, marginLeft: "auto", flexShrink: 0 }}>
+                  {(() => {
+                    const healScript = findAutoHealScript(active?.connId, runInfo.text);
+                    if (!healScript) return null;
+                    return (
+                      <button
+                        type="button"
+                        className="btn-diagnose-fix"
+                        style={{
+                          background: "rgba(99, 102, 241, 0.2)",
+                          borderColor: "var(--brand, #6366f1)",
+                          color: "#818cf8",
+                        }}
+                        disabled={autoHealing}
+                        onClick={() =>
+                          active?.connId &&
+                          handleAutoHealAndRetry(healScript, active.connId, runInfo.text)
+                        }
+                        title={`执行「${healScript.name}」刷新凭证并自动重试`}
+                      >
+                        {autoHealing ? "⚡ 正在续期…" : `⚡ 运行续期脚本「${healScript.name}」并重试`}
+                      </button>
+                    );
+                  })()}
+                  <button
+                    type="button"
+                    className="btn-diagnose-fix"
+                    onClick={() => diagnoseSqlError()}
+                    title="让 AI 分析该报错原因并提供修复 SQL"
+                  >
+                    💡 AI 诊断并修复
+                  </button>
+                </div>
               )}
             </div>
           )}
@@ -10275,7 +10458,15 @@ export function App() {
           }}
         >
           <div
-            className="modal settings-modal"
+            className={
+              "modal settings-modal" +
+              (settingsTab === "kb" ||
+              settingsTab === "assistant" ||
+              settingsTab === "memory" ||
+              settingsTab === "scripts"
+                ? " kb-wide settings-modal-wide"
+                : "")
+            }
             onClick={(e) => e.stopPropagation()}
           >
             <div className="settings-nav">
@@ -10330,9 +10521,17 @@ export function App() {
                 <span className="nav-item-icon">🧠</span>
                 <span>记忆管理</span>
               </button>
+              <button
+                type="button"
+                className={"nav-item" + (settingsTab === "scripts" ? " active" : "")}
+                onClick={() => setSettingsTab("scripts")}
+              >
+                <span className="nav-item-icon">⚡</span>
+                <span>自动化脚本</span>
+              </button>
             </div>
 
-            <div className={"settings-content" + (settingsTab === "kb" || settingsTab === "assistant" || settingsTab === "memory" ? " kb-content-flush" : "")}>
+            <div className={"settings-content" + (settingsTab === "kb" || settingsTab === "assistant" || settingsTab === "memory" || settingsTab === "scripts" ? " kb-content-flush" : "")}>
               {/* --- 模块一：模型设置（LLM） --- */}
               {settingsTab === "model" && (
                 <div className="settings-page">
@@ -11646,6 +11845,17 @@ export function App() {
                     activeConnId={chatConnId || active?.connId || selId || null}
                     activeDb={chatDb !== undefined ? chatDb : (active?.db || null)}
                     onClose={() => setSettingsOpen(false)}
+                  />
+                </div>
+              )}
+
+              {/* --- 模块八：自动化脚本与生命周期钩子 --- */}
+              {settingsTab === "scripts" && (
+                <div className="settings-page kb-page" style={{ height: "100%", padding: 0, overflow: "hidden" }}>
+                  <DbScriptsManager
+                    tree={tree}
+                    allConns={allConns}
+                    onToast={showToast}
                   />
                 </div>
               )}

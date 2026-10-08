@@ -248,9 +248,15 @@ fn main() {
 				            test_git_connection,
 				            backup_to_git,
 				            restore_from_git,
-				            list_backup_versions,
-				            rollback_to_version,
-				        ])
+					            list_backup_versions,
+					            rollback_to_version,
+					            list_db_scripts,
+					            get_db_script,
+					            save_db_script,
+					            delete_db_script,
+					            get_scripts_for_connection,
+					            run_db_script,
+					        ])
         .run(tauri::generate_context!())
         .expect("error while running ChatQuery");
 }
