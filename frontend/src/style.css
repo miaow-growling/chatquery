@@ -4049,23 +4049,23 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .mermaid-diagram-wrap {
   position: relative;
   padding: 18px 16px;
-  display: block;
+  display: flex;
+  justify-content: center;
+  align-items: center;
   overflow: auto;
   background: var(--bg-inset, #080a12);
-  min-height: 160px;
-  max-height: 500px;
+  min-height: 180px;
+  max-height: 520px;
   cursor: zoom-in;
   user-select: none;
 }
 .mermaid-svg-render {
   width: 100%;
-  min-height: 140px;
   display: flex;
   justify-content: center;
   align-items: center;
 }
-.mermaid-svg-render svg {
-  min-width: 520px;
+.mermaid-diagram-wrap .mermaid-svg-render svg {
   max-width: 100%;
   height: auto;
   display: block;
@@ -4233,11 +4233,11 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   cursor: grabbing;
 }
 .mermaid-fs-viewport .mermaid-svg-render svg {
-  min-width: 0 !important;
-  max-width: none !important;
-  width: auto !important;
+  width: min(88vw, 1600px) !important;
+  max-height: 80vh !important;
   height: auto !important;
   display: block;
+  margin: 0 auto;
 }
 .mermaid-canvas-plane {
   width: 100%;
@@ -4314,9 +4314,7 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   color: var(--text-secondary);
   overflow-x: auto;
 }
-/* 彻底屏蔽 Mermaid 抛错时试图插入 body 的全局错误 SVG 与浮动横幅 */
-body > [id^="dmermaid"],
-body > [id^="mermaid-temp"],
+/* 仅屏蔽 Mermaid 抛错时试图插入 body 的全局错误 SVG 与浮动横幅 */
 body > svg.error-icon,
 body > svg:has(.error-text),
 svg.error-icon,

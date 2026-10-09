@@ -99,7 +99,7 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
       setLoading(true);
       setError(null);
       const isDark = getIsDark();
-      const uniqueId = `mermaid-${rawId}-${Math.random().toString(36).slice(2, 7)}`;
+      const uniqueId = `mmd-${rawId}-${Math.random().toString(36).slice(2, 7)}`;
 
       try {
         mermaid.initialize({
@@ -162,9 +162,8 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
           setMode("code");
         }
       } finally {
-        // 清理任何临时标签
         const strays = document.querySelectorAll(
-          `body > [id*="${uniqueId}"], body > [id*="dmermaid"], body > svg.error-icon`
+          "body > svg.error-icon, body > svg:has(.error-text)"
         );
         strays.forEach((el) => el.remove());
       }
