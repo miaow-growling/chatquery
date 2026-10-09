@@ -7823,6 +7823,140 @@ select.field-input:disabled {
 }
 .fk-arrow { text-align: center; color: var(--brand); font-weight: var(--fw-bold); }
 
+/* =====================  表关系 (Relation) 专属样式  ===================== */
+.relation-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.relation-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 2px 0 6px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.relation-toolbar-left,
+.relation-toolbar-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.relation-tabs-toggle,
+.relation-view-toggle {
+  display: inline-flex;
+  background: var(--bg-subtle, #1e2436);
+  border: 1px solid var(--border, #262d44);
+  border-radius: var(--r-sm, 6px);
+  padding: 2px;
+  gap: 2px;
+}
+.relation-toggle-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+.relation-toggle-btn:hover {
+  color: var(--text-primary);
+}
+.relation-toggle-btn.active {
+  background: var(--segment-active, #2a3150);
+  color: var(--brand, #818cf8);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+.relation-search-box {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.relation-search-box input {
+  height: 26px;
+  width: 170px;
+  padding: 0 24px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 6px);
+  background: var(--bg-inset);
+  color: var(--text-primary);
+  font-size: 11.5px;
+  outline: none;
+  transition: border-color 0.12s ease, width 0.15s ease;
+}
+.relation-search-box input:focus {
+  border-color: var(--brand);
+  width: 210px;
+}
+.relation-search-clear {
+  position: absolute;
+  right: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 2px;
+}
+.relation-notice-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.24);
+  border-radius: var(--r-md, 8px);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.relation-notice-box .notice-icon {
+  font-size: 15px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.relation-notice-box .notice-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 3px;
+}
+.relation-notice-box .notice-hl {
+  color: var(--brand, #818cf8);
+  font-family: var(--font-mono, monospace);
+  font-weight: 700;
+}
+.relation-notice-box .notice-desc {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+.table-badge-match {
+  display: inline-block;
+  padding: 1px 7px;
+  background: rgba(99, 102, 241, 0.18);
+  color: var(--brand, #818cf8);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: 4px;
+  font-weight: 600;
+  font-family: var(--font-mono, monospace);
+}
+.row-matched {
+  background: rgba(99, 102, 241, 0.06);
+}
+.relation-diagram-box {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 8px);
+  overflow: hidden;
+  background: var(--bg-inset);
+  min-height: 240px;
+}
+
 /* =====================  CONTEXT MENU (right-click)  ===================== */
 .ctx-backdrop { position: fixed; inset: 0; z-index: 99; }
 .ctx-menu {

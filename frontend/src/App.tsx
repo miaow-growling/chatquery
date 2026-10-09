@@ -2168,9 +2168,12 @@ export function App() {
 
   // --- Table relationship view (ER simplified, ADR-021) -------------------
   // When set, the result panel shows a list of foreign-key relationships for
-  // the entire database (not just one table). Cleared alongside other views.
+  // the entire database or filtered by current table. Cleared alongside other views.
   const [relationshipView, setRelationshipView] =
-    useState<{ connId: string; db: string; fks: ForeignKeyInfo[] } | null>(null);
+    useState<{ connId: string; db: string; fks: ForeignKeyInfo[]; table?: string | null } | null>(null);
+  const [relFilterMode, setRelFilterMode] = useState<"current" | "all">("current");
+  const [relSearch, setRelSearch] = useState<string>("");
+  const [relViewMode, setRelViewMode] = useState<"table" | "diagram">("table");
 
   // --- Result sub-tabs (Phase 18) -----------------------------------------
   // Unifies the three result-panel views behind a Chat2DB-style tab strip:
@@ -5153,14 +5156,13 @@ export function App() {
     [filterConditions, inlineColFilters, filterRowVisible]
   );
 
-  // Fetch and display all FK relationships in a database (ADR-021). Shows a
-  // table of child→parent column mappings grouped by constraint name.
+  // Fetch and display FK relationships in a database (ADR-021), aware of the current table.
   const showRelationships = useCallback(
-    async (connId: string, db: string) => {
+    async (connId: string, db: string, currentTable?: string | null) => {
       clearEditState();
       try {
         const fks = await api.listRelationships(connId, db);
-        setRelationshipView({ connId, db, fks });
+        setRelationshipView({ connId, db, fks, table: currentTable ?? null });
         setResultTab("relation");
       } catch (e) {
         setRunInfo({ kind: "err", text: "加载表关系失败: " + String(e) });
@@ -5189,14 +5191,20 @@ export function App() {
   };
 
   const gotoRelation = () => {
+    const currentTable =
+      browseCtx?.table ??
+      extractTableFromSql(active?.sql || editorRef.current?.getDoc() || "");
     if (relationshipView) {
+      if (currentTable && relationshipView.table !== currentTable) {
+        setRelationshipView((prev) => (prev ? { ...prev, table: currentTable } : null));
+      }
       setResultTab("relation");
       return;
     }
     const connId = browseCtx?.connId ?? active?.connId;
     const db = browseCtx?.db ?? active?.db;
     if (connId && db) {
-      void showRelationships(connId, db);
+      void showRelationships(connId, db, currentTable);
     } else {
       showToast("请先选择数据库连接与数据库");
     }
@@ -6069,53 +6077,226 @@ export function App() {
     );
   };
 
-  // Render the ER / table-relationship view (ADR-021): a table of all FK
-  // constraints in the database, showing child table.column → parent
-  // table.column. Grouped by constraint name for readability.
+  // Render the ER / table-relationship view (ADR-021)
   const renderRelationships = () => {
     if (!relationshipView) return null;
     const { db, fks } = relationshipView;
+    const currentTable =
+      relationshipView.table ||
+      browseCtx?.table ||
+      extractTableFromSql(active?.sql || editorRef.current?.getDoc() || "") ||
+      null;
+
     if (fks.length === 0) {
       return (
         <div className="structure-view">
-          <div className="empty">{db} 中没有外键关系</div>
+          <div className="relation-notice-box info">
+            <span className="notice-icon">ℹ️</span>
+            <div>
+              <div className="notice-title">数据库「{db}」中未定义物理外键约束 (FOREIGN KEY)</div>
+              <div className="notice-desc">
+                现代生产业务库大多在业务代码逻辑层实现关联以保障性能，未在 MySQL 建立外键约束。
+              </div>
+            </div>
+          </div>
         </div>
       );
     }
-    // Group by constraint name to show composite FKs together.
-    const grouped = new Map<string, ForeignKeyInfo[]>();
-    for (const fk of fks) {
-      const arr = grouped.get(fk.constraint_name) ?? [];
-      arr.push(fk);
-      grouped.set(fk.constraint_name, arr);
+
+    // 与当前表相关的外键列表（作为子表或父表）
+    const currentTableFks = currentTable
+      ? fks.filter(
+          (fk) =>
+            fk.table_name.toLowerCase() === currentTable.toLowerCase() ||
+            fk.referenced_table.toLowerCase() === currentTable.toLowerCase()
+        )
+      : [];
+
+    // 根据模式决定展示哪些外键
+    let displayedFks =
+      relFilterMode === "current" && currentTable ? currentTableFks : fks;
+
+    if (relSearch.trim()) {
+      const q = relSearch.trim().toLowerCase();
+      displayedFks = displayedFks.filter(
+        (fk) =>
+          fk.table_name.toLowerCase().includes(q) ||
+          fk.referenced_table.toLowerCase().includes(q) ||
+          fk.column_name.toLowerCase().includes(q) ||
+          fk.referenced_column.toLowerCase().includes(q) ||
+          fk.constraint_name.toLowerCase().includes(q)
+      );
     }
+
+    const diagramCode =
+      displayedFks.length > 0
+        ? "erDiagram\n" +
+          displayedFks
+            .map(
+              (fk) =>
+                `    ${fk.table_name} }o--|| ${fk.referenced_table} : "${fk.column_name} = ${fk.referenced_column}"`
+            )
+            .join("\n")
+        : "";
+
     return (
-      <div className="structure-view">
-        <table className="result-table struct-table">
-          <caption>{db} — 外键关系 ({fks.length} 条)</caption>
-          <thead>
-            <tr>
-              <th>Constraint</th>
-              <th>子表</th>
-              <th>子列</th>
-              <th>→</th>
-              <th>父表</th>
-              <th>父列</th>
-            </tr>
-          </thead>
-          <tbody>
-            {fks.map((fk, i) => (
-              <tr key={i}>
-                <td className="col-name">{fk.constraint_name}</td>
-                <td>{fk.table_name}</td>
-                <td>{fk.column_name}</td>
-                <td className="fk-arrow">→</td>
-                <td>{fk.referenced_table}</td>
-                <td>{fk.referenced_column}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="structure-view relation-container">
+        {/* 顶部控制栏：当前表/全库切换 + 搜索框 + 列表/关系图切换 */}
+        <div className="relation-toolbar">
+          <div className="relation-toolbar-left">
+            {currentTable && (
+              <div className="relation-tabs-toggle">
+                <button
+                  type="button"
+                  className={`relation-toggle-btn ${relFilterMode === "current" ? "active" : ""}`}
+                  onClick={() => setRelFilterMode("current")}
+                  title={`只看与当前表 ${currentTable} 有关的外键关联`}
+                >
+                  当前表：{currentTable} ({currentTableFks.length})
+                </button>
+                <button
+                  type="button"
+                  className={`relation-toggle-btn ${relFilterMode === "all" ? "active" : ""}`}
+                  onClick={() => setRelFilterMode("all")}
+                  title="查看当前数据库全部外键关系"
+                >
+                  全部外键 ({fks.length})
+                </button>
+              </div>
+            )}
+            <div className="relation-search-box">
+              <input
+                type="text"
+                placeholder="搜索关联表或外键列…"
+                value={relSearch}
+                onChange={(e) => setRelSearch(e.target.value)}
+              />
+              {relSearch && (
+                <button
+                  type="button"
+                  className="relation-search-clear"
+                  onClick={() => setRelSearch("")}
+                  title="清空搜索"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="relation-toolbar-right">
+            <div className="relation-view-toggle">
+              <button
+                type="button"
+                className={`relation-toggle-btn ${relViewMode === "table" ? "active" : ""}`}
+                onClick={() => setRelViewMode("table")}
+                title="表格列表视图"
+              >
+                📋 列表
+              </button>
+              <button
+                type="button"
+                className={`relation-toggle-btn ${relViewMode === "diagram" ? "active" : ""}`}
+                onClick={() => setRelViewMode("diagram")}
+                title="Mermaid 矢量关系图"
+              >
+                📊 关系图
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* 若当前表无物理外键，显示醒目友好的提示横幅 */}
+        {currentTable && currentTableFks.length === 0 && (
+          <div className="relation-notice-box">
+            <span className="notice-icon">💡</span>
+            <div className="notice-content">
+              <div className="notice-title">
+                表「<span className="notice-hl">{currentTable}</span>」在 MySQL 中未定义物理外键约束 (FOREIGN KEY)
+              </div>
+              <div className="notice-desc">
+                互联网生产库通常在应用代码层维系关联逻辑以保障性能。下方已为您展示当前库中存在的其他物理外键（共 {fks.length} 条），您可通过上方搜索框检索指定表。
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 内容展示区 */}
+        {relViewMode === "diagram" ? (
+          <div className="relation-diagram-box">
+            {diagramCode ? (
+              <MermaidDiagram code={diagramCode} />
+            ) : (
+              <div className="empty">没有可绘制的关系图</div>
+            )}
+          </div>
+        ) : (
+          <div className="relation-table-box">
+            <table className="result-table struct-table">
+              <thead>
+                <tr>
+                  <th>Constraint</th>
+                  <th>子表 (从表)</th>
+                  <th>外键列</th>
+                  <th style={{ textAlign: "center", width: 40 }}>关系</th>
+                  <th>父表 (主表)</th>
+                  <th>关联主键列</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayedFks.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      style={{
+                        textAlign: "center",
+                        padding: "24px 0",
+                        color: "var(--text-tertiary)",
+                      }}
+                    >
+                      {currentTable && relFilterMode === "current"
+                        ? `表「${currentTable}」暂无物理外键关联，可切换为「全部外键」查看`
+                        : "未匹配到外键关系"}
+                    </td>
+                  </tr>
+                ) : (
+                  displayedFks.map((fk, i) => {
+                    const isChildMatch =
+                      currentTable &&
+                      fk.table_name.toLowerCase() === currentTable.toLowerCase();
+                    const isParentMatch =
+                      currentTable &&
+                      fk.referenced_table.toLowerCase() === currentTable.toLowerCase();
+                    return (
+                      <tr
+                        key={i}
+                        className={isChildMatch || isParentMatch ? "row-matched" : ""}
+                      >
+                        <td className="col-name">{fk.constraint_name}</td>
+                        <td>
+                          <span className={isChildMatch ? "table-badge-match" : ""}>
+                            {fk.table_name}
+                          </span>
+                        </td>
+                        <td>
+                          <code>{fk.column_name}</code>
+                        </td>
+                        <td style={{ textAlign: "center", color: "var(--brand)" }}>→</td>
+                        <td>
+                          <span className={isParentMatch ? "table-badge-match" : ""}>
+                            {fk.referenced_table}
+                          </span>
+                        </td>
+                        <td>
+                          <code>{fk.referenced_column}</code>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     );
   };
