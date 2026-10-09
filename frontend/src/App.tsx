@@ -7682,11 +7682,22 @@ export function App() {
           history.push({ role: "user", content: m.content });
         } else if (m.role === "assistant") {
           const content = m.content.trim();
-          if (content !== "") {
+          if (content === "（操作完成，未生成额外说明）" && m.tools && m.tools.length > 0) {
+            // 上一轮正文虽然为空，但实际执行了关键工具与 SQL；将这些执行痕迹作为上下文传给后续轮次，防止模型盲目重复探索
+            const toolsText = m.tools.map((t) => `- ${t}`).join("\n");
+            history.push({
+              role: "assistant",
+              content: `（已执行操作与工具调用：\n${toolsText}）`,
+            });
+          } else if (content !== "") {
             history.push({ role: "assistant", content: m.content });
           } else if ((m.plan && m.plan.length > 0) || (m.tools && m.tools.length > 0)) {
             // 被取消或仅有执行步骤的 assistant 消息补充占位，保持严格交替并告知模型前置动作被中止
-            history.push({ role: "assistant", content: "[该任务在执行步骤期间被用户中止或取消]" });
+            const toolsText = (m.tools || []).map((t) => `- ${t}`).join("\n");
+            history.push({
+              role: "assistant",
+              content: toolsText ? `[任务在执行以下步骤期间被中止：\n${toolsText}]` : "[该任务在执行步骤期间被用户中止或取消]",
+            });
           }
         }
       }

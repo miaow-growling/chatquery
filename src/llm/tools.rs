@@ -21,6 +21,8 @@ pub struct ToolContext<'a> {
     /// model doesn't need to pass a `db` argument on every call. None means
     /// "use the connection's default database".
     pub current_db: Option<&'a str>,
+    /// The active session's bound connection ID.
+    pub current_conn: Option<&'a str>,
 }
 
 /// A built-in capability the agent can invoke. Modeled as an enum (not a
@@ -75,7 +77,9 @@ impl BuiltinTool {
     }
     async fn call(&self, args: &Value, ctx: &ToolContext<'_>) -> (String, String) {
         match self {
-            BuiltinTool::ExecuteQuery => exec_builtin(args, ctx.conns, ctx.current_db).await,
+            BuiltinTool::ExecuteQuery => {
+                exec_builtin(args, ctx.conns, ctx.current_db, ctx.current_conn).await
+            }
             BuiltinTool::SearchKnowledge => exec_search_kb(args, ctx).await,
         }
     }
@@ -153,27 +157,92 @@ pub fn decode_mcp_tool(name: &str) -> Option<(String, String)> {
     Some((server, tool))
 }
 
-/// Match a connection by name. The system prompt's "可用连接" list shows
-/// each conn as "<name> (MySQL)" so the model sees the kind next to the
-/// name. Some models then pass the kind-suffixed form straight back to
-/// `execute_query` — e.g. `connection: "测试环境租户库 (MySQL)"` — which
-/// would otherwise miss the strict equality check on `c.name`. Strip the
-/// kind suffix and try again before giving up.
-fn resolve_conn<'a>(conns: &'a [ConnectionConfig], name: &str) -> Option<&'a ConnectionConfig> {
-    let trimmed = name.trim();
+/// Match a connection by name, id, or smart fuzzy resolution.
+/// 兼容大模型可能传入的多种连接形态：
+/// 1. 传空、"default"、"current" 时，自动回退到当前会话激活的连接；
+/// 2. 精确连接名；
+/// 3. 连接 ID（如 c18ceac36451a7d68）；
+/// 4. 剥离 UI/日志格式中的数据库后缀（如 "华为云租户库04 · mycommunity_cszjxh" 或 "华为云租户库04: mycommunity_cszjxh"）；
+/// 5. 剥离括号类型后缀（如 "华为云租户库04 (MySQL)" / "华为云租户库04（MySQL）"）；
+/// 6. 大小写不敏感及包裹符号（反引号、引号）容错；
+/// 7. 误将目标数据库名当作连接名（如 connection: "mycommunity_cszjxh"）；
+/// 8. 会话当前连接兜底（当模型在单连接会话中胡乱推导连接名时）。
+fn resolve_conn<'a>(
+    conns: &'a [ConnectionConfig],
+    name: &str,
+    current_conn_id: Option<&str>,
+) -> Option<&'a ConnectionConfig> {
+    let raw = name.trim();
+    let trimmed = raw
+        .trim_matches('`')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim();
+
+    // 1. 如果模型未传连接名、或传了空/default/current，优先使用当前会话已绑定的连接
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("default")
+        || trimmed.eq_ignore_ascii_case("current")
+    {
+        if let Some(cid) = current_conn_id {
+            if let Some(c) = conns.iter().find(|c| c.id == cid) {
+                return Some(c);
+            }
+        }
+        if conns.len() == 1 {
+            return conns.first();
+        }
+    }
+
+    // 2. 精确匹配连接名
     if let Some(c) = conns.iter().find(|c| c.name == trimmed) {
         return Some(c);
     }
-    // Tolerate "name (MySQL)" / "name (Redis)" / "name（MySQL）" — strip
-    // the parenthesised kind, retry, and only then report not found.
+
+    // 3. 匹配连接 ID（模型有时会把 conn_id 当作参数传入）
+    if let Some(c) = conns.iter().find(|c| c.id == trimmed) {
+        return Some(c);
+    }
+
+    // 4. 剥离 UI/日志格式中的数据库后缀（例如 "华为云租户库04 · mycommunity_cszjxh" 或 "华为云租户库04: mycommunity_cszjxh"）
+    for sep in &['·', ':', '/'] {
+        if let Some(pos) = trimmed.find(*sep) {
+            let prefix = trimmed[..pos].trim();
+            if !prefix.is_empty() {
+                if let Some(c) = conns.iter().find(|c| c.name == prefix || c.id == prefix) {
+                    return Some(c);
+                }
+            }
+        }
+    }
+
+    // 5. 剥离括号类型后缀（例如 "华为云租户库04 (MySQL)" / "华为云租户库04（MySQL）"）
     if let Some(open) = trimmed.find(['(', '（']) {
         let stripped = trimmed[..open].trim();
         if !stripped.is_empty() {
-            if let Some(c) = conns.iter().find(|c| c.name == stripped) {
+            if let Some(c) = conns.iter().find(|c| c.name == stripped || c.id == stripped) {
                 return Some(c);
             }
         }
     }
+
+    // 6. 大小写不敏感匹配
+    if let Some(c) = conns.iter().find(|c| c.name.eq_ignore_ascii_case(trimmed)) {
+        return Some(c);
+    }
+
+    // 7. 匹配数据库名：如果模型误将数据库名传为连接名（例如 connection: "mycommunity_cszjxh"）
+    if let Some(c) = conns.iter().find(|c| !c.database.is_empty() && c.database.eq_ignore_ascii_case(trimmed)) {
+        return Some(c);
+    }
+
+    // 8. 兜底：如果会话明确处于某个 active 连接上下文中，且输入无法匹配任何连接，回退到当前活动连接
+    if let Some(cid) = current_conn_id {
+        if let Some(c) = conns.iter().find(|c| c.id == cid) {
+            return Some(c);
+        }
+    }
+
     None
 }
 
@@ -182,6 +251,7 @@ async fn exec_builtin(
     args: &Value,
     conns: &[ConnectionConfig],
     current_db: Option<&str>,
+    current_conn: Option<&str>,
 ) -> (String, String) {
     let conn_name = args
         .get("connection")
@@ -194,7 +264,7 @@ async fn exec_builtin(
         .unwrap_or("")
         .to_string();
 
-    let cfg = match resolve_conn(conns, &conn_name) {
+    let cfg = match resolve_conn(conns, &conn_name, current_conn) {
         Some(c) => c,
         None => {
             return (
@@ -295,7 +365,7 @@ async fn exec_search_kb(args: &Value, ctx: &ToolContext<'_>) -> (String, String)
     if query.trim().is_empty() {
         return ("参数缺失".into(), "请提供 query 关键词".into());
     }
-    let cfg = match ctx.conns.iter().find(|c| c.name == conn_name) {
+    let cfg = match resolve_conn(ctx.conns, &conn_name, ctx.current_conn) {
         Some(c) => c,
         None => {
             return (
@@ -429,5 +499,50 @@ mod tests {
         let rows = vec![vec!["1".into(), "Alice".into()]];
         let table = format_result_table(&cols, &rows);
         assert_eq!(table, "id\tname\n1\tAlice\n");
+    }
+
+    #[test]
+    fn test_resolve_conn_smart_matching() {
+        let conns = vec![
+            ConnectionConfig {
+                id: "c18ceac36451a7d68".into(),
+                name: "华为云租户库04".into(),
+                db_type: DbType::Mysql,
+                host: "127.0.0.1".into(),
+                port: 3306,
+                user: "root".into(),
+                password: "".into(),
+                database: "mycommunity_cszjxh".into(),
+                ssl_mode: String::new(),
+                ssl_ca: String::new(),
+                client_cert: String::new(),
+                client_key: String::new(),
+                ssh_host: String::new(),
+                ssh_port: 22,
+                ssh_user: String::new(),
+                ssh_auth_kind: String::new(),
+                ssh_password: String::new(),
+                ssh_private_key: String::new(),
+                group_id: None,
+            },
+        ];
+
+        // 1. Exact name match
+        assert_eq!(resolve_conn(&conns, "华为云租户库04", None).unwrap().id, "c18ceac36451a7d68");
+        // 2. ID match
+        assert_eq!(resolve_conn(&conns, "c18ceac36451a7d68", None).unwrap().id, "c18ceac36451a7d68");
+        // 3. UI label with database dot separator
+        assert_eq!(resolve_conn(&conns, "华为云租户库04 · mycommunity_cszjxh", None).unwrap().id, "c18ceac36451a7d68");
+        // 4. Suffix with type in parens
+        assert_eq!(resolve_conn(&conns, "华为云租户库04 (MySQL)", None).unwrap().id, "c18ceac36451a7d68");
+        assert_eq!(resolve_conn(&conns, "华为云租户库04（MySQL）", None).unwrap().id, "c18ceac36451a7d68");
+        // 5. Quoted
+        assert_eq!(resolve_conn(&conns, "`华为云租户库04`", None).unwrap().id, "c18ceac36451a7d68");
+        // 6. Database name passed as connection
+        assert_eq!(resolve_conn(&conns, "mycommunity_cszjxh", None).unwrap().id, "c18ceac36451a7d68");
+        // 7. Empty or default with current_conn_id fallback
+        assert_eq!(resolve_conn(&conns, "", Some("c18ceac36451a7d68")).unwrap().id, "c18ceac36451a7d68");
+        assert_eq!(resolve_conn(&conns, "default", Some("c18ceac36451a7d68")).unwrap().id, "c18ceac36451a7d68");
+        assert_eq!(resolve_conn(&conns, "unknown_name", Some("c18ceac36451a7d68")).unwrap().id, "c18ceac36451a7d68");
     }
 }

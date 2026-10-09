@@ -21,7 +21,15 @@ use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Bound the tool-call round trips so a misbehaving model can't loop forever.
-const MAX_TOOL_ITERS: usize = 5;
+/// 默认放宽至 30 次，支持环境变量 `CHATQUERY_MAX_TOOL_ITERS` 自由指定（如设为 50 或更多），
+/// 充分满足大型企业数据库中树状层级递归、多级表结构排查、字典代码对照与多阶段 SQL 验证的深度分析需求。
+fn get_max_tool_iters() -> usize {
+    std::env::var("CHATQUERY_MAX_TOOL_ITERS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(30)
+}
 
 /// How long a write confirmation waits for the user before it self-refuses.
 const CONFIRM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
@@ -178,14 +186,25 @@ impl Agent {
                     .find(|m| m.role == ChatRole::Assistant)
                     .map(|m| m.content.as_str());
 
-                // 优先尝试大模型智能提炼精简硬规则，失败或超时则使用启发式规则候选
+                // 优先尝试大模型智能提炼精简硬规则
                 let distilled = crate::llm::memory::distill_correction_rule(
                     &self.cfg,
                     &signal.user_raw,
                     prior_ast,
                 )
                 .await;
-                let final_rule = distilled.or(signal.rule_candidate);
+                // 只有当大模型明确提炼出具备业务价值的陈述句规则时才沉淀；
+                // 若大模型判定输入纯属一次性追问、反问或情绪宣泄（返回 None/NONE），
+                // 严禁将口语化问句（如“不是，我原来的时限条件呢”）强行作为永久业务规则存入数据库！
+                // 仅当启发式规则命中高确定性模式（如字段替换或明确排除项）时才允许保底。
+                let final_rule = distilled.or_else(|| {
+                    if let Some(cand) = signal.rule_candidate {
+                        if cand.starts_with("使用「") || cand.starts_with("查询与处理时，必须排除") {
+                            return Some(cand);
+                        }
+                    }
+                    None
+                });
 
                 if let Some(rule) = final_rule {
                     let source = if signal.is_harsh {
@@ -475,7 +494,8 @@ impl Agent {
         let ctl = self.ctl.clone();
         let mut reprompted_tool_intent = false;
 
-        for _ in 0..MAX_TOOL_ITERS {
+        let max_iters = get_max_tool_iters();
+        for _ in 0..max_iters {
             if ctl.is_cancelled() {
                 break;
             }
@@ -545,6 +565,7 @@ impl Agent {
                 mcp: self.mcp.as_deref(),
                 kb_loader: self.kb.clone(),
                 current_db: self.memory.current_db.as_deref(),
+                current_conn: self.memory.current_conn.as_deref(),
             };
             let mut futures = Vec::new();
             for tc in &choice.tool_calls {
@@ -579,6 +600,30 @@ impl Agent {
                     tool_call_id: Some(tc.id.clone()),
                 });
                 self.memory.note_result(&summary);
+            }
+        }
+
+        // 若达到了最大工具调用次数（未在循环内由模型主动给出文本结论直接 break），
+        // 且未被用户取消，则发起一次「强制最终总结」，禁止继续调用工具（tools: &[]），
+        // 强制大模型根据已获取的表结构、查询数据与探索成果直接给用户输出最终答案与 SQL。
+        if last_assistant.is_none() && !ctl.is_cancelled() {
+            let mut on_delta = |d: &str| {
+                if role == WorkerKind::Orchestrator {
+                    let _ = tx.send(BackendMsg::ChatToken(d.to_string()));
+                }
+            };
+            messages.push(ChatMessage::system(
+                "系统提示：当前工具调用轮数已达到上限。请根据以上所有已执行的工具结果、查询数据与表结构，直接给用户输出完整、准确的最终结论与所编写的 SQL，严禁再次发起工具调用。".to_string(),
+            ));
+            let choice = tokio::select! {
+                biased;
+                _ = ctl.cancelled() => return Ok(None),
+                r = stream_chat(&self.cfg, &messages, &[], &mut on_delta) => r?,
+            };
+            self.usage = add_usage(self.usage, choice.usage);
+            if !choice.content.trim().is_empty() {
+                last_assistant = Some(choice.content.clone());
+                messages.push(ChatMessage::assistant(choice.content.clone()));
             }
         }
 

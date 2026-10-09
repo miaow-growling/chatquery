@@ -164,7 +164,7 @@ pub async fn distill_correction_rule(
 
     let mut on_delta = |_d: &str| {};
     let stream_fut = crate::llm::client::stream_chat(cfg, &messages, &[], &mut on_delta);
-    let result = tokio::time::timeout(Duration::from_millis(3500), stream_fut).await.ok()?.ok()?;
+    let result = tokio::time::timeout(Duration::from_secs(8), stream_fut).await.ok()?.ok()?;
     let clean = crate::llm::planner::strip_think_tags(&result.content);
     let trimmed = clean.trim();
     if trimmed.is_empty() || trimmed == "NONE" || trimmed.contains("NONE") {
