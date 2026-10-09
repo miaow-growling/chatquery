@@ -3676,8 +3676,29 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .md li { margin: 3px 0; }
 .md strong { font-weight: 600; color: var(--text-primary); }
 .md em { font-style: italic; }
-.md a { color: var(--brand); text-decoration: none; }
-.md a:hover { text-decoration: underline; }
+.md a {
+  color: var(--brand);
+  text-decoration: none;
+  cursor: pointer;
+  word-break: break-all;
+  transition: color 0.12s ease;
+}
+.md a:hover {
+  text-decoration: underline;
+  color: var(--brand-hover);
+}
+.md-ext-link-icon {
+  font-size: 0.82em;
+  opacity: 0.7;
+  margin-left: 2px;
+  display: inline-block;
+  user-select: none;
+  font-family: system-ui, sans-serif;
+  text-decoration: none !important;
+}
+.md a:hover .md-ext-link-icon {
+  opacity: 1;
+}
 .md blockquote {
   margin: 8px 0;
   padding: 2px 12px;

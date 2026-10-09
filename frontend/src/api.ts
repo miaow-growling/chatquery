@@ -364,6 +364,8 @@ export const api = {
     onToken: (delta: string) => void
   ) => inlineGenerateSql(prompt, selectedSql, connId, db, onToken),
   getMcpInstallInfo: () => invoke<McpInstallInfo>("get_mcp_install_info"),
+  // --- External Browser URL Opener ---
+  openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
   // --- Git Encrypted Backup & Sync (#GitSync) ---
   getGitSyncConfig: () => invoke<GitSyncConfigDto>("get_git_sync_config"),
   saveGitSyncConfig: (input: GitSyncConfigInput) => invoke("save_git_sync_config", { input }),

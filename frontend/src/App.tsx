@@ -822,11 +822,33 @@ function MarkdownMessage({
 
   const customComponents = useMemo(
     () => ({
-      a: ({ href, children }: any) => (
-        <a href={href} target="_blank" rel="noreferrer">
-          {children}
-        </a>
-      ),
+      a: ({ href, children }: any) => {
+        const handleOpen = (e: ReactMouseEvent) => {
+          if (!href) return;
+          e.preventDefault();
+          e.stopPropagation();
+          let target = String(href).trim();
+          if (/^www\./i.test(target)) {
+            target = "https://" + target;
+          }
+          void api.openExternalUrl(target).catch(() => {
+            window.open(target, "_blank", "noreferrer");
+          });
+        };
+        return (
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            title={href ? `点击使用默认浏览器打开：${href}` : undefined}
+            onClick={handleOpen}
+            onAuxClick={handleOpen}
+          >
+            {children}
+            <span className="md-ext-link-icon" aria-hidden="true"> ↗</span>
+          </a>
+        );
+      },
       pre: ({ children }: any) => (
         <CodeBlock onImport={onImportSql} onOpenNewTab={onOpenNewTab} onExecute={onExecuteSql}>
           {children}

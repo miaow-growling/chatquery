@@ -2908,5 +2908,22 @@ pub async fn run_db_script(
     Ok(exec_res)
 }
 
+/// 使用操作系统默认浏览器打开外部网页链接
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    let mut trimmed = url.trim().to_string();
+    if trimmed.starts_with("www.") {
+        trimmed = format!("https://{}", trimmed);
+    }
+    if !trimmed.starts_with("http://")
+        && !trimmed.starts_with("https://")
+        && !trimmed.starts_with("mailto:")
+    {
+        return Err("仅支持打开 http://、https:// 或 mailto: 协议的链接".to_string());
+    }
+
+    open::that(&trimmed).map_err(|e| format!("无法使用系统默认浏览器打开链接: {}", e))
+}
+
 
 
