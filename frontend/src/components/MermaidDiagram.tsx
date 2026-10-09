@@ -7,14 +7,6 @@ export interface MermaidDiagramProps {
   onCopy?: (text: string) => void;
 }
 
-interface TransformState {
-  scale: number;
-  x: number;
-  y: number;
-}
-
-const DEFAULT_TRANSFORM: TransformState = { scale: 1, x: 0, y: 0 };
-
 /** 嗅探 Mermaid 图表类型名称 */
 function getDiagramTitle(code: string): string {
   const trimmed = code.trim();
@@ -58,6 +50,17 @@ function sanitizeMermaidCode(raw: string): string {
   return lines.join("\n");
 }
 
+/** 从 SVG 字符串中解析出原生 viewBox 宽高，用于高清矢量尺寸缩放计算 */
+function parseViewBox(svgStr: string): { width: number; height: number } {
+  const m = svgStr.match(/viewBox=["']\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*["']/);
+  if (m) {
+    const w = parseFloat(m[3]);
+    const h = parseFloat(m[4]);
+    if (w > 0 && h > 0) return { width: w, height: h };
+  }
+  return { width: 1200, height: 800 };
+}
+
 export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) => {
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
@@ -66,14 +69,21 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
   const [copied, setCopied] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
 
-  // 全屏大图模式下的平移与缩放
-  const [fsTransform, setFsTransform] = useState<TransformState>(DEFAULT_TRANSFORM);
+  // 全屏大图模式下的缩放比例与平移坐标
+  const [fsScale, setFsScale] = useState<number>(1);
+  const [fsPos, setFsPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [isAnimating, setIsAnimating] = useState<boolean>(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const fsViewportRef = useRef<HTMLDivElement>(null);
+  const planeRef = useRef<HTMLDivElement>(null);
+
+  // 拖拽手势高性能引用，避免 mousemove 过程中触发高频 React 重渲染
   const isDraggingRef = useRef<boolean>(false);
   const dragStartRef = useRef<{ clientX: number; clientY: number; startX: number; startY: number } | null>(null);
+  const currentPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const rafIdRef = useRef<number | null>(null);
 
   const rawId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const diagramTitle = getDiagramTitle(code);
@@ -105,10 +115,11 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: "loose",
-          // 彻底屏蔽 Mermaid 向 DOM 注入丑陋的 Syntax error 横幅
+          // 彻底屏蔽 Mermaid 向 DOM 注入错误横幅
           suppressErrorRendering: true,
           theme: isDark ? "dark" : "default",
-          fontFamily: "var(--font-mono, ui-monospace, Menlo, Consolas, monospace)",
+          fontFamily:
+            "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif",
           themeVariables: isDark
             ? {
                 darkMode: true,
@@ -144,7 +155,7 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
           renderedSvg = res.svg;
         } catch {
           const healed = sanitizeMermaidCode(cleanRaw);
-          const healedId = `mermaid-${rawId}-h-${Math.random().toString(36).slice(2, 7)}`;
+          const healedId = `mmd-${rawId}-h-${Math.random().toString(36).slice(2, 7)}`;
           const res = await mermaid.render(healedId, healed);
           renderedSvg = res.svg;
         }
@@ -187,6 +198,12 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isFullscreen]);
 
+  // 触发平滑过渡动画（仅在点击按钮或双击等离散缩放事件中触发，拖拽时保持0延迟无动画）
+  const triggerSmoothAnimate = () => {
+    setIsAnimating(true);
+    setTimeout(() => setIsAnimating(false), 220);
+  };
+
   // 全屏视口鼠标滚轮无级缩放
   useEffect(() => {
     const el = fsViewportRef.current;
@@ -196,9 +213,9 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
       e.preventDefault();
       e.stopPropagation();
       const factor = e.deltaY < 0 ? 1.15 : 0.88;
-      setFsTransform((prev) => {
-        const next = Math.min(Math.max(prev.scale * factor, 0.25), 6.0);
-        return { ...prev, scale: parseFloat(next.toFixed(2)) };
+      setFsScale((prev) => {
+        const next = Math.min(Math.max(prev * factor, 0.2), 6.0);
+        return parseFloat(next.toFixed(2));
       });
     };
 
@@ -206,21 +223,18 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
     return () => el.removeEventListener("wheel", onWheel);
   }, [isFullscreen]);
 
-  // 全屏模式下双击缩放：1.0x -> 1.8x -> 2.6x -> 复位 1.0x
+  // 全屏模式下双击多级放大与复位
   const handleFsDoubleClick = (e: React.MouseEvent) => {
     e.preventDefault();
-    setFsTransform((prev) => {
-      if (prev.scale < 1.4) {
-        return { ...prev, scale: 1.8 };
-      } else if (prev.scale < 2.3) {
-        return { ...prev, scale: 2.6 };
-      } else {
-        return DEFAULT_TRANSFORM;
-      }
+    triggerSmoothAnimate();
+    setFsScale((prev) => {
+      if (prev < 1.2) return 1.8;
+      if (prev < 2.3) return 2.8;
+      return 1.0;
     });
   };
 
-  // 全屏模式鼠标拖拽平移
+  // 全屏模式高性能鼠标拖拽平移（使用 requestAnimationFrame + 直连 DOM translate3d，杜绝重渲染闪烁）
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -229,25 +243,40 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
     dragStartRef.current = {
       clientX: e.clientX,
       clientY: e.clientY,
-      startX: fsTransform.x,
-      startY: fsTransform.y,
+      startX: fsPos.x,
+      startY: fsPos.y,
     };
+    currentPosRef.current = { x: fsPos.x, y: fsPos.y };
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       if (!isDraggingRef.current || !dragStartRef.current) return;
       const dx = moveEvent.clientX - dragStartRef.current.clientX;
       const dy = moveEvent.clientY - dragStartRef.current.clientY;
-      setFsTransform((prev) => ({
-        ...prev,
-        x: dragStartRef.current!.startX + dx,
-        y: dragStartRef.current!.startY + dy,
-      }));
+      const nextX = dragStartRef.current.startX + dx;
+      const nextY = dragStartRef.current.startY + dy;
+      currentPosRef.current = { x: nextX, y: nextY };
+
+      // 使用硬件垂直同步 RAF 帧驱动，跳过 React 虚拟 DOM 开销，杜绝拖拽卡顿抖动
+      if (!rafIdRef.current) {
+        rafIdRef.current = requestAnimationFrame(() => {
+          if (planeRef.current) {
+            planeRef.current.style.transform = `translate3d(${currentPosRef.current.x}px, ${currentPosRef.current.y}px, 0)`;
+          }
+          rafIdRef.current = null;
+        });
+      }
     };
 
     const onMouseUp = () => {
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
       isDraggingRef.current = false;
       setIsDragging(false);
       dragStartRef.current = null;
+      // 拖拽结束时将最终坐标同步回 React 状态持久化
+      setFsPos(currentPosRef.current);
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
     };
@@ -280,9 +309,23 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
   };
 
   const openFullscreen = () => {
-    setFsTransform(DEFAULT_TRANSFORM);
+    // 智能自适应屏幕视口大小，初始尺寸优雅铺满视口
+    const vb = parseViewBox(svg);
+    const winW = window.innerWidth * 0.86;
+    const winH = window.innerHeight * 0.78;
+    const fitScale = Math.min(winW / vb.width, winH / vb.height, 1.25);
+    const initialScale = Math.max(parseFloat(fitScale.toFixed(2)), 0.35);
+
+    setFsScale(initialScale);
+    setFsPos({ x: 0, y: 0 });
+    currentPosRef.current = { x: 0, y: 0 };
     setIsFullscreen(true);
   };
+
+  // 解析并计算全屏模式下的原生 SVG 矢量尺寸（从根源解决文字模糊与位图拉伸）
+  const vb = parseViewBox(svg);
+  const scaledWidth = Math.round(vb.width * fsScale);
+  const scaledHeight = Math.round(vb.height * fsScale);
 
   return (
     <div className="mermaid-card-container" ref={containerRef}>
@@ -384,7 +427,7 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
         )}
       </div>
 
-      {/* 全屏大图灯箱预览（全屏后再支持缩放、拖拽与平移） */}
+      {/* 全屏大图灯箱预览（纯矢量尺寸缩放 + RAF 无抖动平移） */}
       {isFullscreen &&
         createPortal(
           <div className="mermaid-fs-overlay" onClick={() => setIsFullscreen(false)}>
@@ -401,12 +444,10 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
                       type="button"
                       className="mermaid-tool-btn"
                       title="缩小"
-                      onClick={() =>
-                        setFsTransform((p) => ({
-                          ...p,
-                          scale: Math.max(parseFloat((p.scale - 0.25).toFixed(2)), 0.3),
-                        }))
-                      }
+                      onClick={() => {
+                        triggerSmoothAnimate();
+                        setFsScale((p) => Math.max(parseFloat((p - 0.25).toFixed(2)), 0.2));
+                      }}
                     >
                       -
                     </button>
@@ -414,20 +455,23 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
                       type="button"
                       className="mermaid-tool-btn scale-val"
                       title="点击重置为 100%"
-                      onClick={() => setFsTransform(DEFAULT_TRANSFORM)}
+                      onClick={() => {
+                        triggerSmoothAnimate();
+                        setFsScale(1.0);
+                        setFsPos({ x: 0, y: 0 });
+                        currentPosRef.current = { x: 0, y: 0 };
+                      }}
                     >
-                      {Math.round(fsTransform.scale * 100)}%
+                      {Math.round(fsScale * 100)}%
                     </button>
                     <button
                       type="button"
                       className="mermaid-tool-btn"
                       title="放大"
-                      onClick={() =>
-                        setFsTransform((p) => ({
-                          ...p,
-                          scale: Math.min(parseFloat((p.scale + 0.25).toFixed(2)), 5.0),
-                        }))
-                      }
+                      onClick={() => {
+                        triggerSmoothAnimate();
+                        setFsScale((p) => Math.min(parseFloat((p + 0.25).toFixed(2)), 6.0));
+                      }}
                     >
                       +
                     </button>
@@ -435,7 +479,10 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
                       type="button"
                       className="mermaid-tool-btn reset"
                       title="一键居中复位"
-                      onClick={() => setFsTransform(DEFAULT_TRANSFORM)}
+                      onClick={() => {
+                        triggerSmoothAnimate();
+                        openFullscreen();
+                      }}
                     >
                       ↺
                     </button>
@@ -475,14 +522,18 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
                 title="鼠标滚轮缩放 · 拖拽平移画布 · 双击放大"
               >
                 <div
-                  className="mermaid-canvas-plane"
+                  className={`mermaid-canvas-plane ${isAnimating ? "is-animated" : ""}`}
+                  ref={planeRef}
                   style={{
-                    transform: `translate(${fsTransform.x}px, ${fsTransform.y}px) scale(${fsTransform.scale})`,
-                    transformOrigin: "center center",
+                    transform: `translate3d(${fsPos.x}px, ${fsPos.y}px, 0)`,
                   }}
                 >
                   <div
                     className="mermaid-svg-render fs-render"
+                    style={{
+                      width: `${scaledWidth}px`,
+                      height: `${scaledHeight}px`,
+                    }}
                     dangerouslySetInnerHTML={{ __html: svg }}
                   />
                 </div>

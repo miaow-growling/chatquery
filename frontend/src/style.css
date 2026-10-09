@@ -4253,21 +4253,25 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
 .mermaid-fs-viewport.is-dragging {
   cursor: grabbing;
 }
-.mermaid-fs-viewport .mermaid-svg-render svg {
-  width: min(88vw, 1600px) !important;
-  max-height: 80vh !important;
-  height: auto !important;
+.mermaid-fs-viewport .mermaid-svg-render.fs-render {
   display: block;
-  margin: 0 auto;
+  flex-shrink: 0;
+}
+.mermaid-fs-viewport .mermaid-svg-render.fs-render svg {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  display: block;
 }
 .mermaid-canvas-plane {
-  width: 100%;
   display: flex;
   justify-content: center;
   align-items: center;
-  transition: transform 0.05s ease-out;
-  transform-origin: center center;
-  will-change: transform;
+  user-select: none;
+}
+.mermaid-canvas-plane.is-animated {
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .mermaid-fs-footer {
   padding: 6px 16px;
