@@ -308,89 +308,92 @@ function CodeBlock({
 
   return (
     <div className={"md-code" + (collapsed ? " collapsed" : "") + (isSql ? " is-sql" : "")}>
-      <div className="md-code-header-badge">
-        <span className={"md-code-lang-tag " + (isSql ? "tag-sql" : "tag-generic")}>
-          {displayLang}
-        </span>
-      </div>
-      <div className="md-code-actions">
-        {isLong && (
+      <div className="md-code-topbar">
+        <div className="md-code-topbar-left">
+          <span className={"md-code-lang-tag " + (isSql ? "tag-sql" : "tag-generic")}>
+            {displayLang}
+          </span>
+          {isSql && <span className="md-code-meta-hint">{lineCount} 行</span>}
+        </div>
+        <div className="md-code-actions">
+          {isLong && (
+            <button
+              type="button"
+              className="md-code-btn md-code-toggle"
+              title={collapsed ? (isSql ? "展开完整 SQL" : "展开完整代码") : (isSql ? "收起 SQL" : "收起代码")}
+              aria-label={collapsed ? "展开代码" : "收起代码"}
+              onClick={() => setCollapsed(!collapsed)}
+            >
+              {collapsed ? "▾ 展开" : "▴ 收起"}
+            </button>
+          )}
+          {canExecute && (
+            <button
+              type="button"
+              className={"md-code-btn md-code-run" + (execState === "running" ? " running" : execState === "done" ? " done" : "")}
+              title="直接运行这条 SQL（结果展示在下方结果区）"
+              aria-label="直接运行"
+              disabled={execState === "running"}
+              onClick={async () => {
+                setExecState("running");
+                try {
+                  await onExecute!(codeText);
+                  setExecState("done");
+                  setTimeout(() => setExecState("idle"), 2000);
+                } catch {
+                  setExecState("idle");
+                }
+              }}
+            >
+              {execState === "running" ? "…" : execState === "done" ? "✓" : <RunCodeIcon />}
+            </button>
+          )}
+          {isSql && onOpenNewTab && (
+            <button
+              type="button"
+              className={"md-code-btn md-code-newtab" + (openedTab ? " opened" : "")}
+              title="在新标签页打开（不覆盖当前草稿）"
+              aria-label="在新标签页打开"
+              onClick={() => {
+                onOpenNewTab(codeText);
+                setOpenedTab(true);
+                setTimeout(() => setOpenedTab(false), 1500);
+              }}
+            >
+              {openedTab ? "✓" : <NewTabIcon />}
+            </button>
+          )}
+          {isSql && onImport && (
+            <button
+              type="button"
+              className={"md-code-btn md-code-import" + (imported ? " imported" : "")}
+              title="导入到当前查询"
+              aria-label="导入到当前查询"
+              onClick={() => {
+                onImport(codeText);
+                setImported(true);
+                setTimeout(() => setImported(false), 1500);
+              }}
+            >
+              {imported ? "✓" : <ImportSqlIcon />}
+            </button>
+          )}
           <button
             type="button"
-            className="md-code-btn md-code-toggle"
-            title={collapsed ? (isSql ? "展开完整 SQL" : "展开完整代码") : (isSql ? "收起 SQL" : "收起代码")}
-            aria-label={collapsed ? "展开代码" : "收起代码"}
-            onClick={() => setCollapsed(!collapsed)}
-          >
-            {collapsed ? "▾ 展开" : "▴ 收起"}
-          </button>
-        )}
-        {canExecute && (
-          <button
-            type="button"
-            className={"md-code-btn md-code-run" + (execState === "running" ? " running" : execState === "done" ? " done" : "")}
-            title="直接运行这条 SQL（结果展示在下方结果区）"
-            aria-label="直接运行"
-            disabled={execState === "running"}
+            className={"md-code-btn md-code-copy" + (copied ? " copied" : "")}
+            title="复制代码"
+            aria-label="复制代码"
             onClick={async () => {
-              setExecState("running");
-              try {
-                await onExecute!(codeText);
-                setExecState("done");
-                setTimeout(() => setExecState("idle"), 2000);
-              } catch {
-                setExecState("idle");
+              const ok = await copyText(codeText);
+              if (ok) {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
               }
             }}
           >
-            {execState === "running" ? "…" : execState === "done" ? "✓" : <RunCodeIcon />}
+            {copied ? "✓" : <CopyIcon />}
           </button>
-        )}
-        {isSql && onOpenNewTab && (
-          <button
-            type="button"
-            className={"md-code-btn md-code-newtab" + (openedTab ? " opened" : "")}
-            title="在新标签页打开（不覆盖当前草稿）"
-            aria-label="在新标签页打开"
-            onClick={() => {
-              onOpenNewTab(codeText);
-              setOpenedTab(true);
-              setTimeout(() => setOpenedTab(false), 1500);
-            }}
-          >
-            {openedTab ? "✓" : <NewTabIcon />}
-          </button>
-        )}
-        {isSql && onImport && (
-          <button
-            type="button"
-            className={"md-code-btn md-code-import" + (imported ? " imported" : "")}
-            title="导入到当前查询"
-            aria-label="导入到当前查询"
-            onClick={() => {
-              onImport(codeText);
-              setImported(true);
-              setTimeout(() => setImported(false), 1500);
-            }}
-          >
-            {imported ? "✓" : <ImportSqlIcon />}
-          </button>
-        )}
-        <button
-          type="button"
-          className={"md-code-btn md-code-copy" + (copied ? " copied" : "")}
-          title="复制代码"
-          aria-label="复制代码"
-          onClick={async () => {
-            const ok = await copyText(codeText);
-            if (ok) {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            }
-          }}
-        >
-          {copied ? "✓" : <CopyIcon />}
-        </button>
+        </div>
       </div>
       {canExecute && isWrite && execState !== "dismissed" && (
         <div className="md-code-exec">
