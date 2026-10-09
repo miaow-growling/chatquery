@@ -4340,11 +4340,18 @@ th.col-selected { background: var(--sel-col-bg) !important; color: var(--text-pr
   overflow-x: auto;
 }
 /* 仅屏蔽 Mermaid 抛错时试图插入 body 的全局错误 SVG 与浮动横幅 */
+div[id^="dmmd-"],
+div[id^="dmermaid-"],
 body > svg.error-icon,
 body > svg:has(.error-text),
 svg.error-icon,
 svg .error-text {
-  display: none !important;
+  position: fixed !important;
+  top: -99999px !important;
+  left: -99999px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  z-index: -9999 !important;
 }
 .search-match {
   background: color-mix(in srgb, var(--brand) 25%, transparent);

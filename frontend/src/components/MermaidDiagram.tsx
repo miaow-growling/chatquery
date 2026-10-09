@@ -61,10 +61,15 @@ function parseViewBox(svgStr: string): { width: number; height: number } {
   return { width: 1200, height: 800 };
 }
 
-export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) => {
-  const [svg, setSvg] = useState<string>("");
+// 全局 SVG 渲染缓存：相同图表只渲染一次，杜绝外部弹窗（如数据库记忆管理）打开导致重新渲染
+const svgCache = new Map<string, string>();
+let renderQueue = Promise.resolve();
+
+const MermaidDiagramComponent: React.FC<MermaidDiagramProps> = ({ code, onCopy }) => {
+  const cleanInitial = code.trim();
+  const [svg, setSvg] = useState<string>(() => svgCache.get(cleanInitial) || "");
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(() => !svgCache.has(cleanInitial));
   const [mode, setMode] = useState<"diagram" | "code">("diagram");
   const [copied, setCopied] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
@@ -104,81 +109,101 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
       return;
     }
 
-    // 80ms 防抖，兼顾流式响应速度与语法解析稳定性
-    const timer = setTimeout(async () => {
-      setLoading(true);
+    // 若已经有缓存，直接同步载入缓存，不重复执行任何 Mermaid 渲染
+    if (svgCache.has(cleanRaw)) {
+      setSvg(svgCache.get(cleanRaw)!);
+      setLoading(false);
       setError(null);
-      const isDark = getIsDark();
-      const uniqueId = `mmd-${rawId}-${Math.random().toString(36).slice(2, 7)}`;
+      return;
+    }
 
-      try {
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: "loose",
-          // 彻底屏蔽 Mermaid 向 DOM 注入错误横幅
-          suppressErrorRendering: true,
-          theme: isDark ? "dark" : "default",
-          fontFamily:
-            "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif",
-          themeVariables: isDark
-            ? {
-                darkMode: true,
-                background: "#0f172a",
-                primaryColor: "#3b82f6",
-                primaryTextColor: "#f1f5f9",
-                primaryBorderColor: "#60a5fa",
-                lineColor: "#94a3b8",
-                secondaryColor: "#1e293b",
-                tertiaryColor: "#334155",
-              }
-            : {
-                darkMode: false,
-                background: "#ffffff",
-                primaryColor: "#2563eb",
-                primaryTextColor: "#0f172a",
-                primaryBorderColor: "#3b82f6",
-                lineColor: "#64748b",
-              },
-          er: {
-            useMaxWidth: true,
-          },
-          flowchart: {
-            useMaxWidth: true,
-            htmlLabels: true,
-          },
-        });
+    setLoading(true);
 
-        // 优先尝试原始代码，若语法不规范则使用自愈代码再次尝试
-        let renderedSvg = "";
+    // 60ms 防抖 + 串行任务队列，确保多个图表有序渲染，避免并发插入 DOM 造成测量错乱
+    const timer = setTimeout(() => {
+      renderQueue = renderQueue.then(async () => {
+        if (cancelled) return;
+        if (svgCache.has(cleanRaw)) {
+          setSvg(svgCache.get(cleanRaw)!);
+          setLoading(false);
+          return;
+        }
+
+        const isDark = getIsDark();
+        const uniqueId = `mmd-${rawId}-${Math.random().toString(36).slice(2, 7)}`;
+
         try {
-          const res = await mermaid.render(uniqueId, cleanRaw);
-          renderedSvg = res.svg;
-        } catch {
-          const healed = sanitizeMermaidCode(cleanRaw);
-          const healedId = `mmd-${rawId}-h-${Math.random().toString(36).slice(2, 7)}`;
-          const res = await mermaid.render(healedId, healed);
-          renderedSvg = res.svg;
-        }
+          mermaid.initialize({
+            startOnLoad: false,
+            securityLevel: "loose",
+            // 彻底屏蔽 Mermaid 向 DOM 注入错误横幅
+            suppressErrorRendering: true,
+            theme: isDark ? "dark" : "default",
+            fontFamily:
+              "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif",
+            themeVariables: isDark
+              ? {
+                  darkMode: true,
+                  background: "#0f172a",
+                  primaryColor: "#3b82f6",
+                  primaryTextColor: "#f1f5f9",
+                  primaryBorderColor: "#60a5fa",
+                  lineColor: "#94a3b8",
+                  secondaryColor: "#1e293b",
+                  tertiaryColor: "#334155",
+                }
+              : {
+                  darkMode: false,
+                  background: "#ffffff",
+                  primaryColor: "#2563eb",
+                  primaryTextColor: "#0f172a",
+                  primaryBorderColor: "#3b82f6",
+                  lineColor: "#64748b",
+                },
+            er: {
+              useMaxWidth: true,
+            },
+            flowchart: {
+              useMaxWidth: true,
+              htmlLabels: true,
+            },
+          });
 
-        if (!cancelled && renderedSvg) {
-          setSvg(renderedSvg);
-          setError(null);
-          setLoading(false);
+          // 优先尝试原始代码，若语法不规范则使用自愈代码再次尝试
+          let renderedSvg = "";
+          try {
+            const res = await mermaid.render(uniqueId, cleanRaw);
+            renderedSvg = res.svg;
+          } catch {
+            const healed = sanitizeMermaidCode(cleanRaw);
+            const healedId = `mmd-${rawId}-h-${Math.random().toString(36).slice(2, 7)}`;
+            const res = await mermaid.render(healedId, healed);
+            renderedSvg = res.svg;
+          }
+
+          if (renderedSvg) {
+            svgCache.set(cleanRaw, renderedSvg);
+            if (!cancelled) {
+              setSvg(renderedSvg);
+              setError(null);
+              setLoading(false);
+            }
+          }
+        } catch (err: any) {
+          if (!cancelled) {
+            const msg = err?.message || String(err);
+            setError(msg);
+            setLoading(false);
+            setMode("code");
+          }
+        } finally {
+          const strays = document.querySelectorAll(
+            "body > svg.error-icon, body > svg:has(.error-text)"
+          );
+          strays.forEach((el) => el.remove());
         }
-      } catch (err: any) {
-        if (!cancelled) {
-          const msg = err?.message || String(err);
-          setError(msg);
-          setLoading(false);
-          setMode("code");
-        }
-      } finally {
-        const strays = document.querySelectorAll(
-          "body > svg.error-icon, body > svg:has(.error-text)"
-        );
-        strays.forEach((el) => el.remove());
-      }
-    }, 80);
+      });
+    }, 60);
 
     return () => {
       cancelled = true;
@@ -549,3 +574,5 @@ export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) 
     </div>
   );
 };
+
+export const MermaidDiagram = React.memo(MermaidDiagramComponent);
