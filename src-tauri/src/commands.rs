@@ -2910,6 +2910,7 @@ pub async fn run_db_script(
 
 /// 使用操作系统默认浏览器打开外部网页链接
 #[tauri::command]
+#[allow(dead_code)]
 pub fn open_external_url(url: String) -> Result<(), String> {
     let mut trimmed = url.trim().to_string();
     if trimmed.starts_with("www.") {
