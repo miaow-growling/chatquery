@@ -65,7 +65,7 @@ function parseViewBox(svgStr: string): { width: number; height: number } {
 const svgCache = new Map<string, string>();
 let renderQueue = Promise.resolve();
 
-const MermaidDiagramComponent: React.FC<MermaidDiagramProps> = ({ code, onCopy }) => {
+export const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ code, onCopy }) => {
   const cleanInitial = code.trim();
   const [svg, setSvg] = useState<string>(() => svgCache.get(cleanInitial) || "");
   const [error, setError] = useState<string | null>(null);
@@ -574,5 +574,3 @@ const MermaidDiagramComponent: React.FC<MermaidDiagramProps> = ({ code, onCopy }
     </div>
   );
 };
-
-export const MermaidDiagram = React.memo(MermaidDiagramComponent);

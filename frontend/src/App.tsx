@@ -805,7 +805,7 @@ function ToolCallCard({
 
 /** 渲染 AI 消息内容为 Markdown：标题/加粗/列表/代码块/表格/链接等。
  *  用 react-markdown + remark-gfm，默认不 dangerouslySetInnerHTML，XSS 安全。 */
-const MarkdownMessage = React.memo(function MarkdownMessage({
+function MarkdownMessage({
   content,
   onImportSql,
   onOpenNewTab,
@@ -877,7 +877,7 @@ const MarkdownMessage = React.memo(function MarkdownMessage({
       )}
     </div>
   );
-});
+}
 
 interface DropdownOption {
   value: string;
