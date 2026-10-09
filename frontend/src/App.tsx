@@ -3098,6 +3098,7 @@ export function App() {
     setEditing((prev) => (prev === null ? prev : null));
     setStructureView((prev) => (prev === null ? prev : null));
     setRelationshipView((prev) => (prev === null ? prev : null));
+    setExplainView((prev) => (prev === null ? prev : null));
     setResultTab((prev) => (prev === "data" ? prev : "data"));
   }, []);
 
@@ -4560,10 +4561,19 @@ export function App() {
       return;
     }
     const editor = editorRef.current;
-    if (!editor) return;
-    const sel = editor.getSelection().trim();
-    const q = sel || editor.getDoc();
-    if (!q.trim()) return;
+    const sel = editor?.getSelection().trim();
+    const statement = editor?.getStatement?.()?.trim();
+    const doc = editor?.getDoc().trim();
+    const q =
+      sel ||
+      statement ||
+      doc ||
+      t.sql?.trim() ||
+      (browseCtx ? `SELECT * FROM \`${browseCtx.db}\`.\`${browseCtx.table}\` LIMIT 50;` : "");
+    if (!q.trim()) {
+      showToast("没有可分析执行计划的 SQL 语句");
+      return;
+    }
     clearEditState();
     setExplainView(null);
     setResultTab("explain");
@@ -4571,17 +4581,10 @@ export function App() {
     setRunning(true);
     const t0 = performance.now();
     try {
-      const v = await api.explainVisual(t.connId, q, t.db);
+      const db = t.db || browseCtx?.db || "";
+      const v = await api.explainVisual(t.connId, q, db);
       const ms = Math.round(performance.now() - t0);
       setExplainView(v);
-      // Keep the raw plan also available as the textual result for reference.
-      if (v.format === "legacy") {
-        setActiveTab((tab) => ({
-          ...tab,
-          result: { kind: "redis", command: "EXPLAIN", lines: (v.raw ?? "").split("\n"), note: "EXPLAIN（legacy 文本）", truncated: false },
-          browseCtx: null,
-        }));
-      }
       setRunInfo({ kind: "ok", text: `✓ ${ms}ms · 执行计划已生成（${v.format}）` });
     } catch (e) {
       const ms = Math.round(performance.now() - t0);
@@ -4590,7 +4593,7 @@ export function App() {
     } finally {
       setRunning(false);
     }
-  }, [active]);
+  }, [active, browseCtx, clearEditState]);
 
   const selectConn = (id: string) => {
     setSelId(id);
@@ -5167,21 +5170,45 @@ export function App() {
   );
 
   // Result-sub-tab navigation: switch to a view, fetching its data lazily from
-  // the currently browsed table when the cached view is absent.
+  // the currently browsed table or active query SQL when the cached view is absent.
   const gotoStructure = () => {
     if (structureView) {
       setResultTab("structure");
       return;
     }
-    if (browseCtx) void showStructure(browseCtx.connId, browseCtx.db, browseCtx.table);
+    const connId = browseCtx?.connId ?? active?.connId;
+    const db = browseCtx?.db ?? active?.db;
+    const table =
+      browseCtx?.table ??
+      extractTableFromSql(active?.sql || editorRef.current?.getDoc() || "");
+    if (connId && db && table) {
+      void showStructure(connId, db, table);
+    } else {
+      showToast("无法从当前查询中识别目标数据表");
+    }
   };
+
   const gotoRelation = () => {
     if (relationshipView) {
       setResultTab("relation");
       return;
     }
-    if (browseCtx) void showRelationships(browseCtx.connId, browseCtx.db);
+    const connId = browseCtx?.connId ?? active?.connId;
+    const db = browseCtx?.db ?? active?.db;
+    if (connId && db) {
+      void showRelationships(connId, db);
+    } else {
+      showToast("请先选择数据库连接与数据库");
+    }
   };
+
+  const gotoExplain = useCallback(async () => {
+    if (explainView) {
+      setResultTab("explain");
+      return;
+    }
+    await explainQuery();
+  }, [explainView, explainQuery]);
 
   // --- Inline edit handlers (ADR-018) --------------------------------------
   // Commit the in-progress cell edit into the `edits` overlay. The displayed
@@ -8702,24 +8729,41 @@ export function App() {
               </button>
               <button
                 className={"rtab" + (resultTab === "structure" ? " active" : "")}
-                disabled={!structureView && !browseCtx}
+                disabled={
+                  !structureView &&
+                  !browseCtx?.table &&
+                  !(
+                    active?.connId &&
+                    (active?.db || browseCtx?.db) &&
+                    extractTableFromSql(active?.sql || editorRef.current?.getDoc() || "")
+                  )
+                }
                 onClick={gotoStructure}
+                title="查看当前数据表的结构定义 (列/索引/DDL)"
               >
                 表结构
               </button>
               <button
                 className={"rtab" + (resultTab === "relation" ? " active" : "")}
-                disabled={!relationshipView && !browseCtx}
+                disabled={
+                  !relationshipView &&
+                  !(active?.connId && (active?.db || browseCtx?.db))
+                }
                 onClick={gotoRelation}
+                title="查看当前数据库的外键与实体关系"
               >
                 表关系
               </button>
               <button
                 className={"rtab" + (resultTab === "explain" ? " active" : "")}
-                disabled={!explainView}
-                onClick={() => setResultTab("explain")}
+                disabled={!active?.connId}
+                onClick={() => void gotoExplain()}
+                title="查看或生成当前 SQL 的 EXPLAIN 执行计划"
               >
                 执行计划
+                {resultTab === "explain" && running && (
+                  <span className="rtab-loading-dot" title="正在生成执行计划···" />
+                )}
               </button>
             </div>
             <div className="pane-actions">
@@ -8831,6 +8875,15 @@ export function App() {
                 </>
               ) : (
                 <>
+                  {resultTab === "explain" && (
+                    <button
+                      onClick={() => void explainQuery()}
+                      disabled={running}
+                      title="基于当前 SQL 重新分析并刷新执行计划"
+                    >
+                      ↻ 刷新计划
+                    </button>
+                  )}
                   <button onClick={() => setResultTab("data")}>返回数据</button>
                   {active?.kind !== "table" && (
                     <button
@@ -8947,10 +9000,14 @@ export function App() {
                 <div className="empty">加载表关系…</div>
               )
             ) : resultTab === "explain" ? (
-              explainView ? (
+              running ? (
+                <div className="empty">
+                  <span className="rtab-loading-dot" /> 正在分析并生成执行计划…
+                </div>
+              ) : explainView ? (
                 renderExplain(explainView)
               ) : (
-                <div className="empty">点击「执行计划」按钮生成可视化</div>
+                <div className="empty">点击「执行计划」生成当前查询的 EXPLAIN 可视化</div>
               )
             ) : (
               renderData()
