@@ -256,8 +256,10 @@ fn main() {
 					            delete_db_script,
 						            get_scripts_for_connection,
 						            run_db_script,
-						            open_external_url,
-						        ])
+							            open_external_url,
+							            get_agent_traces,
+							            clear_agent_traces,
+							        ])
         .run(tauri::generate_context!())
         .expect("error while running ChatQuery");
 }

@@ -617,6 +617,59 @@ export interface AssistantDbBinding {
   database?: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Observability Traces (ADR-AI-7)
+// ---------------------------------------------------------------------------
+
+export type TerminateReason =
+  | "completed"
+  | "tool-budget-exhausted"
+  | "cancelled"
+  | "timeout"
+  | "errored";
+
+export interface StepTraceDto {
+  iter: number;
+  role?: string | null;
+  tool: string;
+  connection?: string | null;
+  query_preview?: string | null;
+  summary?: string | null;
+  args_hash: number;
+  start_offset_ms?: number;
+  cost_ms: number;
+  result_len: number;
+  guarded?: string | null;
+}
+
+export interface GenerationTraceDto {
+  name: string;
+  model: string;
+  start_offset_ms: number;
+  cost_ms: number;
+  usage?: TokenUsage | null;
+  input_preview?: string | null;
+  output_preview?: string | null;
+}
+
+export interface TurnTraceDto {
+  turn_id: string;
+  conv_id?: string | null;
+  user_query?: string | null;
+  plan?: string[];
+  planning_cost_ms?: number | null;
+  synthesis_cost_ms?: number | null;
+  created_at?: number;
+  role: string;
+  steps: StepTraceDto[];
+  generations?: GenerationTraceDto[];
+  terminate: TerminateReason;
+  llm_rounds: number;
+  total_ms: number;
+  usage?: TokenUsage | null;
+  redundant_calls?: string[];
+}
+
 /// 数据助手 (Data Assistant)
 export interface DataAssistant {
   id: string;

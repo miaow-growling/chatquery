@@ -82,6 +82,7 @@ import { MermaidDiagram } from "./components/MermaidDiagram";
 import { InlineFilterRow } from "./components/InlineFilterRow";
 import { QuickOpenModal } from "./components/QuickOpenModal";
 import { DbMemoryModal } from "./components/DbMemoryModal";
+import { AgentTraceModal } from "./components/AgentTraceModal";
 import { McpInstallModal } from "./components/McpInstallModal";
 import { SimpleGroupedSelect } from "./components/SimpleGroupedSelect";
 import { DbScriptsManager } from "./components/DbScriptsManager";
@@ -2004,6 +2005,7 @@ export function App() {
   // switches between queries.
   const [dbPickerOpen, setDbPickerOpen] = useState(false);
   const [dbMemoryOpen, setDbMemoryOpen] = useState(false);
+  const [agentTraceOpen, setAgentTraceOpen] = useState(false);
   const [mcpInstallOpen, setMcpInstallOpen] = useState(false);
   // Per-opener callback for the db picker. The same modal is used from
   // two places with different intents:
@@ -9325,6 +9327,13 @@ export function App() {
           </button>
           <button
             className="icon-btn"
+            title="Agent 执行链路可观测性 Trace（按会话与消息查看执行详情与耗时）"
+            onClick={() => setAgentTraceOpen(true)}
+          >
+            📊
+          </button>
+          <button
+            className="icon-btn"
             title={chatMaximized ? "还原侧边栏宽度" : "最大化 AI 画布（专注深度分析）"}
             onClick={() => setChatMaximized((v) => !v)}
           >
@@ -12380,6 +12389,14 @@ export function App() {
           activeConnId={chatConnId || active?.connId || selId || null}
           activeDb={chatDb !== undefined ? chatDb : (active?.db || null)}
           onClose={() => setDbMemoryOpen(false)}
+        />
+      )}
+
+      {agentTraceOpen && (
+        <AgentTraceModal
+          onClose={() => setAgentTraceOpen(false)}
+          activeConvId={convId || null}
+          conversations={convs}
         />
       )}
 

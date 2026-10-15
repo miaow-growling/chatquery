@@ -38,6 +38,7 @@ import type {
   QueryItem,
   QueryOutput,
   RedisDbInfo,
+  TurnTraceDto,
   Schema,
   SqlReference,
   StatusInfo,
@@ -375,6 +376,10 @@ export const api = {
   listBackupVersions: () => invoke<BackupVersionDto[]>("list_backup_versions"),
   rollbackToVersion: (commitHash: string, encryptionKey?: string) =>
     invoke<SyncResultDto>("rollback_to_version", { commitHash, encryptionKey }),
+  // --- Observability Traces (ADR-AI-7) ---
+  getAgentTraces: (convId?: string | null) =>
+    invoke<TurnTraceDto[]>("get_agent_traces", { convId: convId || null }),
+  clearAgentTraces: () => invoke<void>("clear_agent_traces"),
 };
 
 export function onChatToken(cb: (t: string) => void): Promise<UnlistenFn> {
@@ -550,6 +555,18 @@ export async function rollbackToVersion(
     commitHash,
     encryptionKey,
   });
+}
+
+export async function getAgentTraces(
+  convId?: string | null
+): Promise<TurnTraceDto[]> {
+  return await invoke<TurnTraceDto[]>("get_agent_traces", {
+    convId: convId || null,
+  });
+}
+
+export async function clearAgentTraces(): Promise<void> {
+  return await invoke<void>("clear_agent_traces");
 }
 
 

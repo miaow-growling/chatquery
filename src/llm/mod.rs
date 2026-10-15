@@ -6,7 +6,10 @@ pub mod planner;
 pub mod policy;
 pub mod session;
 pub mod tools;
+pub mod trace;
 pub mod worker;
+
+pub use trace::{GenerationTrace, StepTrace, TerminateReason, TraceSink, TurnTrace};
 
 /// Closure injected by the command layer so the `llm` crate stays free of the
 /// storage backend. Given a connection id and an optional database, it returns

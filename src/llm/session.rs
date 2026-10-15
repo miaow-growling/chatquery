@@ -4,12 +4,16 @@ use crate::db::mysql;
 use crate::error::Result;
 use crate::llm::client::{stream_chat, ToolCall};
 use crate::llm::control::TurnControl;
-use crate::llm::{AuditEvent, AuditSink, KbLoader, MemoryLoader, MemorySaver};
 use crate::llm::memory::SessionMemory;
 use crate::llm::planner::{needs_planning, plan_task, PlanStep};
 use crate::llm::policy::{check_statement, PolicyDecision};
-use crate::llm::tools::{build_registry, ToolContext, ToolRegistry};
+use crate::llm::tools::{build_registry, resolve_conn, ToolContext, ToolRegistry, ToolScope};
+use crate::llm::trace::{detect_redundant, hash_str};
 use crate::llm::worker::{classify_step, WorkerKind};
+use crate::llm::{
+    AuditEvent, AuditSink, GenerationTrace, KbLoader, MemoryLoader, MemorySaver, StepTrace,
+    TerminateReason, TraceSink, TurnTrace,
+};
 use crate::mcp::host::McpHostManager;
 use crate::model::{
     BackendMsg, ChatMessage, ChatRole, ConfirmRequest, ConversationRef, SqlReference, TokenUsage,
@@ -38,12 +42,6 @@ const CONFIRM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300)
 /// stream or runaway worker drops the future instead of wedging the turn.
 const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// A single agent: owns its tool registry, working memory, and (in the
-/// multi-agent topology) a `role`. The chat uses one `Agent` for a simple
-/// task; a complex task is handled by an Orchestrator that spawns Explorer /
-/// Executor workers — each a fresh `Agent` with its own context window and a
-/// role-scoped system prompt.
-
 /// Accumulate token usage across streaming calls; `None` means the provider
 /// didn't report usage for that call, so the running total is left unchanged.
 fn add_usage(a: TokenUsage, b: Option<TokenUsage>) -> TokenUsage {
@@ -57,6 +55,12 @@ fn add_usage(a: TokenUsage, b: Option<TokenUsage>) -> TokenUsage {
         None => a,
     }
 }
+
+/// A single agent: owns its tool registry, working memory, and (in the
+/// multi-agent topology) a `role`. The chat uses one `Agent` for a simple
+/// task; a complex task is handled by an Orchestrator that spawns Explorer /
+/// Executor workers — each a fresh `Agent` with its own context window and a
+/// role-scoped system prompt.
 pub struct Agent {
     cfg: LlmConfig,
     conns: Vec<ConnectionConfig>,
@@ -77,6 +81,24 @@ pub struct Agent {
     mem_saver: MemorySaver,
     /// Audit sink for write-operation guardrail events (ADR-AI-1 决策3).
     audit: AuditSink,
+    /// 结构化每轮执行记录 sink
+    trace: TraceSink,
+    /// 跨 Orchestrator 与子 Worker 共享的已执行步骤收集器
+    trace_steps: Arc<std::sync::Mutex<Vec<StepTrace>>>,
+    /// 跨 Orchestrator 与子 Worker 共享的 LLM Generation 调用收集器
+    trace_generations: Arc<std::sync::Mutex<Vec<GenerationTrace>>>,
+    /// 跨 Orchestrator 与子 Worker 共享的 LLM 往返总轮数计数器
+    llm_rounds: Arc<std::sync::atomic::AtomicUsize>,
+    /// 本轮规划生成的任务计划步骤（若有）
+    plan_desc: Arc<std::sync::Mutex<Vec<String>>>,
+    /// 本轮任务的起始时间点（用于计算各步骤相对时间偏移）
+    turn_started: std::time::Instant,
+    /// 规划阶段耗时（毫秒）
+    planning_cost_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// 综合分析阶段耗时（毫秒）
+    synthesis_cost_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// 是否由于达到工具迭代预算上限而触发了强制总结
+    tool_budget_exhausted: bool,
     /// Cumulative token usage for the turn (ADR-AI-4 决策3).
     usage: TokenUsage,
     /// 数据助手上下文（若本轮激活了数据助手）
@@ -106,8 +128,16 @@ impl Agent {
         mem_saver: MemorySaver,
         audit: AuditSink,
         assistant: Option<AssistantContext>,
+        trace: TraceSink,
+        trace_steps: Arc<std::sync::Mutex<Vec<StepTrace>>>,
+        trace_generations: Arc<std::sync::Mutex<Vec<GenerationTrace>>>,
+        llm_rounds: Arc<std::sync::atomic::AtomicUsize>,
+        plan_desc: Arc<std::sync::Mutex<Vec<String>>>,
+        turn_started: std::time::Instant,
+        planning_cost_ms: Arc<std::sync::atomic::AtomicU64>,
+        synthesis_cost_ms: Arc<std::sync::atomic::AtomicU64>,
     ) -> Self {
-        let registry = build_registry(mcp.as_deref()).await;
+        let registry = build_registry(mcp.as_deref(), ToolScope::Full).await;
         let memory = SessionMemory::new(Some(conn_id.to_string()), db.map(|s| s.to_string()));
         Self {
             cfg,
@@ -121,6 +151,15 @@ impl Agent {
             mem_loader,
             mem_saver,
             audit,
+            trace,
+            trace_steps,
+            trace_generations,
+            llm_rounds,
+            plan_desc,
+            turn_started,
+            planning_cost_ms,
+            synthesis_cost_ms,
+            tool_budget_exhausted: false,
             usage: TokenUsage::default(),
             assistant,
         }
@@ -139,8 +178,16 @@ impl Agent {
         mem_loader: MemoryLoader,
         mem_saver: MemorySaver,
         audit: AuditSink,
+        trace: TraceSink,
+        trace_steps: Arc<std::sync::Mutex<Vec<StepTrace>>>,
+        trace_generations: Arc<std::sync::Mutex<Vec<GenerationTrace>>>,
+        llm_rounds: Arc<std::sync::atomic::AtomicUsize>,
+        plan_desc: Arc<std::sync::Mutex<Vec<String>>>,
+        turn_started: std::time::Instant,
+        planning_cost_ms: Arc<std::sync::atomic::AtomicU64>,
+        synthesis_cost_ms: Arc<std::sync::atomic::AtomicU64>,
     ) -> Self {
-        let registry = build_registry(mcp.as_deref()).await;
+        let registry = build_registry(mcp.as_deref(), role.scope()).await;
         let memory = SessionMemory::new(Some(conn_id.to_string()), db.map(|s| s.to_string()));
         Self {
             cfg,
@@ -154,6 +201,15 @@ impl Agent {
             mem_loader,
             mem_saver,
             audit,
+            trace,
+            trace_steps,
+            trace_generations,
+            llm_rounds,
+            plan_desc,
+            turn_started,
+            planning_cost_ms,
+            synthesis_cost_ms,
+            tool_budget_exhausted: false,
             usage: TokenUsage::default(),
             assistant: None,
         }
@@ -260,9 +316,26 @@ impl Agent {
 
         // 复杂任务：先规划（失败则安全降级为直接 ReAct）。规划输入带上引用的
         // SQL 与对话历史——否则规划器脱离上下文只能规划出盲目探测步骤。
+        self.llm_rounds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let plan_start = std::time::Instant::now();
         let plan: Vec<PlanStep> = match plan_task(&self.cfg, &last_user, history, &self.conns, &self.memory, &self.kb).await {
-            Ok(steps) if !steps.is_empty() => steps,
+            Ok(steps) if !steps.is_empty() => {
+                let p_cost = plan_start.elapsed().as_millis() as u64;
+                self.planning_cost_ms.store(p_cost, std::sync::atomic::Ordering::SeqCst);
+                self.trace_generations.lock().unwrap().push(GenerationTrace {
+                    name: "Task Planning".to_string(),
+                    model: self.cfg.model.clone(),
+                    start_offset_ms: 0,
+                    cost_ms: p_cost,
+                    usage: None,
+                    input_preview: Some(format!("用户任务规划: {}", last_user)),
+                    output_preview: Some(steps.iter().map(|s| s.description.as_str()).collect::<Vec<_>>().join("\n")),
+                });
+                steps
+            }
             _ => {
+                let p_cost = plan_start.elapsed().as_millis() as u64;
+                self.planning_cost_ms.store(p_cost, std::sync::atomic::Ordering::SeqCst);
                 let system = build_system_prompt(&self.conns, &self.memory, None, &self.kb, &self.mem_loader, self.assistant.as_ref()).await;
                 let system = inject_prior_assistant(&system, history);
                 let mut messages = Vec::new();
@@ -293,6 +366,7 @@ impl Agent {
         // token stream — the UI renders it as a distinct card so it reads as
         // "what I'm about to do", not as part of the answer.
         let _ = tx.send(BackendMsg::ChatPlan(plan_desc.clone()));
+        *self.plan_desc.lock().unwrap() = plan_desc.clone();
 
         // Group steps by stage for stage-based concurrent execution
         let mut stages: std::collections::BTreeMap<usize, Vec<PlanStep>> = std::collections::BTreeMap::new();
@@ -324,6 +398,14 @@ impl Agent {
                     self.mem_loader.clone(),
                     self.mem_saver.clone(),
                     self.audit.clone(),
+                    self.trace.clone(),
+                    self.trace_steps.clone(),
+                    self.trace_generations.clone(),
+                    self.llm_rounds.clone(),
+                    self.plan_desc.clone(),
+                    self.turn_started,
+                    self.planning_cost_ms.clone(),
+                    self.synthesis_cost_ms.clone(),
                 ).await;
                 let wsys = build_worker_system(
                     role,
@@ -380,6 +462,14 @@ impl Agent {
                     let mem_loader = self.mem_loader.clone();
                     let mem_saver = self.mem_saver.clone();
                     let audit = self.audit.clone();
+                    let trace = self.trace.clone();
+                    let trace_steps = self.trace_steps.clone();
+                    let trace_generations = self.trace_generations.clone();
+                    let llm_rounds = self.llm_rounds.clone();
+                    let agent_plan_desc = self.plan_desc.clone();
+                    let turn_started = self.turn_started;
+                    let planning_cost_ms = self.planning_cost_ms.clone();
+                    let synthesis_cost_ms = self.synthesis_cost_ms.clone();
                     let plan_desc = plan_desc.clone();
                     let shared_ctx = shared_context.clone();
                     let last_user_clone = last_user.clone();
@@ -409,6 +499,14 @@ impl Agent {
                             mem_loader.clone(),
                             mem_saver.clone(),
                             audit,
+                            trace,
+                            trace_steps,
+                            trace_generations,
+                            llm_rounds,
+                            agent_plan_desc,
+                            turn_started,
+                            planning_cost_ms,
+                            synthesis_cost_ms,
                         ).await;
                         let wsys = build_worker_system(
                             role,
@@ -474,9 +572,11 @@ impl Agent {
         }
         // Orchestrator 综合所有 Worker 的结果，给用户一个面向结论的回答。
         let _ = tx.send(BackendMsg::ChatTool("正在综合分析所有步骤结果，整理最终回答…".to_string()));
+        let syn_start = std::time::Instant::now();
         if let Some(u) = self.synthesize(&last_user, &plan_desc, &shared_context, tx).await? {
             self.usage = add_usage(self.usage, Some(u));
         }
+        self.synthesis_cost_ms.store(syn_start.elapsed().as_millis() as u64, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -514,12 +614,48 @@ impl Agent {
             // Race the stream against cancellation: dropping the `stream_chat`
             // future tears down the HTTP body reader, so a cancel lands within
             // one chunk instead of one full completion.
+            self.llm_rounds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let llm_start = std::time::Instant::now();
             let choice = tokio::select! {
                 biased;
                 _ = ctl.cancelled() => break,
                 r = stream_chat(&self.cfg, &messages, &schemas, &mut on_delta) => r?,
             };
+            let llm_cost_ms = llm_start.elapsed().as_millis() as u64;
+            let gen_offset = self.turn_started.elapsed().as_millis().saturating_sub(llm_cost_ms as u128) as u64;
             self.usage = add_usage(self.usage, choice.usage);
+
+            let last_input = messages.iter().rev().find(|m| m.role == ChatRole::User || m.role == ChatRole::Tool).map(|m| {
+                let t = m.content.trim();
+                if t.chars().count() > 300 {
+                    let s: String = t.chars().take(300).collect();
+                    format!("{}...", s)
+                } else {
+                    t.to_string()
+                }
+            });
+            let output_prev = if !choice.content.trim().is_empty() {
+                let t = choice.content.trim();
+                Some(if t.chars().count() > 300 {
+                    let s: String = t.chars().take(300).collect();
+                    format!("{}...", s)
+                } else {
+                    t.to_string()
+                })
+            } else if !choice.tool_calls.is_empty() {
+                Some(format!("发起调用了 {} 个工具: {}", choice.tool_calls.len(), choice.tool_calls.iter().map(|tc| tc.name.as_str()).collect::<Vec<_>>().join(", ")))
+            } else {
+                None
+            };
+            self.trace_generations.lock().unwrap().push(GenerationTrace {
+                name: format!("{} Inference", self.role.label()),
+                model: self.cfg.model.clone(),
+                start_offset_ms: gen_offset,
+                cost_ms: llm_cost_ms,
+                usage: choice.usage,
+                input_preview: last_input,
+                output_preview: output_prev,
+            });
 
             if choice.tool_calls.is_empty() {
                 if !reprompted_tool_intent && detect_unfulfilled_tool_intent(&choice.content) {
@@ -579,8 +715,11 @@ impl Agent {
                     tx,
                 ));
             }
+            let tool_started = std::time::Instant::now();
             let results = join_all(futures).await;
-            for (tc, (summary, detail)) in choice.tool_calls.iter().zip(results.into_iter()) {
+            let tool_cost_ms = tool_started.elapsed().as_millis() as u64;
+
+            for (tc, (summary, detail, guarded)) in choice.tool_calls.iter().zip(results.into_iter()) {
                 let notice = if tc.name == "execute_query" {
                     let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(Value::Null);
                     let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -595,11 +734,52 @@ impl Agent {
                 let _ = tx.send(BackendMsg::ChatTool(notice));
                 messages.push(ChatMessage {
                     role: ChatRole::Tool,
-                    content: detail,
+                    content: detail.clone(),
                     tool_calls: None,
                     tool_call_id: Some(tc.id.clone()),
                 });
                 self.memory.note_result(&summary);
+
+                let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(Value::Null);
+                let connection = args
+                    .get("connection")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or_else(|| self.memory.current_conn.clone());
+                let query_preview = if tc.name == "execute_query" {
+                    args.get("query").and_then(|v| v.as_str()).map(|q| {
+                        let trimmed = q.trim();
+                        if trimmed.len() > 180 {
+                            format!("{}...", &trimmed[..180])
+                        } else {
+                            trimmed.to_string()
+                        }
+                    })
+                } else if tc.name == "search_knowledge" {
+                    args.get("query")
+                        .or_else(|| args.get("keyword"))
+                        .and_then(|v| v.as_str())
+                        .map(|k| k.trim().to_string())
+                } else {
+                    None
+                };
+                let args_hash = hash_str(&tc.arguments);
+                let start_offset_ms = self.turn_started.elapsed().as_millis().saturating_sub(tool_cost_ms as u128) as u64;
+                let mut steps_guard = self.trace_steps.lock().unwrap();
+                let iter = steps_guard.len() + 1;
+                steps_guard.push(StepTrace {
+                    iter,
+                    role: Some(self.role.label().to_string()),
+                    tool: tc.name.clone(),
+                    connection,
+                    query_preview,
+                    summary: Some(summary.clone()),
+                    args_hash,
+                    start_offset_ms,
+                    cost_ms: tool_cost_ms,
+                    result_len: detail.len(),
+                    guarded,
+                });
             }
         }
 
@@ -607,6 +787,8 @@ impl Agent {
         // 且未被用户取消，则发起一次「强制最终总结」，禁止继续调用工具（tools: &[]），
         // 强制大模型根据已获取的表结构、查询数据与探索成果直接给用户输出最终答案与 SQL。
         if last_assistant.is_none() && !ctl.is_cancelled() {
+            self.tool_budget_exhausted = true;
+            self.llm_rounds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut on_delta = |d: &str| {
                 if role == WorkerKind::Orchestrator {
                     let _ = tx.send(BackendMsg::ChatToken(d.to_string()));
@@ -615,11 +797,28 @@ impl Agent {
             messages.push(ChatMessage::system(
                 "系统提示：当前工具调用轮数已达到上限。请根据以上所有已执行的工具结果、查询数据与表结构，直接给用户输出完整、准确的最终结论与所编写的 SQL，严禁再次发起工具调用。".to_string(),
             ));
+            let llm_start = std::time::Instant::now();
             let choice = tokio::select! {
                 biased;
                 _ = ctl.cancelled() => return Ok(None),
                 r = stream_chat(&self.cfg, &messages, &[], &mut on_delta) => r?,
             };
+            let llm_cost_ms = llm_start.elapsed().as_millis() as u64;
+            let gen_offset = self.turn_started.elapsed().as_millis().saturating_sub(llm_cost_ms as u128) as u64;
+            self.trace_generations.lock().unwrap().push(GenerationTrace {
+                name: "Forced Final Summary".to_string(),
+                model: self.cfg.model.clone(),
+                start_offset_ms: gen_offset,
+                cost_ms: llm_cost_ms,
+                usage: choice.usage,
+                input_preview: Some("工具迭代预算耗尽，强制总结最终答案".to_string()),
+                output_preview: if !choice.content.trim().is_empty() {
+                    let s: String = choice.content.trim().chars().take(300).collect();
+                    Some(s)
+                } else {
+                    None
+                },
+            });
             self.usage = add_usage(self.usage, choice.usage);
             if !choice.content.trim().is_empty() {
                 last_assistant = Some(choice.content.clone());
@@ -679,11 +878,29 @@ impl Agent {
         let mut sink = |d: &str| {
             let _ = tx.send(BackendMsg::ChatToken(d.to_string()));
         };
+        self.llm_rounds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let syn_start = std::time::Instant::now();
         let choice = tokio::select! {
             biased;
             _ = self.ctl.cancelled() => return Ok(None),
             r = stream_chat(&self.cfg, &messages, &[], &mut sink) => r?,
         };
+        let syn_cost_ms = syn_start.elapsed().as_millis() as u64;
+        let gen_offset = self.turn_started.elapsed().as_millis().saturating_sub(syn_cost_ms as u128) as u64;
+        self.trace_generations.lock().unwrap().push(GenerationTrace {
+            name: "Orchestrator Synthesis".to_string(),
+            model: self.cfg.model.clone(),
+            start_offset_ms: gen_offset,
+            cost_ms: syn_cost_ms,
+            usage: choice.usage,
+            input_preview: Some(format!("用户问题: {}", user_query)),
+            output_preview: if !choice.content.trim().is_empty() {
+                let s: String = choice.content.trim().chars().take(300).collect();
+                Some(s)
+            } else {
+                None
+            },
+        });
         let _ = tx.send(BackendMsg::ChatToken("\n".to_string()));
         Ok(choice.usage)
     }
@@ -1066,6 +1283,7 @@ pub async fn run_turn(
     history: &[ChatMessage],
     refs: &[SqlReference],
     conv_ctx: Option<String>,
+    conv_id: Option<String>,
     conn_id: &str,
     db: Option<&str>,
     tx: &UnboundedSender<BackendMsg>,
@@ -1075,7 +1293,16 @@ pub async fn run_turn(
     mem_saver: MemorySaver,
     audit: AuditSink,
     assistant: Option<AssistantContext>,
+    trace: TraceSink,
 ) -> Result<()> {
+    let turn_started = std::time::Instant::now();
+    let trace_steps = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let trace_generations_holder = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let llm_rounds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let plan_desc_holder = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let planning_cost_holder = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let synthesis_cost_holder = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     let mut agent = Agent::build(
         cfg.clone(),
         conns,
@@ -1088,32 +1315,104 @@ pub async fn run_turn(
         mem_saver,
         audit,
         assistant,
+        trace.clone(),
+        trace_steps.clone(),
+        trace_generations_holder.clone(),
+        llm_rounds.clone(),
+        plan_desc_holder.clone(),
+        turn_started,
+        planning_cost_holder.clone(),
+        synthesis_cost_holder.clone(),
     )
     .await;
     // ADR-AI-4 决策2: bound a single turn's wall-clock time so a stuck stream
     // or runaway worker can't wedge the turn (and its registry slot) forever.
     let result = tokio::time::timeout(TURN_TIMEOUT, agent.run(history, refs, conv_ctx.as_deref(), tx)).await;
+    let mut terminate = TerminateReason::Completed;
+    let mut run_err = None;
+
     match result {
         Ok(out) => {
-            out?;
-            // Only forward usage the provider actually measured: a stream that
-            // never emitted a `usage` chunk (or a provider that doesn't report
-            // one) leaves a zero accumulator, and emitting it would show a
-            // misleading "0 tokens" in the footer. The frontend falls back to a
-            // character-based estimate in that case. 2026-08-12.
-            if agent.usage.total_tokens > 0 {
-                let _ = tx.send(BackendMsg::ChatUsage(agent.usage));
-            }
-            if ctl.is_cancelled() {
-                let _ = tx.send(BackendMsg::ChatToken("\n⏹ 已取消。\n".to_string()));
+            if let Err(e) = out {
+                terminate = TerminateReason::Errored;
+                run_err = Some(e);
+            } else {
+                if agent.tool_budget_exhausted {
+                    terminate = TerminateReason::ToolBudgetExhausted;
+                } else if ctl.is_cancelled() {
+                    terminate = TerminateReason::Cancelled;
+                }
+                // Only forward usage the provider actually measured: a stream that
+                // never emitted a `usage` chunk (or a provider that doesn't report
+                // one) leaves a zero accumulator, and emitting it would show a
+                // misleading "0 tokens" in the footer. The frontend falls back to a
+                // character-based estimate in that case. 2026-08-12.
+                if agent.usage.total_tokens > 0 {
+                    let _ = tx.send(BackendMsg::ChatUsage(agent.usage));
+                }
+                if ctl.is_cancelled() {
+                    let _ = tx.send(BackendMsg::ChatToken("\n⏹ 已取消。\n".to_string()));
+                }
             }
         }
         Err(_) => {
             ctl.cancel();
+            terminate = TerminateReason::Timeout;
             let _ = tx.send(BackendMsg::ChatToken(
                 "\n⏱ 单轮已超出时间上限，已停止。\n".to_string(),
             ));
         }
+    }
+
+    // 无论正常结束、用户取消、异常报错还是超时，统一持久化该 Turn 的结构化 Trace
+    let steps_snapshot = trace_steps.lock().unwrap().clone();
+    let gens_snapshot = trace_generations_holder.lock().unwrap().clone();
+    let plan_snapshot = plan_desc_holder.lock().unwrap().clone();
+    let user_query = history
+        .iter()
+        .rev()
+        .find(|m| m.role == ChatRole::User)
+        .map(|m| {
+            let t = m.content.trim();
+            if t.chars().count() > 120 {
+                let s: String = t.chars().take(120).collect();
+                format!("{}...", s)
+            } else {
+                t.to_string()
+            }
+        });
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let planning_cost = planning_cost_holder.load(std::sync::atomic::Ordering::SeqCst);
+    let synthesis_cost = synthesis_cost_holder.load(std::sync::atomic::Ordering::SeqCst);
+
+    trace(&TurnTrace {
+        turn_id: ctl.turn_id().to_string(),
+        conv_id,
+        user_query,
+        plan: plan_snapshot,
+        planning_cost_ms: if planning_cost > 0 { Some(planning_cost) } else { None },
+        synthesis_cost_ms: if synthesis_cost > 0 { Some(synthesis_cost) } else { None },
+        created_at: now_ms,
+        role: "Orchestrator".to_string(),
+        redundant_calls: detect_redundant(&steps_snapshot),
+        steps: steps_snapshot,
+        generations: gens_snapshot,
+        terminate,
+        llm_rounds: llm_rounds.load(std::sync::atomic::Ordering::SeqCst),
+        total_ms: turn_started.elapsed().as_millis() as u64,
+        usage: if agent.usage.total_tokens > 0 {
+            Some(agent.usage)
+        } else {
+            None
+        },
+    });
+
+    if let Some(e) = run_err {
+        return Err(e);
     }
     Ok(())
 }
@@ -1369,14 +1668,46 @@ async fn build_worker_system(
     p
 }
 
+/// 判定一次工具调用是否可能产生写副作用。
+/// 针对只读角色（Explorer）执行 Fail-Close 安全拦截。
+async fn tool_may_write(
+    tc: &ToolCall,
+    conns: &[ConnectionConfig],
+    ctx: &ToolContext<'_>,
+) -> bool {
+    if tc.name != "execute_query" {
+        return false;
+    }
+    let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(Value::Null);
+    let conn_name = args.get("connection").and_then(|v| v.as_str()).unwrap_or("");
+    let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").trim();
+
+    // 1. 先用通用的 check_statement 识别标准 SQL 写操作（INSERT/UPDATE/DELETE/DROP/ALTER 等）
+    // 即使连接解析尚未完成，只要 SQL 本身明显是写操作或破坏性操作，直接判定为写（Fail-Close）
+    match check_statement(query) {
+        PolicyDecision::ConfirmRequired(_) | PolicyDecision::Deny(_) => return true,
+        PolicyDecision::Allow => {}
+    }
+
+    // 2. 如果能够解析出连接配置
+    if let Some(cfg) = resolve_conn(conns, conn_name, ctx.current_conn) {
+        match cfg.db_type {
+            DbType::Mysql => !matches!(check_statement(query), PolicyDecision::Allow),
+            DbType::Redis => !crate::llm::policy::redis_command_is_read_only(query),
+        }
+    } else {
+        // 无法解析出连接，且首词非标准只读 SQL，保守判定为写（Fail-Close）
+        !matches!(check_statement(query), PolicyDecision::Allow)
+    }
+}
+
 /// Execute a tool call, running the safety guardrail first for `execute_query`
-/// on MySQL: read-only runs straight through, DDL / destructive statements are
+/// on MySQL/Redis: read-only runs straight through, DDL / destructive statements are
 /// hard-denied, and writes pause here until the user answers the confirmation
-/// prompt the UI raised.
+/// prompt the UI raised. Also enforces ToolScope::ReadOnly for Explorer.
 ///
 /// A rejection is fed back to the model as a *tool result*, not an error — the
-/// model needs to see "the user said no" so it can explain itself instead of
-/// blindly retrying.
+/// model needs to see "the user said no" or "scope blocked" so it can explain itself.
 async fn exec_with_policy(
     tc: &ToolCall,
     reg: &ToolRegistry,
@@ -1385,7 +1716,16 @@ async fn exec_with_policy(
     ctl: &TurnControl,
     audit: &AuditSink,
     tx: &UnboundedSender<BackendMsg>,
-) -> (String, String) {
+) -> (String, String, Option<String>) {
+    // ── 作用域硬拦截：只读角色（Explorer）严禁执行任何写操作 ──
+    if reg.scope == ToolScope::ReadOnly && tool_may_write(tc, conns, ctx).await {
+        return (
+            "已拦截".into(),
+            "当前角色为只读探索（Explorer），无权执行写操作。该步骤应交由执行者（Executor）完成。".into(),
+            Some("scope-blocked".into()),
+        );
+    }
+
     if tc.name == "execute_query" {
         let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(Value::Null);
         let conn_name = args
@@ -1393,85 +1733,97 @@ async fn exec_with_policy(
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(cfg) = conns.iter().find(|c| c.name == conn_name) {
-            if cfg.db_type == DbType::Mysql {
-                // Build a reusable audit emitter so every guardrail decision
-                // (deny / approve / reject / expire) lands in the same store.
-                let conn_id = cfg.id.clone();
-                // 目标库：AI 显式传的 db 优先，否则是工具层自动应用的当前库。
-                // 确认弹窗与审计都按这个真实目标展示/留痕。
-                let db = args
-                    .get("db")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .or_else(|| ctx.current_db.map(|s| s.to_string()));
-                let emit = |decision: &'static str, result: Option<String>| {
-                    audit(&AuditEvent {
-                        conn_id: conn_id.clone(),
-                        conn_name: conn_name.to_string(),
+        if let Some(cfg) = resolve_conn(conns, conn_name, ctx.current_conn) {
+            let conn_id = cfg.id.clone();
+            let conn_display_name = cfg.name.clone();
+            let db = args
+                .get("db")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| ctx.current_db.map(|s| s.to_string()));
+            let emit = |decision: &'static str, result: Option<String>| {
+                audit(&AuditEvent {
+                    conn_id: conn_id.clone(),
+                    conn_name: conn_display_name.clone(),
+                    db: db.clone(),
+                    sql: query.to_string(),
+                    decision,
+                    result,
+                });
+            };
+
+            let decision = match cfg.db_type {
+                DbType::Mysql => check_statement(query),
+                DbType::Redis => crate::llm::policy::redis_statement_policy(query),
+            };
+
+            match decision {
+                PolicyDecision::Allow => {}
+                PolicyDecision::Deny(reason) => {
+                    emit("deny", Some(format!("护栏拦截：{}", reason)));
+                    return (
+                        "已拦截".into(),
+                        format!("AI 护栏拒绝执行：{}", reason),
+                        Some("deny".into()),
+                    );
+                }
+                PolicyDecision::ConfirmRequired(reason) => {
+                    if ctl.is_cancelled() {
+                        return (
+                            "已取消".into(),
+                            "会话已取消，未执行。".into(),
+                            Some("cancelled".into()),
+                        );
+                    }
+                    let (id, rx) = ctl.register_confirm();
+                    let _ = tx.send(BackendMsg::ChatConfirm(ConfirmRequest {
+                        id,
+                        turn_id: ctl.turn_id().to_string(),
+                        connection: conn_display_name.clone(),
                         db: db.clone(),
                         sql: query.to_string(),
-                        decision,
-                        result,
-                    });
-                };
-                match check_statement(query) {
-                    PolicyDecision::Allow => {}
-                    PolicyDecision::Deny(reason) => {
-                        emit("deny", Some(format!("护栏拦截：{}", reason)));
-                        return ("已拦截".into(), format!("AI 护栏拒绝执行：{}", reason));
-                    }
-                    PolicyDecision::ConfirmRequired(reason) => {
-                        if ctl.is_cancelled() {
-                            return ("已取消".into(), "会话已取消，未执行。".into());
+                        reason,
+                    }));
+                    // Bounded wait. If the webview reloads (or the user
+                    // walks away) nobody will ever answer, and an
+                    // unbounded await would wedge the turn — and its entry
+                    // in the turn registry — forever. Timing out reads as
+                    // a refusal, which is the safe default.
+                    let answer = tokio::time::timeout(CONFIRM_TIMEOUT, rx).await;
+                    match answer.unwrap_or(Ok(false)) {
+                        Ok(true) => {
+                            let _ = tx.send(BackendMsg::ChatTool(
+                                "写操作已获用户确认，正在执行".to_string(),
+                            ));
+                            let res = reg.call(tc, ctx).await;
+                            emit("write-approved", Some(res.0.clone()));
+                            return (res.0, res.1, Some("write-approved".into()));
                         }
-                        let (id, rx) = ctl.register_confirm();
-                        let _ = tx.send(BackendMsg::ChatConfirm(ConfirmRequest {
-                            id,
-                            turn_id: ctl.turn_id().to_string(),
-                            connection: conn_name.to_string(),
-                            db: db.clone(),
-                            sql: query.to_string(),
-                            reason,
-                        }));
-                        // Bounded wait. If the webview reloads (or the user
-                        // walks away) nobody will ever answer, and an
-                        // unbounded await would wedge the turn — and its entry
-                        // in the turn registry — forever. Timing out reads as
-                        // a refusal, which is the safe default.
-                        let answer = tokio::time::timeout(CONFIRM_TIMEOUT, rx).await;
-                        match answer.unwrap_or(Ok(false)) {
-                            Ok(true) => {
-                                let _ = tx.send(BackendMsg::ChatTool(
-                                    "写操作已获用户确认，正在执行".to_string(),
-                                ));
-                                let res = reg.call(tc, ctx).await;
-                                emit("write-approved", Some(res.0.clone()));
-                                return res;
-                            }
-                            Ok(false) => {
-                                emit("write-rejected", Some("用户拒绝执行".to_string()));
-                                return (
-                                    "用户拒绝".into(),
-                                    "用户拒绝执行这条写操作。不要重试，也不要改写后再次尝试；\
-                                     请向用户说明影响，并给出可供其手动执行的 SQL。"
-                                        .into(),
-                                );
-                            }
-                            Err(_) => {
-                                emit("write-expired", Some("确认响应超时".to_string()));
-                                return (
-                                    "确认失效".into(),
-                                    "确认请求未获响应（会话已结束、被取消或超时），语句未执行。".into(),
-                                );
-                            }
+                        Ok(false) => {
+                            emit("write-rejected", Some("用户拒绝执行".to_string()));
+                            return (
+                                "用户拒绝".into(),
+                                "用户拒绝执行这条写操作。不要重试，也不要改写后再次尝试；\
+                                 请向用户说明影响，并给出可供其手动执行的语句或方案。"
+                                    .into(),
+                                Some("write-rejected".into()),
+                            );
+                        }
+                        Err(_) => {
+                            emit("write-expired", Some("确认响应超时".to_string()));
+                            return (
+                                "确认失效".into(),
+                                "确认请求未获响应（会话已结束、被取消或超时），语句未执行。".into(),
+                                Some("write-expired".into()),
+                            );
                         }
                     }
                 }
             }
         }
     }
-    reg.call(tc, ctx).await
+    let res = reg.call(tc, ctx).await;
+    (res.0, res.1, None)
 }
 
 #[cfg(test)]
@@ -1486,6 +1838,33 @@ mod tests {
 
     fn no_mem() -> MemoryLoader {
         std::sync::Arc::new(|_conn: &str, _db: Option<&str>| vec![])
+    }
+
+    fn make_test_conn(id: &str, name: &str, db_type: DbType) -> ConnectionConfig {
+        ConnectionConfig {
+            id: id.into(),
+            name: name.into(),
+            db_type,
+            host: "127.0.0.1".into(),
+            port: match db_type {
+                DbType::Mysql => 3306,
+                DbType::Redis => 6379,
+            },
+            user: "root".into(),
+            password: "".into(),
+            database: "test".into(),
+            ssl_mode: String::new(),
+            ssl_ca: String::new(),
+            client_cert: String::new(),
+            client_key: String::new(),
+            ssh_host: String::new(),
+            ssh_port: 22,
+            ssh_user: String::new(),
+            ssh_auth_kind: String::new(),
+            ssh_password: String::new(),
+            ssh_private_key: String::new(),
+            group_id: None,
+        }
     }
 
     /// The constitution must land in the main (single-agent / Orchestrator)
@@ -1509,6 +1888,107 @@ mod tests {
         let prompt = build_system_prompt(&[], &memory, None, &no_kb(), &mem_loader, None).await;
         assert!(prompt.contains("用户历史纠错与偏好记忆"));
         assert!(prompt.contains("yk_config 表使用 code 字段作为配置键，而非 key 字段"));
+    }
+
+    #[tokio::test]
+    async fn read_only_scope_blocks_mysql_write() {
+        let reg = ToolRegistry::new().with_scope(ToolScope::ReadOnly);
+        let conns = vec![make_test_conn("conn1", "test_mysql", DbType::Mysql)];
+        let ctx = ToolContext {
+            conns: &conns,
+            mcp: None,
+            kb_loader: no_kb(),
+            current_db: None,
+            current_conn: Some("conn1"),
+        };
+        let ctl = TurnControl::new("test_turn");
+        let audit: AuditSink = std::sync::Arc::new(|_| {});
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let tc = ToolCall {
+            id: "call1".into(),
+            name: "execute_query".into(),
+            arguments: serde_json::json!({
+                "connection": "test_mysql",
+                "query": "DELETE FROM users WHERE id = 1"
+            })
+            .to_string(),
+        };
+
+        let (summary, detail, guarded) =
+            exec_with_policy(&tc, &reg, &ctx, &conns, &ctl, &audit, &tx).await;
+        assert_eq!(summary, "已拦截");
+        assert_eq!(guarded.as_deref(), Some("scope-blocked"));
+        assert!(detail.contains("当前角色为只读探索（Explorer），无权执行写操作"));
+    }
+
+    #[tokio::test]
+    async fn read_only_scope_blocks_redis_write() {
+        let reg = ToolRegistry::new().with_scope(ToolScope::ReadOnly);
+        let conns = vec![make_test_conn("conn_redis", "test_redis", DbType::Redis)];
+        let ctx = ToolContext {
+            conns: &conns,
+            mcp: None,
+            kb_loader: no_kb(),
+            current_db: None,
+            current_conn: Some("conn_redis"),
+        };
+        let ctl = TurnControl::new("test_turn");
+        let audit: AuditSink = std::sync::Arc::new(|_| {});
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let tc = ToolCall {
+            id: "call2".into(),
+            name: "execute_query".into(),
+            arguments: serde_json::json!({
+                "connection": "test_redis",
+                "query": "SET key1 value1"
+            })
+            .to_string(),
+        };
+
+        let (summary, detail, guarded) =
+            exec_with_policy(&tc, &reg, &ctx, &conns, &ctl, &audit, &tx).await;
+        assert_eq!(summary, "已拦截");
+        assert_eq!(guarded.as_deref(), Some("scope-blocked"));
+        assert!(detail.contains("当前角色为只读探索（Explorer），无权执行写操作"));
+    }
+
+    #[tokio::test]
+    async fn full_scope_denies_redis_flushall() {
+        let reg = ToolRegistry::new().with_scope(ToolScope::Full);
+        let conns = vec![make_test_conn("conn_redis", "test_redis", DbType::Redis)];
+        let ctx = ToolContext {
+            conns: &conns,
+            mcp: None,
+            kb_loader: no_kb(),
+            current_db: None,
+            current_conn: Some("conn_redis"),
+        };
+        let ctl = TurnControl::new("test_turn");
+        let audit_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ac = audit_count.clone();
+        let audit: AuditSink = std::sync::Arc::new(move |_| {
+            ac.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let tc = ToolCall {
+            id: "call3".into(),
+            name: "execute_query".into(),
+            arguments: serde_json::json!({
+                "connection": "test_redis",
+                "query": "FLUSHALL"
+            })
+            .to_string(),
+        };
+
+        let (summary, detail, guarded) =
+            exec_with_policy(&tc, &reg, &ctx, &conns, &ctl, &audit, &tx).await;
+        assert_eq!(summary, "已拦截");
+        assert_eq!(guarded.as_deref(), Some("deny"));
+        assert!(detail.contains("危险 Redis 命令 `FLUSHALL` 被 AI 护栏默认拦截"));
+        assert_eq!(audit_count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

@@ -2013,6 +2013,27 @@ pub async fn chat_turn(
         );
     });
 
+    // Structured per-turn trace (ADR-AI-7): append to app_log_dir / agent-trace.jsonl.
+    // JSON Lines format for zero external dependencies and easy grep / jq diagnosis.
+    // Failures are swallowed: tracing must never interrupt the user turn.
+    let trace_dir = app.path().app_log_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let trace_file_lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+    let trace_sink: chatquery::llm::TraceSink = Arc::new(move |t: &chatquery::llm::TurnTrace| {
+        let _guard = trace_file_lock.lock().ok();
+        let _ = std::fs::create_dir_all(&trace_dir);
+        if let Ok(line) = serde_json::to_string(t) {
+            let path = trace_dir.join("agent-trace.jsonl");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                use std::io::Write;
+                let _ = writeln!(f, "{}", line);
+            }
+        }
+    });
+
     let turn_id = next_turn_id();
     let ctl = TurnControl::new(turn_id.clone());
     state
@@ -2035,6 +2056,7 @@ pub async fn chat_turn(
             &messages,
             &refs,
             conv_ctx,
+            _conv_id.clone(),
             &effective_conn_id,
             effective_db.as_deref(),
             &tx,
@@ -2044,6 +2066,7 @@ pub async fn chat_turn(
             mem_saver,
             audit,
             assistant_ctx,
+            trace_sink,
         )
         .await;
         if let Err(e) = r {
@@ -2924,6 +2947,54 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     }
 
     open::that(&trimmed).map_err(|e| format!("无法使用系统默认浏览器打开链接: {}", e))
+}
+
+/// 读取本地记录的 Agent 执行 Trace 列表，支持按会话 ID 过滤，最新的排在最前
+#[tauri::command]
+pub fn get_agent_traces(
+    app: AppHandle,
+    conv_id: Option<String>,
+) -> Result<Vec<chatquery::llm::TurnTrace>, String> {
+    let trace_dir = app.path().app_log_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let path = trace_dir.join("agent-trace.jsonl");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut traces: Vec<chatquery::llm::TurnTrace> = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<chatquery::llm::TurnTrace>(trimmed) {
+            Ok(trace) => {
+                if let Some(target_conv) = &conv_id {
+                    if trace.conv_id.as_deref() == Some(target_conv.as_str()) {
+                        traces.push(trace);
+                    }
+                } else {
+                    traces.push(trace);
+                }
+            }
+            Err(e) => {
+                eprintln!("[trace parse error] {}: {}", e, trimmed);
+            }
+        }
+    }
+    traces.reverse();
+    Ok(traces)
+}
+
+/// 清空本地 agent-trace.jsonl 追踪日志
+#[tauri::command]
+pub fn clear_agent_traces(app: AppHandle) -> Result<(), String> {
+    let trace_dir = app.path().app_log_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let path = trace_dir.join("agent-trace.jsonl");
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+    }
+    Ok(())
 }
 
 

@@ -526,6 +526,7 @@ impl App {
                 &[],
                 // The TUI has no conversation selector either — no @-mentions.
                 None,
+                None,
                 &conn_id,
                 // The TUI has no database picker — queries run against the
                 // connection's configured default database.
@@ -537,6 +538,7 @@ impl App {
                 std::sync::Arc::new(|_, _, _, _, _| {}),
                 std::sync::Arc::new(|_| {}),
                 None,
+                std::sync::Arc::new(|_| {}),
             )
             .await
             {

@@ -85,12 +85,48 @@ impl BuiltinTool {
     }
 }
 
+/// A role's tool capability set. The registry hands each Agent only the
+/// tools its role may call, so "Explorer is read-only" is enforced by what
+/// the model can even *see* and *call* — not by asking it nicely in the prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolScope {
+    /// Full access: read + write. For Orchestrator, Executor, and simple turns.
+    Full,
+    /// Read-only discovery. No statement that can mutate data may be
+    /// executed, even if the model hallucinated one.
+    ReadOnly,
+}
+
+impl ToolScope {
+    pub fn allows_write(self) -> bool {
+        matches!(self, ToolScope::Full)
+    }
+}
+
+/// Helper to check whether an external MCP tool schema hints read-only capability.
+pub fn mcp_schema_is_read_only(schema: &Value) -> bool {
+    schema
+        .get("annotations")
+        .and_then(|a| a.get("readOnlyHint"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 /// Registry of tools available to an agent. Holds built-in tools (a scoped
 /// subset per agent) plus externally-supplied MCP tool schemas; dispatch
 /// routes `execute_query` to the built-in and `mcp__*` names to the MCP host.
 pub struct ToolRegistry {
     builtins: Vec<BuiltinTool>,
     external_schemas: Vec<Value>,
+    /// Capability ceiling for this registry. Enforced at dispatch, so a
+    /// misbehaving or injected model cannot exceed it.
+    pub scope: ToolScope,
+}
+
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ToolRegistry {
@@ -98,7 +134,12 @@ impl ToolRegistry {
         Self {
             builtins: Vec::new(),
             external_schemas: Vec::new(),
+            scope: ToolScope::Full,
         }
+    }
+    pub fn with_scope(mut self, scope: ToolScope) -> Self {
+        self.scope = scope;
+        self
     }
     pub fn register(&mut self, tool: BuiltinTool) {
         self.builtins.push(tool);
@@ -134,17 +175,26 @@ impl ToolRegistry {
     }
 }
 
-/// Build the default registry: the built-in query tool plus every reachable
-/// MCP server's tools. Mirrors the previous flat tool list but as a registry.
-pub async fn build_registry(mcp: Option<&McpHostManager>) -> ToolRegistry {
+/// Build the default registry: the built-in query tool plus reachable
+/// MCP server's tools filtered by the requested scope.
+pub async fn build_registry(
+    mcp: Option<&McpHostManager>,
+    scope: ToolScope,
+) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(BuiltinTool::ExecuteQuery);
     reg.register(BuiltinTool::SearchKnowledge);
     if let Some(m) = mcp {
         for schema in m.all_tool_schemas().await {
+            // ReadOnly 作用域下，不把未知副作用的外部工具暴露给模型；
+            // 采用保守拒绝策略，仅当明确带有 readOnlyHint 为 true 时才暴露
+            if scope == ToolScope::ReadOnly && !mcp_schema_is_read_only(&schema) {
+                continue;
+            }
             reg.add_external_schema(schema);
         }
     }
+    reg.scope = scope;
     reg
 }
 
@@ -167,7 +217,7 @@ pub fn decode_mcp_tool(name: &str) -> Option<(String, String)> {
 /// 6. 大小写不敏感及包裹符号（反引号、引号）容错；
 /// 7. 误将目标数据库名当作连接名（如 connection: "mycommunity_cszjxh"）；
 /// 8. 会话当前连接兜底（当模型在单连接会话中胡乱推导连接名时）。
-fn resolve_conn<'a>(
+pub fn resolve_conn<'a>(
     conns: &'a [ConnectionConfig],
     name: &str,
     current_conn_id: Option<&str>,
