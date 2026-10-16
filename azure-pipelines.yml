@@ -79,7 +79,14 @@ jobs:
           if (Test-Path "src-tauri\target\release\chatquery.exe") {
             Copy-Item -Path "src-tauri\target\release\chatquery.exe" -Destination "src-tauri\target\release\bundle\nsis\智询_免安装绿色版.exe"
           }
-        displayName: '打包 Tauri Windows 应用 (NSIS .exe)'
+          # 自动归集构建产物至 dist-artifacts\windows
+          New-Item -ItemType Directory -Path "dist-artifacts\windows" -Force | Out-Null
+          if (Test-Path "src-tauri\target\release\bundle\nsis") {
+            Get-ChildItem -Path "src-tauri\target\release\bundle\nsis" -File | Where-Object {
+              $_.Extension -in @('.exe', '.zip', '.sig')
+            } | Copy-Item -Destination "dist-artifacts\windows" -Force
+          }
+        displayName: '打包与归集 Tauri Windows 应用 (NSIS .exe)'
         env:
           TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
@@ -105,10 +112,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
 
   # =========================================================================
-  # 2. macOS 构建 (Apple Silicon arm64 .dmg + 应用内热更包)
+  # 2. macOS 构建 (Apple Silicon arm64 + Intel x64 原生与兼容双架构)
   # =========================================================================
   - job: build_macos
-    displayName: 'macOS 构建 (Apple Silicon)'
+    displayName: 'macOS 构建 (Apple Silicon arm64 + Intel x64)'
+    timeoutInMinutes: 60
     pool:
       vmImage: 'macos-14'
     steps:
@@ -121,11 +129,17 @@ jobs:
           versionSpec: '20.x'
 
       - script: |
+          echo "=== Node.js & 宿主机环境诊断 ==="
+          echo "Node.js 版本: $(node -v)"
+          echo "Node.js 运行架构: $(node -p 'process.arch')"
+          echo "操作系统内核架构: $(uname -m)"
+          echo "CPU 品牌: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo '未知')"
           rustup default stable
           rustup target add aarch64-apple-darwin
+          rustup target add x86_64-apple-darwin
           cargo --version
           rustc --version
-        displayName: '配置 Rust 工具链 (aarch64-apple-darwin)'
+        displayName: '配置 Rust 工具链 (Apple Silicon aarch64 + Intel x86_64)'
 
       # 缓存 npm 依赖
       - task: Cache@2
@@ -158,11 +172,59 @@ jobs:
           if [[ "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" == "\$(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)" ]]; then
             export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
           fi
-          npx --prefix frontend tauri build --ci
-        displayName: '打包 Tauri macOS 应用 (.dmg)'
+
+          echo "=== [1/2] 打包 Apple Silicon 原生版 (aarch64-apple-darwin) ==="
+          npx --prefix frontend tauri build --ci --target aarch64-apple-darwin
+
+          echo "=== [2/2] 打包 Intel 芯片兼容版 (x86_64-apple-darwin) ==="
+          npx --prefix frontend tauri build --ci --target x86_64-apple-darwin
+        displayName: '打包 Tauri macOS 应用 (arm64 + x64 双架构)'
         env:
           TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
+
+      - script: |
+          # 自动归集构建产物至临时导出目录（同时收集 arm64 与 x64 的 .dmg 安装包及热更新增量包与签名）
+          mkdir -p dist-artifacts/macos
+
+          # 1. 归集 Apple Silicon (arm64) 产物
+          ARM_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle"
+          if [ -d "$ARM_DIR" ]; then
+            echo "正在扫描 arm64 产物目录: $ARM_DIR"
+            find "$ARM_DIR/dmg" -maxdepth 1 -type f -name "*.dmg" ! -name "rw.*" -exec cp {} dist-artifacts/macos/ \; 2>/dev/null || true
+            if [ -f "$ARM_DIR/macos/智询.app.tar.gz" ]; then
+              cp "$ARM_DIR/macos/智询.app.tar.gz" "dist-artifacts/macos/智询_aarch64.app.tar.gz"
+              if [ -f "$ARM_DIR/macos/智询.app.tar.gz.sig" ]; then
+                cp "$ARM_DIR/macos/智询.app.tar.gz.sig" "dist-artifacts/macos/智询_aarch64.app.tar.gz.sig"
+              fi
+            fi
+          fi
+
+          # 2. 归集 Intel (x64) 产物
+          X64_DIR="src-tauri/target/x86_64-apple-darwin/release/bundle"
+          if [ -d "$X64_DIR" ]; then
+            echo "正在扫描 x64 产物目录: $X64_DIR"
+            find "$X64_DIR/dmg" -maxdepth 1 -type f -name "*.dmg" ! -name "rw.*" -exec cp {} dist-artifacts/macos/ \; 2>/dev/null || true
+            if [ -f "$X64_DIR/macos/智询.app.tar.gz" ]; then
+              cp "$X64_DIR/macos/智询.app.tar.gz" "dist-artifacts/macos/智询_x64.app.tar.gz"
+              # 保持向后兼容：同时也保留一份 智询.app.tar.gz
+              cp "$X64_DIR/macos/智询.app.tar.gz" "dist-artifacts/macos/智询.app.tar.gz"
+              if [ -f "$X64_DIR/macos/智询.app.tar.gz.sig" ]; then
+                cp "$X64_DIR/macos/智询.app.tar.gz.sig" "dist-artifacts/macos/智询_x64.app.tar.gz.sig"
+                cp "$X64_DIR/macos/智询.app.tar.gz.sig" "dist-artifacts/macos/智询.app.tar.gz.sig"
+              fi
+            fi
+          fi
+
+          # 3. 兜底：若有直接在 target/release/bundle 产出的包，也补充归集
+          DEFAULT_DIR="src-tauri/target/release/bundle"
+          if [ -d "$DEFAULT_DIR" ]; then
+            find "$DEFAULT_DIR/dmg" -maxdepth 1 -type f -name "*.dmg" ! -name "rw.*" -exec cp -n {} dist-artifacts/macos/ \; 2>/dev/null || true
+          fi
+
+          echo "=== 最终归集到 dist-artifacts/macos/ 的文件清单 ==="
+          ls -lh dist-artifacts/macos/ || true
+        displayName: '归集 macOS 构建产物 (arm64 + x64)'
 
       - script: |
           if [[ "$OSS_ACCESS_KEY_ID" == "\$(OSS_ACCESS_KEY_ID)" ]] || [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_BUCKET" ]; then
@@ -245,7 +307,10 @@ jobs:
           npx --prefix frontend tauri build --ci
           # 清理 AppImage 打包过程中生成的未压缩临时目录（约 270MB），避免作为构建产物被上传
           rm -rf src-tauri/target/release/bundle/appimage/*.AppDir
-        displayName: '打包 Tauri Linux 应用 (AppImage & deb)'
+          # 自动归集构建产物至 dist-artifacts/linux
+          mkdir -p dist-artifacts/linux
+          find src-tauri/target/release/bundle -type f \( -name "*.AppImage" -o -name "*.deb" -o -name "*.tar.gz" -o -name "*.sig" \) -exec cp {} dist-artifacts/linux/ \; 2>/dev/null || true
+        displayName: '打包与归集 Tauri Linux 应用 (AppImage & deb)'
         env:
           TAURI_SIGNING_PRIVATE_KEY: $(TAURI_SIGNING_PRIVATE_KEY)
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: $(TAURI_SIGNING_PRIVATE_KEY_PASSWORD)

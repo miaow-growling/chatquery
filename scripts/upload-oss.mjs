@@ -9,6 +9,7 @@ import { execSync, spawnSync } from 'node:child_process';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
+const DIST_DIR = path.join(ROOT_DIR, 'dist-artifacts');
 
 // 优先从 frontend 目录加载 ali-oss
 const require = createRequire(path.join(ROOT_DIR, 'frontend', 'package.json'));
@@ -161,213 +162,374 @@ function performBuildIfRequested(privateKey, password = '') {
     TAURI_SIGNING_PRIVATE_KEY_PASSWORD: password || process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '',
   };
   const isWin = process.platform === 'win32';
-  const buildCmd = isWin
-    ? 'npx --prefix frontend tauri build --ci --bundles nsis'
-    : 'npx --prefix frontend tauri build --ci';
+  const isMac = process.platform === 'darwin';
 
-  execSync(buildCmd, {
-    cwd: ROOT_DIR,
-    env,
-    stdio: 'inherit',
-  });
+  if (isWin) {
+    execSync('npx --prefix frontend tauri build --ci --bundles nsis', {
+      cwd: ROOT_DIR,
+      env,
+      stdio: 'inherit',
+    });
+  } else if (isMac) {
+    const arch = getArgValue('--target') || getArgValue('--arch');
+    if (arch === 'arm64' || arch === 'aarch64') {
+      console.log('🍎 正在打包 Apple Silicon (arm64) 架构...');
+      execSync('npx --prefix frontend tauri build --ci --target aarch64-apple-darwin', {
+        cwd: ROOT_DIR,
+        env,
+        stdio: 'inherit',
+      });
+    } else if (arch === 'x64' || arch === 'x86_64') {
+      console.log('🍎 正在打包 Intel (x64) 架构...');
+      execSync('npx --prefix frontend tauri build --ci --target x86_64-apple-darwin', {
+        cwd: ROOT_DIR,
+        env,
+        stdio: 'inherit',
+      });
+    } else if (arch === 'all') {
+      console.log('🍎 正在打包 Apple Silicon (arm64) 架构...');
+      execSync('npx --prefix frontend tauri build --ci --target aarch64-apple-darwin', {
+        cwd: ROOT_DIR,
+        env,
+        stdio: 'inherit',
+      });
+      console.log('🍎 正在打包 Intel (x64) 架构...');
+      execSync('npx --prefix frontend tauri build --ci --target x86_64-apple-darwin', {
+        cwd: ROOT_DIR,
+        env,
+        stdio: 'inherit',
+      });
+    } else {
+      execSync('npx --prefix frontend tauri build --ci', {
+        cwd: ROOT_DIR,
+        env,
+        stdio: 'inherit',
+      });
+    }
+  } else {
+    execSync('npx --prefix frontend tauri build --ci', {
+      cwd: ROOT_DIR,
+      env,
+      stdio: 'inherit',
+    });
+  }
   console.log('✅ Tauri 打包完成！\n');
 }
 
-// 扫描所有已构建好的桌面安装包、绿色版及自动更新增量包
+// 扫描所有已构建好的桌面安装包、绿色版及自动更新增量包 (支持 dist-artifacts 及各 target 架构目录)
 function scanArtifacts(privateKey, password = '') {
   const artifacts = [];
   const updaterArtifacts = [];
-  const bundleDir = path.join(ROOT_DIR, 'src-tauri', 'target', 'release', 'bundle');
-  const releaseDir = path.join(ROOT_DIR, 'src-tauri', 'target', 'release');
+  const seenFiles = new Set();
 
-  // 1. Windows NSIS 安装包与绿色便携版
-  const nsisDir = path.join(bundleDir, 'nsis');
-  if (fs.existsSync(nsisDir)) {
-    const files = fs.readdirSync(nsisDir);
-    for (const f of files) {
-      if (f.endsWith('.exe')) {
-        const fullPath = path.join(nsisDir, f);
-        const isPortable = f.includes('免安装') || f.includes('portable');
-        const art = {
-          platform: isPortable ? 'windows-portable' : 'windows-installer',
-          targetPlatform: 'windows-x86_64',
-          name: f,
-          filePath: fullPath,
-        };
-        artifacts.push(art);
-
-        // 如果存在安装包的对应 .sig 签名或 .nsis.zip
-        const sigFile = `${fullPath}.sig`;
-        if (fs.existsSync(sigFile)) {
-          art.signature = fs.readFileSync(sigFile, 'utf-8').trim();
-          updaterArtifacts.push(art);
-        }
-      } else if (f.endsWith('.nsis.zip')) {
-        // Tauri v2 NSIS 增量更新包
-        const fullPath = path.join(nsisDir, f);
-        const sigFile = `${fullPath}.sig`;
-        let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
-        if (!sig && privateKey) {
-          sig = ensureSignature(fullPath, privateKey, password);
-        }
-        const art = {
-          platform: 'windows-updater',
-          targetPlatform: 'windows-x86_64',
-          name: f,
-          filePath: fullPath,
-          signature: sig,
-        };
-        artifacts.push(art);
-        updaterArtifacts.push(art);
-      }
+  function addArtifact(art) {
+    const key = `${art.targetPlatform || ''}:${art.name}`;
+    if (seenFiles.has(key)) return;
+    seenFiles.add(key);
+    artifacts.push(art);
+    if (art.signature || art.targetPlatform) {
+      updaterArtifacts.push(art);
     }
   }
 
-  // 如果 release 目录下有编译好的 chatquery.exe 但 nsis 目录没有绿色版，则检查并归集
-  const rawExe = path.join(releaseDir, 'chatquery.exe');
-  if (fs.existsSync(rawExe)) {
-    const alreadyHasPortable = artifacts.some(a => a.name.includes('免安装') || a.name.includes('portable'));
-    if (!alreadyHasPortable) {
-      const portableName = '智询_免安装绿色版.exe';
-      const targetPortable = path.join(nsisDir, portableName);
-      if (!fs.existsSync(nsisDir)) {
-        fs.mkdirSync(nsisDir, { recursive: true });
-      }
-      fs.copyFileSync(rawExe, targetPortable);
-      artifacts.push({
-        platform: 'windows-portable',
-        targetPlatform: 'windows-x86_64',
-        name: portableName,
-        filePath: targetPortable,
-      });
-    }
-  }
+  // 1. 优先扫描独立的归集目录 dist-artifacts (类似 deepseek-harness 模式)
+  if (fs.existsSync(DIST_DIR)) {
+    // 扫描 dist-artifacts/macos
+    const distMacos = path.join(DIST_DIR, 'macos');
+    if (fs.existsSync(distMacos)) {
+      const files = fs.readdirSync(distMacos);
+      for (const f of files) {
+        if (f.startsWith('.') || f.startsWith('rw.') || f.endsWith('.sig')) continue;
+        const fullPath = path.join(distMacos, f);
+        if (!fs.statSync(fullPath).isFile()) continue;
 
-  // 2. macOS DMG 安装包与 .app.tar.gz 自动更新增量包
-  const dmgDir = path.join(bundleDir, 'dmg');
-  if (fs.existsSync(dmgDir)) {
-    const files = fs.readdirSync(dmgDir);
-    for (const f of files) {
-      // 忽略临时文件如 rw.*.dmg
-      if (f.endsWith('.dmg') && !f.startsWith('rw.')) {
         const isArm = f.includes('aarch64') || f.includes('arm64');
-        artifacts.push({
-          platform: isArm ? 'macos-arm64' : 'macos-x64',
-          targetPlatform: isArm ? 'darwin-aarch64' : 'darwin-x86_64',
-          name: f,
-          filePath: path.join(dmgDir, f),
+        const targetPlatform = isArm ? 'darwin-aarch64' : 'darwin-x86_64';
+
+        if (f.endsWith('.dmg')) {
+          addArtifact({
+            platform: isArm ? 'macos-arm64' : 'macos-x64',
+            targetPlatform,
+            name: f,
+            filePath: fullPath,
+          });
+        } else if (f.endsWith('.tar.gz') || f.endsWith('.zip')) {
+          const sigFile = `${fullPath}.sig`;
+          let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
+          if (!sig && privateKey) {
+            sig = ensureSignature(fullPath, privateKey, password);
+          }
+          addArtifact({
+            platform: isArm ? 'macos-arm64-updater' : 'macos-x64-updater',
+            targetPlatform,
+            name: f,
+            filePath: fullPath,
+            signature: sig,
+          });
+        }
+      }
+    }
+
+    // 扫描 dist-artifacts/windows
+    const distWin = path.join(DIST_DIR, 'windows');
+    if (fs.existsSync(distWin)) {
+      const files = fs.readdirSync(distWin);
+      for (const f of files) {
+        if (f.startsWith('.') || f.endsWith('.sig')) continue;
+        const fullPath = path.join(distWin, f);
+        if (!fs.statSync(fullPath).isFile()) continue;
+
+        if (f.endsWith('.exe')) {
+          const isPortable = f.includes('免安装') || f.includes('portable');
+          const sigFile = `${fullPath}.sig`;
+          addArtifact({
+            platform: isPortable ? 'windows-portable' : 'windows-installer',
+            targetPlatform: 'windows-x86_64',
+            name: f,
+            filePath: fullPath,
+            signature: fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null,
+          });
+        } else if (f.endsWith('.nsis.zip')) {
+          const sigFile = `${fullPath}.sig`;
+          let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
+          if (!sig && privateKey) {
+            sig = ensureSignature(fullPath, privateKey, password);
+          }
+          addArtifact({
+            platform: 'windows-updater',
+            targetPlatform: 'windows-x86_64',
+            name: f,
+            filePath: fullPath,
+            signature: sig,
+          });
+        }
+      }
+    }
+
+    // 扫描 dist-artifacts/linux
+    const distLinux = path.join(DIST_DIR, 'linux');
+    if (fs.existsSync(distLinux)) {
+      const files = fs.readdirSync(distLinux);
+      for (const f of files) {
+        if (f.startsWith('.') || f.endsWith('.sig')) continue;
+        const fullPath = path.join(distLinux, f);
+        if (!fs.statSync(fullPath).isFile()) continue;
+
+        if (f.endsWith('.AppImage')) {
+          const sigFile = `${fullPath}.sig`;
+          let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
+          if (!sig && privateKey) {
+            sig = ensureSignature(fullPath, privateKey, password);
+          }
+          addArtifact({
+            platform: 'linux-appimage',
+            targetPlatform: 'linux-x86_64',
+            name: f,
+            filePath: fullPath,
+            signature: sig,
+          });
+        } else if (f.endsWith('.deb')) {
+          addArtifact({
+            platform: 'linux-deb',
+            targetPlatform: 'linux-x86_64',
+            name: f,
+            filePath: fullPath,
+          });
+        }
+      }
+    }
+  }
+
+  // 2. 如果从 dist-artifacts 未扫描到或只扫描到部分，继续扫描 target 各子目录
+  const targetRoots = [
+    { dir: path.join(ROOT_DIR, 'src-tauri', 'target', 'aarch64-apple-darwin', 'release'), arch: 'arm64', triple: 'aarch64-apple-darwin' },
+    { dir: path.join(ROOT_DIR, 'src-tauri', 'target', 'x86_64-apple-darwin', 'release'), arch: 'x64', triple: 'x86_64-apple-darwin' },
+    { dir: path.join(ROOT_DIR, 'src-tauri', 'target', 'universal-apple-darwin', 'release'), arch: 'universal', triple: 'universal-apple-darwin' },
+    { dir: path.join(ROOT_DIR, 'src-tauri', 'target', 'release'), arch: 'default', triple: '' },
+    { dir: path.join(ROOT_DIR, 'src-tauri', 'target', 'x86_64-pc-windows-msvc', 'release'), arch: 'x64', triple: 'x86_64-pc-windows-msvc' },
+    { dir: path.join(ROOT_DIR, 'src-tauri', 'target', 'x86_64-unknown-linux-gnu', 'release'), arch: 'x64', triple: 'x86_64-unknown-linux-gnu' },
+  ];
+
+  for (const { dir, arch, triple } of targetRoots) {
+    if (!fs.existsSync(dir)) continue;
+    const bundleDir = path.join(dir, 'bundle');
+    if (!fs.existsSync(bundleDir)) continue;
+
+    // 2.1 Windows NSIS
+    const nsisDir = path.join(bundleDir, 'nsis');
+    if (fs.existsSync(nsisDir)) {
+      const files = fs.readdirSync(nsisDir);
+      for (const f of files) {
+        if (f.endsWith('.exe')) {
+          const fullPath = path.join(nsisDir, f);
+          const isPortable = f.includes('免安装') || f.includes('portable');
+          const sigFile = `${fullPath}.sig`;
+          addArtifact({
+            platform: isPortable ? 'windows-portable' : 'windows-installer',
+            targetPlatform: 'windows-x86_64',
+            name: f,
+            filePath: fullPath,
+            signature: fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null,
+          });
+        } else if (f.endsWith('.nsis.zip')) {
+          const fullPath = path.join(nsisDir, f);
+          const sigFile = `${fullPath}.sig`;
+          let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
+          if (!sig && privateKey) {
+            sig = ensureSignature(fullPath, privateKey, password);
+          }
+          addArtifact({
+            platform: 'windows-updater',
+            targetPlatform: 'windows-x86_64',
+            name: f,
+            filePath: fullPath,
+            signature: sig,
+          });
+        }
+      }
+    }
+
+    // 检查免安装绿色版
+    const rawExe = path.join(dir, 'chatquery.exe');
+    if (fs.existsSync(rawExe)) {
+      const alreadyHasPortable = artifacts.some(a => a.name.includes('免安装') || a.name.includes('portable'));
+      if (!alreadyHasPortable) {
+        const portableName = '智询_免安装绿色版.exe';
+        const targetPortable = path.join(nsisDir || dir, portableName);
+        if (!fs.existsSync(path.dirname(targetPortable))) {
+          fs.mkdirSync(path.dirname(targetPortable), { recursive: true });
+        }
+        fs.copyFileSync(rawExe, targetPortable);
+        addArtifact({
+          platform: 'windows-portable',
+          targetPlatform: 'windows-x86_64',
+          name: portableName,
+          filePath: targetPortable,
         });
       }
     }
-  }
 
-  const macosDir = path.join(bundleDir, 'macos');
-  if (fs.existsSync(macosDir)) {
-    // 检查是否有现有 .tar.gz 更新包
-    const macosFiles = fs.readdirSync(macosDir);
-    for (const f of macosFiles) {
-      if (f.endsWith('.tar.gz')) {
-        const fullPath = path.join(macosDir, f);
-        const sigFile = `${fullPath}.sig`;
-        let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
-        if (!sig && privateKey) {
-          sig = ensureSignature(fullPath, privateKey, password);
+    // 2.2 macOS DMG 与 updater
+    const dmgDir = path.join(bundleDir, 'dmg');
+    if (fs.existsSync(dmgDir)) {
+      const files = fs.readdirSync(dmgDir);
+      for (const f of files) {
+        if (f.endsWith('.dmg') && !f.startsWith('rw.')) {
+          const isArm = f.includes('aarch64') || f.includes('arm64') || arch === 'arm64' || (arch === 'default' && process.arch === 'arm64');
+          addArtifact({
+            platform: isArm ? 'macos-arm64' : 'macos-x64',
+            targetPlatform: isArm ? 'darwin-aarch64' : 'darwin-x86_64',
+            name: f,
+            filePath: path.join(dmgDir, f),
+          });
         }
-        const isArm = f.includes('aarch64') || f.includes('arm64') || process.arch === 'arm64';
-        const art = {
-          platform: isArm ? 'macos-arm64-updater' : 'macos-x64-updater',
-          targetPlatform: isArm ? 'darwin-aarch64' : 'darwin-x86_64',
-          name: f,
-          filePath: fullPath,
-          signature: sig,
-        };
-        artifacts.push(art);
-        updaterArtifacts.push(art);
       }
     }
 
-    // 如果有 智询.app 但没有 .tar.gz，自动打包出 智询.app.tar.gz 供自动更新
-    const hasTarGz = artifacts.some(a => a.name.endsWith('.app.tar.gz'));
-    const appFolder = macosFiles.find(f => f.endsWith('.app'));
-    if (!hasTarGz && appFolder) {
-      const appPath = path.join(macosDir, appFolder);
-      const isArm = process.arch === 'arm64';
-      const tarGzName = `${appFolder}.tar.gz`;
-      const tarGzPath = path.join(macosDir, tarGzName);
-      try {
-        console.log(`📦 正在生成 macOS 应用内增量更新包: ${tarGzName}...`);
-        execSync(`tar -czf "${tarGzName}" "${appFolder}"`, { cwd: macosDir });
-        let sig = null;
-        if (privateKey) {
-          sig = ensureSignature(tarGzPath, privateKey, password);
+    const macosDir = path.join(bundleDir, 'macos');
+    if (fs.existsSync(macosDir)) {
+      const isArm = arch === 'arm64' || triple.includes('aarch64') || (arch === 'default' && process.arch === 'arm64');
+      const targetPlatform = isArm ? 'darwin-aarch64' : 'darwin-x86_64';
+      const macosFiles = fs.readdirSync(macosDir);
+
+      for (const f of macosFiles) {
+        if (f.endsWith('.tar.gz')) {
+          const fullPath = path.join(macosDir, f);
+          const sigFile = `${fullPath}.sig`;
+          let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
+          if (!sig && privateKey) {
+            sig = ensureSignature(fullPath, privateKey, password);
+          }
+          // 规范化命名：如果是 智询.app.tar.gz，按架构区分命名避免 OSS 互相覆盖
+          let uploadName = f;
+          if (f === '智询.app.tar.gz') {
+            uploadName = isArm ? '智询_aarch64.app.tar.gz' : '智询_x64.app.tar.gz';
+          }
+          addArtifact({
+            platform: isArm ? 'macos-arm64-updater' : 'macos-x64-updater',
+            targetPlatform,
+            name: uploadName,
+            filePath: fullPath,
+            signature: sig,
+          });
         }
-        const art = {
-          platform: isArm ? 'macos-arm64-updater' : 'macos-x64-updater',
-          targetPlatform: isArm ? 'darwin-aarch64' : 'darwin-x86_64',
-          name: tarGzName,
-          filePath: tarGzPath,
-          signature: sig,
-        };
-        artifacts.push(art);
-        updaterArtifacts.push(art);
-      } catch (err) {
-        console.warn('⚠️  自动压缩 .app.tar.gz 失败:', err);
+      }
+
+      // 如果有 .app 目录但没有 .tar.gz，自动打包
+      const appFolder = macosFiles.find(f => f.endsWith('.app'));
+      const hasTarGz = artifacts.some(a => a.targetPlatform === targetPlatform && a.name.endsWith('.app.tar.gz'));
+      if (!hasTarGz && appFolder) {
+        const uploadName = isArm ? '智询_aarch64.app.tar.gz' : '智询_x64.app.tar.gz';
+        const tarGzPath = path.join(macosDir, uploadName);
+        try {
+          console.log(`📦 正在生成 macOS (${targetPlatform}) 应用内增量更新包: ${uploadName}...`);
+          execSync(`tar -czf "${uploadName}" "${appFolder}"`, { cwd: macosDir });
+          let sig = null;
+          if (privateKey) {
+            sig = ensureSignature(tarGzPath, privateKey, password);
+          }
+          addArtifact({
+            platform: isArm ? 'macos-arm64-updater' : 'macos-x64-updater',
+            targetPlatform,
+            name: uploadName,
+            filePath: tarGzPath,
+            signature: sig,
+          });
+        } catch (err) {
+          console.warn('⚠️  自动压缩 .app.tar.gz 失败:', err);
+        }
       }
     }
-  }
 
-  // 3. Linux AppImage / Deb (若有)
-  const appImageDir = path.join(bundleDir, 'appimage');
-  if (fs.existsSync(appImageDir)) {
-    const files = fs.readdirSync(appImageDir);
-    for (const f of files) {
-      if (f.endsWith('.AppImage')) {
-        const fullPath = path.join(appImageDir, f);
-        const sigFile = `${fullPath}.sig`;
-        let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
-        if (!sig && privateKey) {
-          sig = ensureSignature(fullPath, privateKey, password);
+    // 2.3 Linux AppImage & deb
+    const appImageDir = path.join(bundleDir, 'appimage');
+    if (fs.existsSync(appImageDir)) {
+      const files = fs.readdirSync(appImageDir);
+      for (const f of files) {
+        if (f.endsWith('.AppImage')) {
+          const fullPath = path.join(appImageDir, f);
+          const sigFile = `${fullPath}.sig`;
+          let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
+          if (!sig && privateKey) {
+            sig = ensureSignature(fullPath, privateKey, password);
+          }
+          addArtifact({
+            platform: 'linux-appimage',
+            targetPlatform: 'linux-x86_64',
+            name: f,
+            filePath: fullPath,
+            signature: sig,
+          });
+        } else if (f.endsWith('.AppImage.tar.gz')) {
+          const fullPath = path.join(appImageDir, f);
+          const sigFile = `${fullPath}.sig`;
+          let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
+          if (!sig && privateKey) {
+            sig = ensureSignature(fullPath, privateKey, password);
+          }
+          addArtifact({
+            platform: 'linux-updater',
+            targetPlatform: 'linux-x86_64',
+            name: f,
+            filePath: fullPath,
+            signature: sig,
+          });
         }
-        const art = {
-          platform: 'linux-appimage',
-          targetPlatform: 'linux-x86_64',
-          name: f,
-          filePath: fullPath,
-          signature: sig,
-        };
-        artifacts.push(art);
-        if (sig) updaterArtifacts.push(art);
-      } else if (f.endsWith('.AppImage.tar.gz')) {
-        const fullPath = path.join(appImageDir, f);
-        const sigFile = `${fullPath}.sig`;
-        let sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf-8').trim() : null;
-        if (!sig && privateKey) {
-          sig = ensureSignature(fullPath, privateKey, password);
-        }
-        const art = {
-          platform: 'linux-updater',
-          targetPlatform: 'linux-x86_64',
-          name: f,
-          filePath: fullPath,
-          signature: sig,
-        };
-        artifacts.push(art);
-        updaterArtifacts.push(art);
       }
     }
-  }
 
-  const debDir = path.join(bundleDir, 'deb');
-  if (fs.existsSync(debDir)) {
-    const files = fs.readdirSync(debDir);
-    for (const f of files) {
-      if (f.endsWith('.deb')) {
-        artifacts.push({
-          platform: 'linux-deb',
-          targetPlatform: 'linux-x86_64',
-          name: f,
-          filePath: path.join(debDir, f),
-        });
+    const debDir = path.join(bundleDir, 'deb');
+    if (fs.existsSync(debDir)) {
+      const files = fs.readdirSync(debDir);
+      for (const f of files) {
+        if (f.endsWith('.deb')) {
+          addArtifact({
+            platform: 'linux-deb',
+            targetPlatform: 'linux-x86_64',
+            name: f,
+            filePath: path.join(debDir, f),
+          });
+        }
       }
     }
   }
@@ -650,7 +812,13 @@ async function main() {
     .join('\n') + '\n';
 
   const sha256FilePath = path.join(ROOT_DIR, 'src-tauri', 'target', 'release', 'SHA256SUMS.txt');
+  fs.mkdirSync(path.dirname(sha256FilePath), { recursive: true });
   fs.writeFileSync(sha256FilePath, mergedSha256Content, 'utf-8');
+
+  // 如果存在 dist-artifacts，也同步备份一份校验文件
+  if (fs.existsSync(DIST_DIR)) {
+    fs.writeFileSync(path.join(DIST_DIR, 'SHA256SUMS.txt'), mergedSha256Content, 'utf-8');
+  }
 
   console.log(`\n⬆️  正在同步更新合并后的校验文件: ${sha256Key}...`);
   if (!isDryRun && client) {
@@ -696,7 +864,13 @@ async function main() {
   };
 
   const latestJsonPath = path.join(ROOT_DIR, 'src-tauri', 'target', 'release', 'latest.json');
+  fs.mkdirSync(path.dirname(latestJsonPath), { recursive: true });
   fs.writeFileSync(latestJsonPath, JSON.stringify(mergedLatestManifest, null, 2), 'utf-8');
+
+  // 如果存在 dist-artifacts，也同步备份一份最新清单
+  if (fs.existsSync(DIST_DIR)) {
+    fs.writeFileSync(path.join(DIST_DIR, 'latest.json'), JSON.stringify(mergedLatestManifest, null, 2), 'utf-8');
+  }
 
   console.log(`⬆️  正在发布合并后的版本元信息 (Tauri v2 Updater 兼容): ${latestKey}...`);
   if (!isDryRun && client) {
@@ -710,7 +884,7 @@ async function main() {
 
   // 5. 自动同步官网 (website/index.html) 静态直链与版本标牌
   const websiteHtmlPath = path.join(ROOT_DIR, 'website', 'index.html');
-  if (fs.existsSync(websiteHtmlPath)) {
+  if (!isDryRun && fs.existsSync(websiteHtmlPath)) {
     try {
       let html = fs.readFileSync(websiteHtmlPath, 'utf-8');
       html = html.replace(/<span class="brand-pill">v[^<]+<\/span>/g, `<span class="brand-pill">${versionTag}</span>`);
